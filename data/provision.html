@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PowerCell Setup</title>
+  <style>
+    * { box-sizing: border-box; }
+    html { background: #0f0f0f; -webkit-text-size-adjust: 100%; }
+    body { margin: 0; padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+           background: #0f0f0f; color: #eee; min-height: 100vh; min-height: 100dvh;
+           overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    .card { background: #1e1e1e; border-radius: 16px; padding: 28px;
+            width: 100%; max-width: 380px; margin: 8vh auto 0; }
+    h1   { color: #4fc3f7; margin-bottom: 8px; font-size: 1.3rem; }
+    p    { color: #888; font-size: 0.85rem; margin-bottom: 24px; }
+    label { display: block; font-size: 0.8rem; color: #aaa; margin-bottom: 6px; }
+    input { display: block; width: 100%; background: #2a2a2a; border: 1px solid #555;
+            border-radius: 8px; padding: 12px 14px; color: #eee; font-size: 16px;
+            line-height: 1.25; margin-bottom: 16px; -webkit-appearance: none; appearance: none; }
+    input:focus { outline: none; border-color: #4fc3f7; }
+    .password-mask { -webkit-text-security: disc; }
+    button { width: 100%; background: #4fc3f7; color: #000; border: none;
+             border-radius: 8px; padding: 12px; font-size: 1rem;
+             font-weight: bold; cursor: pointer; }
+    button:active { opacity: 0.8; }
+    #status { margin-top: 16px; text-align: center; font-size: 0.9rem; color: #4fc3f7; }
+  </style>
+</head>
+<body>
+  <form class="card" id="wifiForm">
+    <h1>⚡ PowerCell Setup</h1>
+    <p>Enter your WiFi credentials to connect the device to your network.</p>
+    <label>Network Name (SSID)</label>
+    <input type="text" id="ssid" name="ssid" placeholder="Your WiFi name"
+           autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+    <label>Password</label>
+    <!-- A real password input invokes iOS Password AutoFill inside the captive
+         network browser and can lock that limited WebKit view. Keep this a
+         plain input and mask it at the rendering layer instead. -->
+    <input type="text" id="pass" name="wifi-key" class="password-mask"
+           placeholder="Your WiFi password" inputmode="text"
+           autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+    <button type="submit" id="connectButton">Connect</button>
+    <div id="status" role="status" aria-live="polite"></div>
+  </form>
+  <script>
+    document.getElementById('wifiForm').addEventListener('submit', function (event) {
+      event.preventDefault();
+      const ssid = document.getElementById('ssid').value.trim();
+      const pass = document.getElementById('pass').value;
+      if (!ssid) { document.getElementById('status').textContent = 'Please enter an SSID'; return; }
+      document.getElementById('ssid').blur();
+      document.getElementById('pass').blur();
+      document.getElementById('connectButton').disabled = true;
+      document.getElementById('status').textContent = 'Connecting...';
+      fetch('/provision?ssid=' + encodeURIComponent(ssid) + '&pass=' + encodeURIComponent(pass))
+        .then(r => r.text())
+        .then(t => { document.getElementById('status').textContent = t; })
+        .catch(() => {
+          document.getElementById('status').textContent = 'Error — try again';
+          document.getElementById('connectButton').disabled = false;
+        });
+    });
+  </script>
+</body>
+</html>

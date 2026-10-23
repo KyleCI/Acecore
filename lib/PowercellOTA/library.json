@@ -1,0 +1,1 @@
+{"name":"PowercellOTA","version":"1.0.0","frameworks":"arduino","platforms":"espressif32","dependencies":{"bblanchon/ArduinoJson":"^7.4.3"}}

@@ -1,0 +1,18 @@
+[
+  {
+    "file": "collector-1.0.0.bin",
+    "kind": "collector",
+    "model": "esp32dev",
+    "version": "1.0.0",
+    "size_bytes": 1118032,
+    "sha256": "6bd49d5fcba47f34573c313d115128b9e2b3f9433502e31e666658795d73753b"
+  },
+  {
+    "file": "socket-1.0.0.bin",
+    "kind": "socket",
+    "model": "esp32dev",
+    "version": "1.0.0",
+    "size_bytes": 973024,
+    "sha256": "0845fe873820abaf380d6c41f1fb58bf1a4d275fffc140b4f607318cb1790e2d"
+  }
+]

@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Powercore | Dashboard</title>
+     <!-- <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+     -->
+    <link rel="stylesheet" href="bootstrap-icons.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: "Red Hat Display", sans-serif;
+            background: #f0f4f8 url('https://www.transparenttextures.com/patterns/diagmonds.png') repeat;
+            min-height: 100vh;
+            width: 100vw;
+            color: #333;
+        }
+        .dashboard-container {
+            background: #fff;
+            border-radius: 0;
+            box-shadow: none;
+            padding: 20px;
+            width: 100vw;
+            height: 100vh;
+            min-height: auto;
+            position: relative;
+            overflow-y: auto;
+            padding-bottom: 100px;
+            transition: transform 0.3s ease;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+        .logo {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            width: 70px;
+            height: auto;
+        }
+        .top-nav {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            display: flex;
+            align-items: center;
+        }
+        .nav-links {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+        }
+        .nav-links a {
+            color: #333;
+            text-decoration: none;
+            font-weight: 500;
+            margin-left: 15px;
+            padding: 5px;
+            font-size: clamp(0.8rem, 2.5vw, 1rem);
+            transition: color 0.3s ease;
+        }
+        .nav-links a:hover {color: #01937c;}
+        .menu-toggle {
+            display: none;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 1.5em;
+            color: #333;
+            margin-left: 10px;
+        }
+        .dropdown {
+            position: relative;
+            display: inline-block;
+        }
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            top: 100%;
+            right: 0;
+            background: #fff;
+            border-radius: 10px;
+            padding: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            z-index: 1;
+            min-width: 150px;
+            text-align: right;
+        }
+        .dropdown-content a {
+            display: block;
+            padding: 5px 10px;
+            color: #333;
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s ease;
+        }
+        .dropdown-content a:hover {color: #01937c;}
+        .dropdown-content.active {display: block;}
+        h2 {
+            font-size: 1rem;
+            margin: 16px 8px 8px;
+            color: #555;
+            font-weight: 600;
+            transition: color 0.3s ease;
+            margin-top: 25px;
+        }
+        .section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 10px;
+            padding: 0 8px;
+            margin-bottom: 20px;
+        }
+        .card {
+            background: #fff;
+            border-radius: 10px;
+            padding: 12px;
+            text-align: center;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            width: 100%;
+        }
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+        }
+        .card i {
+            font-size: 1.4rem;
+            margin-bottom: 5px;
+            transition: color 0.3s ease;
+        }
+        .title {
+            font-size: 0.85rem;
+            color: #666;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            transition: color 0.3s ease;
+        }
+        .value {
+            font-size: 1.4rem;
+            font-weight: 500;
+            color: #333;
+            transition: color 0.3s ease;
+        }
+        small {
+            font-size: 0.7rem;
+            color: #888;
+            transition: color 0.3s ease;
+        }
+        .green { color: #01937c; }
+        .orange { color: #FB9300; }
+        .nav-bottom {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background: white;
+            display: flex;
+            justify-content: space-around;
+            padding: 8px 0;
+            box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.05);
+            max-width: 100%;
+            margin: 0;
+            transition: box-shadow 0.3s ease;
+        }
+        .nav-bottom a {
+            text-decoration: none;
+            color: #888;
+            font-size: 0.8rem;
+            text-align: center;
+            transition: color 0.3s ease;
+        }
+        .nav-bottom a i {
+            font-size: 1.4em;
+            color: inherit;
+        }
+        .nav-bottom a:hover i {
+            color: #01937c;
+        }
+        .nav-bottom .active {
+            color: #01937c;
+        }
+        .nav-bottom a:not(.active) {
+            color: #888;
+        }
+        .nav-bottom .active i {
+            color: #01937c;
+        }
+        @media (max-width: 768px) {
+            .dashboard-container {
+                padding: 15px;
+            }
+            .card {
+                padding: 10px;
+            }
+            .value {
+                font-size: 1.2rem;
+            }
+            .title {
+                font-size: 0.75rem;
+            }
+        }
+        @media (max-width: 480px) {
+            .card {
+                padding: 8px;
+            }
+            .value {
+                font-size: 1rem;
+            }
+            .title {
+                font-size: 0.65rem;
+            }
+            .top-nav .nav-links {
+                display: none;
+            }
+            .menu-toggle {
+                display: block;
+            }
+            .dropdown-content {
+                display: none;
+                position: absolute;
+                top: 100%;
+                left: 50%;
+                transform: translateX(-90%);
+                background: #fff;
+                border-radius: 10px;
+                padding: 10px;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+                z-index: 1;
+                min-width: 150px;
+                text-align: center;
+            }
+            .dropdown-content.active {
+                display: flex;
+                flex-direction: column;
+            }
+            .top-nav {
+                justify-content: flex-end;
+                width: auto;
+                padding: 0;
+            }
+            .logo {
+                position: static;
+                margin-left: 10px;
+            }
+            .nav-container {
+                position: static;
+                display: flex;
+                justify-content: space-between;
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <div class="nav-container">
+            <a href="home.html"><img src="assets/img/logo-g.png" class="logo" alt="Logo"></a>
+            <div class="top-nav">
+                <div class="dropdown">
+                    <div class="nav-links" id="navLinks">
+                        <a href="#">Device Manager</a>
+                        <a href="#">Wi-Fi Manager</a>
+                    </div>
+                    <button class="menu-toggle" onclick="toggleMenu()">
+                        <i class="bi bi-list"></i>
+                    </button>
+                    <div class="dropdown-content" id="dropdownContent">
+                        <a href="#">Device Manager</a>
+                        <a href="#">Wi-Fi Manager</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Battery Section -->
+        <h2>Battery</h2>
+        <div class="section">
+            <div class="card">
+                <i class="bi bi-signal green"></i>
+                <div class="title">Status</div>
+                <div class="value" id="batteryStatus">--</div>
+            </div>
+            <div class="card">
+                <i class="bi bi-lightning-charge green"></i>
+                <div class="title">Voltage</div>
+                <div class="value" id="batteryVoltage">-- V</div>
+            </div>
+            <div class="card">
+                <i class="bi bi-battery-full green"></i>
+                <div class="title">Level</div>
+                <div class="value" id="batteryLevel">-- %</div>
+                <!-- <small id="timeToFull">Time to Full: --</small> -->
+            </div>
+            <div class="card">
+                <i class="bi bi-thermometer-half orange"></i>
+                <div class="title">Battery Temp</div>
+                <div class="value" id="batteryTemp">-- °C</div>
+            </div>
+        </div>
+
+        <!-- Powercell Section -->
+        <h2>Powercell</h2>
+        <div class="section">
+            <div class="card">
+                <i class="bi bi-lightning-charge green"></i>
+                <div class="title">Power</div>
+                <div class="value" id="powerOutput">-- kW</div>
+            </div>
+            <div class="card">
+                <i class="bi bi-plug orange"></i>
+                <div class="title">Energy Consumption</div>
+                <div class="value" id="energyConsumption">-- kWh</div>
+            </div>
+            <div class="card">
+                <i class="bi bi-thermometer-half orange"></i>
+                <div class="title">System Temp</div>
+                <div class="value" id="systemTemp">-- °C</div>
+            </div>
+            <div class="card">
+                <i class="bi bi-lightning-charge green"></i>
+                <div class="title">Output Voltage</div>
+                <div class="value" id="outputVoltage">-- V</div>
+            </div>
+            <div class="card">
+                <i class="bi bi-plug orange"></i>
+                <div class="title">Input Voltage</div>
+                <div class="value" id="inputVoltage">-- V</div>
+            </div>
+        </div>
+
+        <!-- Solar Panel Section -->
+        <h2>Solar Panel</h2>
+        <div class="section">
+            <div class="card">
+                <i class="bi bi-sun green"></i>
+                <div class="title">Power Produced</div>
+                <div class="value" id="solarPower">-- W</div>
+            </div>
+            <div class="card">
+                <i class="bi bi-lightning-charge green"></i>
+                <div class="title">Voltage</div>
+                <div class="value" id="solarVoltage">-- V</div>
+            </div>
+            <div class="card">
+                <i class="bi bi-lightning-fill orange"></i>
+                <div class="title">Current</div>
+                <div class="value" id="solarCurrent">-- A</div>
+            </div>
+            <div class="card">
+                <i class="bi bi-shield-check green"></i>
+                <div class="title">Health</div>
+                <div class="value" id="solarHealth">--</div>
+            </div>
+        </div>
+
+        <!-- Alerts & Maintenance Section -->
+        <h2>Alerts & Maintenance</h2>
+        <div class="section">
+            <div class="card">
+                <i class="bi bi-exclamation-triangle green"></i>
+                <div class="title">Active Alerts</div>
+                <div class="value" id="alerts">No active alerts</div>
+            </div>
+            <div class="card">
+                <i class="bi bi-tools orange"></i>
+                <div class="title">Maintenance Reminder</div>
+                <div class="value" id="maintenance">30 days</div>
+            </div>
+            <div class="card">
+                <i class="bi bi-wrench-adjustable orange"></i>
+                <div class="title">Fault Diagnostics</div>
+                <div class="value" id="diagnostics">System OK</div>
+            </div>
+        </div>
+
+        <!-- Spacer for Bottom Margin -->
+        <div style="height: 80px;"></div>
+
+        <!-- Bottom Navigation -->
+        <div class="nav-bottom">
+            <a href="home.html" onclick="event.preventDefault(); navigate('home.html')"><i class="bi bi-house"></i><br>Home</a>
+            <a href="dashboard.html" onclick="event.preventDefault(); navigate('dashboard.html')" class="active"><i class="bi bi-grid"></i><br>Dashboard</a>
+            <!-- Insights page disabled for production: contains dummy charts -->
+            <!-- <a href="insights.html" onclick="event.preventDefault(); navigate('insights.html')"><i class="bi bi-bar-chart"></i><br>Insights</a> -->
+            <a href="smart_socket.html" onclick="event.preventDefault(); navigate('smart_socket.html')"><i class="bi bi-plug"></i><br>Devices</a>
+        </div>
+    </div>
+
+    <script src="/dashboard.js?v=20260911-power"></script>
+</body>
+</html>

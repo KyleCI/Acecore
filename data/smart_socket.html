@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PowerCell Smart Sockets</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+    * {margin: 0; padding: 0; box-sizing: border-box;}
+
+    body {
+        font-family: "Red Hat Display", sans-serif;
+        background: #f0f4f8 repeat;
+        min-height: 100vh;
+        width: 100vw;
+        color: #333;
+    }
+    .container {
+        background: #fff;
+        border-radius: 0;
+        box-shadow: none;
+        padding: 30px 20px;
+        text-align: center;
+        width: 100vw;
+        height: 100vh;
+        min-height: auto;
+        position: relative;
+        overflow-y: auto;
+        padding-bottom: 100px;
+        transition: transform 0.3s ease;
+    }
+    @keyframes bounce {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-10px); }
+    }
+    .logo {
+        position: absolute;
+        top: 15px;
+        left: 15px;
+        width: 70px;
+        height: auto;
+    }
+    .nav-container {
+        position: absolute;
+        top: 15px;
+        right: 15px;
+        display: flex;
+        align-items: center;
+    }
+    .nav-links {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+    }
+    .nav-links a {
+        color: #333;
+        text-decoration: none;
+        font-weight: 500;
+        margin-left: 15px;
+        padding: 5px;
+        font-size: clamp(0.8rem, 2.5vw, 1rem);
+        transition: color 0.3s ease;
+    }
+    .nav-links a:hover {color: #01937c;}
+    .menu-toggle {
+        display: none;
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 1.5em;
+        color: #333;
+    }
+    .state {
+        font-size: clamp(1rem, 4vw, 1.3rem);
+        font-weight: 600;
+        margin-top: 20px;
+        text-transform: uppercase;
+        color: #ff4d4d; /* Default OFF (red) */
+    }
+    .state.on { color: #01937c; }    /* Green when ON */
+    .state.off { color: #ff4d4d; }   /* Red when OFF */
+    .timer {
+        font-size: clamp(1.8rem, 6vw, 2.5rem);
+        color: #000;
+        margin: 15px 0;
+        font-weight: 300;
+    }
+    .power-btn {
+        display: inline-flex;
+        justify-content: center;
+        align-items: center;
+        width: clamp(100px, 30vw, 150px);
+        height: clamp(100px, 30vw, 150px);
+        background: #ff4d4d; /* Default OFF (red) */
+        border-radius: 50%;
+        text-decoration: none;
+        color: #fff;
+        font-size: clamp(1.5rem, 5vw, 2em);
+        transition: background 0.3s ease;
+        position: relative;
+        overflow: hidden;
+        border: none;
+        cursor: pointer;
+    }
+    .power-btn.active {background: #01937c;} /* Green when ON */
+    .power-btn:disabled { opacity: 0.6; cursor: wait; }
+    .section {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 10px;
+        padding: 0 8px;
+        margin-top: 25px;
+        margin-bottom: 20px;
+    }
+    .card {
+        background: #fff;
+        border-radius: 10px;
+        padding: 12px;
+        text-align: center;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+        width: 100%;
+    }
+    .card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+    }
+    .card i {
+        font-size: 1.4rem;
+        margin-bottom: 5px;
+        transition: color 0.3s ease;
+    }
+    .title {
+        font-size: 0.85rem;
+        color: #666;
+        margin-bottom: 5px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        transition: color 0.3s ease;
+    }
+    .value {
+        font-size: 1.4rem;
+        font-weight: 500;
+        color: #333;
+        transition: color 0.3s ease;
+    }
+    .green { color: #01937c; }
+    .orange { color: #FB9300; }
+    .chart {
+        background: #f9f9f9;
+        padding: 15px;
+        border-radius: 10px;
+        margin-top: 15px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+    }
+    .chart h6 {
+        color: #01937c;
+        font-size: clamp(0.8rem, 3vw, 1rem);
+        margin-bottom: 5px;
+    }
+    .chart .range {
+        color: #FB9300;
+        font-size: clamp(0.7rem, 2.5vw, 0.9rem);
+        margin-bottom: 10px;
+    }
+    .chart .bars {
+        display: flex;
+        justify-content: space-around;
+        align-items: flex-end;
+        height: 100px;
+    }
+    .bar {
+        width: 18px;
+        background: #FB9300;
+    }
+    .bar-base {background: #01937c; height: 20px;}
+    .nav-bottom {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background: white;
+        display: flex;
+        justify-content: space-around;
+        padding: 8px 0;
+        box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.05);
+        max-width: 100%;
+        margin: 0;
+        transition: box-shadow 0.3s ease;
+    }
+    .nav-bottom a {
+        text-decoration: none;
+        color: #888;
+        font-size: 0.8rem;
+        text-align: center;
+        transition: color 0.3s ease;
+    }
+    .nav-bottom a i {
+        font-size: 1.4em;
+        color: inherit;
+    }
+    .nav-bottom a:hover i {
+        color: #01937c;
+    }
+    .nav-bottom .active {
+        color: #01937c;
+    }
+    .nav-bottom a:not(.active) {
+        color: #888;
+    }
+    .nav-bottom .active i {
+        color: #01937c;
+    }
+
+    /* --- Added for registration + multi-device rendering --- */
+    .error-banner {
+        display: none;
+        background: #ffecec;
+        color: #ff4d4d;
+        font-size: 0.85rem;
+        padding: 8px;
+        border-radius: 8px;
+        margin-top: 60px;
+    }
+    .error-banner.show { display: block; }
+    .register-form {
+        display: flex;
+        gap: 8px;
+        margin-top: 60px;
+        max-width: 420px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+    .register-form input {
+        flex: 1;
+        min-width: 0;
+        padding: 10px 12px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        font-family: inherit;
+        font-size: 0.9rem;
+        text-transform: uppercase;
+    }
+    .register-form input:focus {
+        outline: none;
+        border-color: #01937c;
+    }
+    .register-form button {
+        background: #01937c;
+        color: #fff;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 16px;
+        font-family: inherit;
+        font-weight: 500;
+        font-size: 0.9rem;
+        cursor: pointer;
+        white-space: nowrap;
+    }
+    .register-form button:hover { background: #017a67; }
+    .devices-container {
+        margin-top: 25px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+    }
+    .empty-state {
+        color: #999;
+        font-size: 0.9rem;
+        margin-top: 40px;
+    }
+    .device-panel {
+        background: #f9f9f9;
+        border-radius: 14px;
+        padding: 18px 12px 8px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+        text-align: center;
+    }
+    .device-header {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+        padding: 0 30px;
+    }
+    .device-name {
+        font-weight: 600;
+        font-size: 0.95rem;
+        letter-spacing: 0.5px;
+        color: #333;
+        word-break: break-all;
+    }
+    .unregister-btn {
+        position: absolute;
+        right: 0;
+        top: -6px;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        border: none;
+        background: #fff;
+        color: #ff4d4d;
+        font-size: 1rem;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+    }
+    .unregister-btn:hover { background: #ff4d4d; color: #fff; }
+    @media (max-width: 768px) {
+        .container { padding: 15px; }
+        .card { padding: 10px; }
+        .value { font-size: 1.2rem; }
+        .title { font-size: 0.75rem; }
+    }
+    @media (max-width: 480px) {
+        .card { padding: 8px; }
+        .value { font-size: 1rem; }
+        .title { font-size: 0.65rem; }
+        .menu-toggle { display: block; }
+        .nav-links {
+            display: none;
+            flex-direction: column;
+            position: absolute;
+            top: 50px;
+            right: 15px;
+            background: #fff;
+            border-radius: 10px;
+            padding: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        .nav-links.active { display: flex; }
+    }
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="nav-container">
+        <div class="nav-links" id="navLinks">
+            <a href="#" class="active">Dashboard</a>
+        </div>
+        <button class="menu-toggle" id="menuToggle" aria-label="Menu">
+            <i class="fa-solid fa-bars"></i>
+        </button>
+    </div>
+
+    <div class="error-banner" id="errorBanner">Couldn't reach /metrics — retrying&hellip;</div>
+
+    <form class="register-form" id="registerForm">
+        <input type="text" id="macInput" placeholder="Socket MAC e.g. 24:6F:28:AE:9C:1A" autocomplete="off" />
+        <button type="submit">Register</button>
+    </form>
+
+    <div class="devices-container" id="devicesContainer"></div>
+    <div class="empty-state" id="emptyState">No registered sockets reporting yet.</div>
+</div>
+
+<nav class="nav-bottom">
+    <a href="./dashboard.html" class="active"><i class="fa-solid fa-house"></i><br>Home</a>
+    <a href="./insights.html"><i class="fa-solid fa-chart-line"></i><br>History</a>
+    <a href="#"><i class="fa-solid fa-gear"></i><br>Settings</a>
+</nav>
+
+<script>
+    const POLL_INTERVAL_MS = 2000;
+    const HISTORY_LENGTH = 12;
+
+    const deviceHistories = {}; // deviceId -> array of recent current readings
+
+    const devicesContainer = document.getElementById('devicesContainer');
+    const emptyState       = document.getElementById('emptyState');
+    const errorBanner       = document.getElementById('errorBanner');
+    const registerForm      = document.getElementById('registerForm');
+    const macInput          = document.getElementById('macInput');
+    const menuToggle         = document.getElementById('menuToggle');
+    const navLinks           = document.getElementById('navLinks');
+
+    menuToggle.addEventListener('click', () => {
+        navLinks.classList.toggle('active');
+    });
+
+    // ---- Registration ----
+    registerForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const raw = macInput.value.trim();
+        if (!raw) return;
+
+        const deviceId = raw.replace(/:/g, '').toUpperCase();
+
+        try {
+            const res = await fetch('/register?id=' + encodeURIComponent(deviceId));
+            if (!res.ok) throw new Error('register failed: ' + res.status);
+            macInput.value = '';
+        } catch (err) {
+            console.error('Failed to register device:', err);
+            alert('Could not register socket — check the Collector connection.');
+        }
+    });
+
+    // ---- Polling ----
+    async function fetchMetrics() {
+        try {
+            const res = await fetch('/metrics');
+            if (!res.ok) throw new Error('bad response: ' + res.status);
+            const data = await res.json(); // { battery_voltage, device_state, ..., sockets: [...] }
+            errorBanner.classList.remove('show');
+            renderDevices(Array.isArray(data.sockets) ? data.sockets : []);
+        } catch (err) {
+            console.error('Failed to fetch /metrics:', err);
+            errorBanner.classList.add('show');
+        }
+    }
+
+    function renderDevices(devices) {
+        const seenIds = new Set();
+
+        devices.forEach((data) => {
+            if (!data.deviceId) return;
+            seenIds.add(data.deviceId);
+
+            let panel = devicesContainer.querySelector(`[data-device-id="${cssEscape(data.deviceId)}"]`);
+            if (!panel) {
+                panel = createDevicePanel(data.deviceId);
+                devicesContainer.appendChild(panel);
+            }
+            updateDevicePanel(panel, data);
+        });
+
+        // Anything no longer in the response (e.g. unregistered) gets fully removed
+        devicesContainer.querySelectorAll('.device-panel').forEach((panel) => {
+            const id = panel.dataset.deviceId;
+            if (!seenIds.has(id)) {
+                delete deviceHistories[id];
+                panel.remove();
+            }
+        });
+
+        emptyState.style.display = devicesContainer.children.length === 0 ? 'block' : 'none';
+    }
+
+    function cssEscape(str) {
+        return window.CSS && CSS.escape ? CSS.escape(str) : str.replace(/["\\]/g, '\\$&');
+    }
+
+    function createDevicePanel(deviceId) {
+        const panel = document.createElement('div');
+        panel.className = 'device-panel';
+        panel.dataset.deviceId = deviceId;
+        panel.dataset.relayState = '0';
+        panel.innerHTML = `
+            <div class="device-header">
+                <span class="device-name">${deviceId}</span>
+                <button class="unregister-btn" title="Unregister">&times;</button>
+            </div>
+            <div class="state off">OFF</div>
+            <button class="power-btn">
+                <i class="fa-solid fa-power-off"></i>
+            </button>
+            <div class="section">
+                <div class="card">
+                    <i class="fa-solid fa-bolt orange"></i>
+                    <div class="title">Current</div>
+                    <div class="value current-value">-- A</div>
+                </div>
+                <div class="card">
+                    <i class="fa-solid fa-signal green"></i>
+                    <div class="title">Signal</div>
+                    <div class="value rssi-value">-- dBm</div>
+                </div>
+            </div>
+            <div class="chart">
+                <h6>Current Draw (recent)</h6>
+                <div class="range chart-range">-- A</div>
+                <div class="bars chart-bars"></div>
+            </div>
+        `;
+
+        panel.querySelector('.power-btn').addEventListener('click', () => togglePower(deviceId, panel));
+        panel.querySelector('.unregister-btn').addEventListener('click', () => unregisterDevice(deviceId));
+
+        deviceHistories[deviceId] = [];
+        return panel;
+    }
+
+    function updateDevicePanel(panel, data) {
+        const isOn = Number(data.relayState) === 1;
+        panel.dataset.relayState = isOn ? '1' : '0';
+
+        const stateEl = panel.querySelector('.state');
+        stateEl.textContent = isOn ? 'ON' : 'OFF';
+        stateEl.classList.toggle('on', isOn);
+        stateEl.classList.toggle('off', !isOn);
+        panel.querySelector('.power-btn').classList.toggle('active', isOn);
+
+        const currentNum = Number(data.current);
+        panel.querySelector('.current-value').textContent = (isNaN(currentNum) ? '--' : currentNum.toFixed(2)) + ' A';
+        panel.querySelector('.rssi-value').textContent = (data.rssi ?? '--') + ' dBm';
+
+        if (!isNaN(currentNum) && currentNum >= 0) {
+            updateChart(panel, data.deviceId, currentNum);
+        }
+    }
+
+    function updateChart(panel, deviceId, current) {
+        const history = deviceHistories[deviceId] || (deviceHistories[deviceId] = []);
+        history.push(current);
+        if (history.length > HISTORY_LENGTH) history.shift();
+
+        const maxValue = Math.max(...history, 0.1);
+        panel.querySelector('.chart-range').textContent = '0 - ' + maxValue.toFixed(1) + ' A';
+
+        const barsEl = panel.querySelector('.chart-bars');
+        barsEl.innerHTML = '';
+        history.forEach((value) => {
+            const bar = document.createElement('div');
+            bar.className = 'bar';
+            bar.style.height = Math.max((value / maxValue) * 100, 4) + '%';
+            barsEl.appendChild(bar);
+        });
+    }
+
+    // ---- Relay control (the functional power button) ----
+    async function togglePower(deviceId, panel) {
+        const btn = panel.querySelector('.power-btn');
+        const turnOn = panel.dataset.relayState !== '1';
+
+        btn.disabled = true;
+        try {
+            const state = turnOn ? 'on' : 'off';
+            const res = await fetch('/relay?id=' + encodeURIComponent(deviceId) + '&state=' + state);
+            if (!res.ok) throw new Error('relay command rejected: ' + res.status);
+            // Actual state confirmation comes from the next /metrics poll
+            // (the socket has to receive the LoRa command and report back)
+        } catch (err) {
+            console.error('Failed to send relay command:', err);
+        } finally {
+            setTimeout(() => { btn.disabled = false; }, 500);
+        }
+    }
+
+    // ---- Unregistration ----
+    async function unregisterDevice(deviceId) {
+        if (!confirm(`Unregister ${deviceId}?`)) return;
+
+        try {
+            const res = await fetch('/unregister?id=' + encodeURIComponent(deviceId));
+            if (!res.ok) throw new Error('unregister failed: ' + res.status);
+            // The receiver drops this device's cache entry immediately, so
+            // the next poll's response won't include it and renderDevices()
+            // will remove the panel — no need to remove it here manually.
+        } catch (err) {
+            console.error('Failed to unregister device:', err);
+        }
+    }
+
+    fetchMetrics();
+    setInterval(fetchMetrics, POLL_INTERVAL_MS);
+</script>
+</body>
+</html>
