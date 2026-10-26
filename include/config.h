@@ -14,8 +14,11 @@
 #endif
 
 // ---- Backend ---------------------------------------------------------------
+// Live Upload cloud (Caleb 2026-10-26): api-dev.acecore.tech.
+// esp32dev_prod overrides both of these to api.acecore.tech. Do not point the
+// default build at production.
 #ifndef POWERCELL_WS_HOST
-#define POWERCELL_WS_HOST "api.acecore.tech"
+#define POWERCELL_WS_HOST "api-dev.acecore.tech"
 #endif
 #ifndef POWERCELL_WS_PORT
 #define POWERCELL_WS_PORT 443
@@ -27,12 +30,13 @@
 #define POWERCELL_WS_PATH "/ws/device"
 #endif
 #ifndef POWERCELL_OTA_BASE_URL_DEFAULT
-#define POWERCELL_OTA_BASE_URL_DEFAULT "https://api.acecore.tech"
+#define POWERCELL_OTA_BASE_URL_DEFAULT "https://api-dev.acecore.tech"
 #endif
 
 // ---- Dev build guard ---------------------------------------------------------
-// Cleartext ws:// and http:// OTA exist only for the bench env esp32dev_dev
-// (POWERCELL_DEV_BUILD=1, POWERCELL_DEV_INSECURE=1). Every other env is TLS-only.
+// Cleartext ws:// and http:// OTA exist only when POWERCELL_DEV_BUILD=1 and
+// POWERCELL_DEV_INSECURE=1. No checked-in env sets POWERCELL_DEV_INSECURE.
+// esp32dev, esp32dev_dev, and esp32dev_prod are TLS.
 #ifndef POWERCELL_DEV_BUILD
 #define POWERCELL_DEV_BUILD 0
 #endif
@@ -81,12 +85,14 @@
 #define PACK_V_CROSSCHECK_TOL 1.5f  // V; BMS vs STM32 pack voltage disagreement flag
 
 // ---- LoRa (must match the smart-socket transmitters) -------------------------
-#define LORA_FREQUENCY 433E6
-#define LORA_SYNC_WORD 0xF1
-#define LORA_SF 9
-#define LORA_BW 125000
-#define LORA_CR 5
-#define LORA_PREAMBLE 12
+// Modulation lives in powercell_lora_profile.h. Pin maps do not.
+#include "powercell_lora_profile.h"
+#define LORA_FREQUENCY POWERCELL_LORA_FREQUENCY_HZ
+#define LORA_SYNC_WORD POWERCELL_LORA_SYNC_WORD
+#define LORA_SF POWERCELL_LORA_SF
+#define LORA_BW POWERCELL_LORA_BW_HZ
+#define LORA_CR POWERCELL_LORA_CR
+#define LORA_PREAMBLE POWERCELL_LORA_PREAMBLE
 #ifndef FEATURE_LORA_SOCKETS      // smart sockets over LoRa (Dubem protocol); needs FEATURE_LORA
 #define FEATURE_LORA_SOCKETS (FEATURE_LORA && !FEATURE_ESPNOW_SOCKETS)
 #endif

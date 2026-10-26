@@ -175,6 +175,11 @@ collector. Restart afterward. The normal release build does not import that file
 
 ## 5. Set up one smart socket
 
+The image in this branch is **AcePlug v0.1** (firmware-proven, CAD pending): RELAY IO15, LoRa CS IO5, RST IO25, DIO0 IO26, SPI 18/19/23, LED IO4, current ADC IO35 (EmonLib, not BL0942).
+Do not flash it onto a v0.2 board (RELAY 27 / CS 32 / RST 26 / DIO0 34, BL0942 UART 16/17). Do not use the GPIO list in `LORA_SOCKET_PROTOCOL.md`.
+QGatePass/Acecore `main` is not the merge target until KyleCI PR #1 is green for both images.
+The steps below are the 1.0.1 enrollment flow.
+
 Each socket needs its **own** MAC address and OTA token. Do not reuse the collector's
 token. A socket must appear in the backend's device inventory before enrolling it.
 

@@ -8,7 +8,8 @@ Keys read from the file (others are ignored, so the backend .env can be used too
   LOCAL_TOKEN   -> SET local_tok    (LAN Basic auth password for user "powercell")
   WIFI_SSID     -> SET wifi_ssid    (optional; or use the setup AP)
   WIFI_PASS     -> SET wifi_pass
-  OTA_URL       -> SET ota_url      (optional; the dev build defaults to https://api-dev.acecore.tech)
+  OTA_URL       -> SET ota_url      (optional; default env esp32dev uses https://api-dev.acecore.tech.
+                         Set this to https://api.acecore.tech only for an esp32dev_prod unit.)
   GW_NAME       -> SET gw_name      (optional, e.g. ACE9678)
   DEVICE_SECRET -> SET device_secret (64 hex; factory identity / WS + fingerprint HMAC; same as console SECRET)
 

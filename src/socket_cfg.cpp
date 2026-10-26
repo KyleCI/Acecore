@@ -47,6 +47,8 @@ Sock &get(const String &id) {
     s.cfg = Config();
     if (prefsOpenRO(p, NS_PRIO)) { if (p.getUChar(id.c_str(), 0)) s.cfg.prio = Prio::Essential; p.end(); }
   }
+  // Older blobs used 200 dA (a 20 A claim). The fitted contact is 10 A.
+  if (s.cfg.limitDa < kMinDa || s.cfg.limitDa > kMaxDa) s.cfg.limitDa = kMaxDa;
   return s;
 }
 bool save(const String &id, Sock &s) {
@@ -70,7 +72,7 @@ void emit(pc::ev::Type t, bool active, const char *code, const String &id, bool 
 }
 bool isShedReason(Reason r) { return r == Reason::SafetyTrip || r == Reason::SocHeavy || r == Reason::SocEssential || r == Reason::InverterOverload; }
 
-// ESP backup monitor: the socket trips itself at its user limit (20 A hard). If a fresh reading
+// ESP backup monitor: the socket trips itself at its user limit (10 A software trip). If a fresh reading
 // stays above the limit + 0.5 A with the relay on for 4 readings, the ESP sends RELAY_OFF.
 void monitor(Sock &s, JsonObject o) {
   bool on = (o["relayState"] | 0) == 1;

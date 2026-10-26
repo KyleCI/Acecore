@@ -201,7 +201,7 @@ void Engine::update(const Inputs &in, uint32_t now, uint32_t ts) {
       for (auto &c : c_) if (c.used && c.active && !strcmp(c.ev.id, id)) wasCrit = c.ev.severity == Sev::Critical;
       bool crit = s.alertOvercurrent || hyst(wasCrit, s.current, kSocketTripA, kSocketTripClearA);
       cond({id, Type::Overcurrent, crit ? Sev::Critical : Sev::Warning, true, s.current,
-            crit ? (s.alertOvercurrent ? "socket_tripped_20a" : "socket_20a") : "socket_warn_16a",
+            crit ? (s.alertOvercurrent ? "socket_tripped_10a" : "socket_10a") : "socket_warn_8a",
             s.id, "socket", false, crit ? 0u : 1000u, 5000}, crit || warnRaw, now, ts);
     }
     // Lockout: critical, latched on the socket (NVS); clears only when the socket reports it reset.

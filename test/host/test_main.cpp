@@ -196,14 +196,19 @@ static void test_device_ids() {
   CHECK(!sameDeviceId("", ""));
 }
 
+// Live Upload cloud (Caleb 2026-10-26). Default esp32dev expects this host.
+// Production api.acecore.tech is esp32dev_prod only, not the default base.
+static const char *kLiveOtaBase = "https://api-dev.acecore.tech";
+
 static void test_ota_url() {
   char p[200];
-  const char *base = "https://api-dev.acecore.tech";
+  const char *base = kLiveOtaBase;
   CHECK(otaDownloadPath(base, "https://api-dev.acecore.tech/api/ota/download?device_id=AABBCCDDEEFF", p, sizeof p) &&
         !strcmp(p, "/api/ota/download?device_id=AABBCCDDEEFF"));
   CHECK(otaDownloadPath("https://api-dev.acecore.tech/", "https://API-DEV.acecore.tech/api/firmware.bin", p, sizeof p) && !strcmp(p, "/api/firmware.bin"));
   CHECK(otaDownloadPath(base, "/api/firmware/download?device_id=ACE4447", p, sizeof p));
   CHECK(!otaDownloadPath(base, "https://evil.example/api/ota/download", p, sizeof p));
+  CHECK(!otaDownloadPath(base, "https://api.acecore.tech/api/ota/download", p, sizeof p));  // prod host is not the live base
   CHECK(!otaDownloadPath(base, "https://api-dev.acecore.tech.evil.example/api/ota/download", p, sizeof p));
   CHECK(!otaDownloadPath(base, "https://api-dev.acecore.tech@evil.example/api/ota/download", p, sizeof p));
   CHECK(!otaDownloadPath(base, "http://api-dev.acecore.tech/api/ota/download", p, sizeof p));
@@ -213,6 +218,15 @@ static void test_ota_url() {
   CHECK(isSha256Hex("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
   CHECK(!isSha256Hex("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"));
   CHECK(!isSha256Hex(nullptr));
+}
+
+static void test_ota_url_prod_opt_in() {
+  char p[200];
+  const char *base = "https://api.acecore.tech";  // esp32dev_prod only
+  CHECK(otaDownloadPath(base, "https://api.acecore.tech/api/ota/download?device_id=AABBCCDDEEFF", p, sizeof p) &&
+        !strcmp(p, "/api/ota/download?device_id=AABBCCDDEEFF"));
+  CHECK(!otaDownloadPath(base, "https://api-dev.acecore.tech/api/ota/download", p, sizeof p));
+  CHECK(!otaDownloadPath(base, "http://api.acecore.tech/api/ota/download", p, sizeof p));
 }
 
 static void test_power_policy() {
@@ -568,15 +582,15 @@ static void test_events_engine() {
   m.update(mi, 0, 1); n = m.drain(e, 24);
   CHECK(countType(e, n, Type::Overcurrent, true) == 1 && countType(e, n, Type::OverTemp, true) == 1);
   mi.bmsAlarms = 0; m.update(mi, 1000, 2); CHECK(m.drain(e, 24) == 0); m.update(mi, 6100, 3); CHECK(m.drain(e, 24) == 2);
-  // sockets: 16 A warning, 20 A critical, socket trip flag, relay results
+  // sockets: 8 A warning, 10 A critical, socket trip flag, relay results
   Engine s; Inputs si; si.nSockets = 1; strcpy(si.sockets[0].id, "A1B2C3D4E5F6"); si.sockets[0].online = true;
-  si.sockets[0].current = 16.5f; s.update(si, 0, 1); CHECK(s.drain(e, 24) == 0);
+  si.sockets[0].current = 8.5f; s.update(si, 0, 1); CHECK(s.drain(e, 24) == 0);
   s.update(si, 1100, 2); n = s.drain(e, 24);
-  CHECK(n == 1 && e[0].type == Type::Overcurrent && e[0].severity == Sev::Warning && !strcmp(e[0].socket, "A1B2C3D4E5F6") && !strcmp(e[0].code, "socket_warn_16a"));
-  si.sockets[0].current = 20.2f; s.update(si, 1200, 3); n = s.drain(e, 24);
+  CHECK(n == 1 && e[0].type == Type::Overcurrent && e[0].severity == Sev::Warning && !strcmp(e[0].socket, "A1B2C3D4E5F6") && !strcmp(e[0].code, "socket_warn_8a"));
+  si.sockets[0].current = 10.2f; s.update(si, 1200, 3); n = s.drain(e, 24);
   CHECK(n == 1 && e[0].active && e[0].severity == Sev::Critical);
   si.sockets[0].current = 0; si.sockets[0].alertOvercurrent = true; s.update(si, 1300, 4); n = s.drain(e, 24);
-  CHECK(n == 1 && !strcmp(e[0].code, "socket_tripped_20a"));
+  CHECK(n == 1 && !strcmp(e[0].code, "socket_tripped_10a"));
   si.sockets[0].alertOvercurrent = false; s.update(si, 2000, 5); s.update(si, 7100, 6); n = s.drain(e, 24);
   CHECK(n == 1 && !e[0].active);
   strcpy(si.sockets[0].cmd, "timeout"); s.update(si, 8000, 7); n = s.drain(e, 24);
@@ -737,8 +751,9 @@ static void test_socket_rules() {
   CHECK(parseMode("day_night", md) && md == Mode::DayNight && parseMode("ai", md) && md == Mode::Ai && !parseMode("auto", md));
   CHECK(parsePrio("essential", pr) && pr == Prio::Essential && !parsePrio("x", pr));
   uint8_t da; bool cl;
-  CHECK(limitDa(13.0f, da, &cl) && da == 130 && !cl);
-  CHECK(limitDa(25.0f, da, &cl) && da == 200 && cl);
+  CHECK(limitDa(8.0f, da, &cl) && da == 80 && !cl);
+  CHECK(limitDa(13.0f, da, &cl) && da == 100 && cl);
+  CHECK(limitDa(25.0f, da, &cl) && da == 100 && cl);
   CHECK(limitDa(0.5f, da, &cl) && da == 10 && cl);
   CHECK(!limitDa(0.0f, da, &cl) && !limitDa(-3.0f, da, &cl));
   CHECK(validShed(40, 50) && !validShed(50, 50) && !validShed(-1, 10) && !validShed(10, 101));
@@ -752,7 +767,7 @@ static void test_socket_rules() {
   CHECK(inWindow(w, 610, 2) && !inWindow(w, 610, 3));
 
   Config c; State st; In in; in.socValid = true; in.soc = 80; in.clockSynced = true; in.minutes = 600; in.wday = 2; in.nowMs = 1000;
-  CHECK(sizeof(Config) <= 96 && c.limitDa == 200 && c.prio == Prio::Heavy);
+  CHECK(sizeof(Config) <= 96 && c.limitDa == 100 && c.prio == Prio::Heavy);
   Decision d = decide(c, st, in); CHECK(d.want == -1);  // manual, no schedules
   c.nSched = 1; c.sched[0] = w; c.sched[0].action = 1;
   d = decide(c, st, in); CHECK(d.want == 1 && d.reason == Reason::Schedule);
@@ -799,11 +814,11 @@ static void test_socket_rules() {
   // LoRa SET_LIMIT + LIM
   using namespace pc::lora;
   char buf[64]; SocketPacket k;
-  CHECK(buildSetLimitCommand("A1B2C3D4E5F6", 130, "g1-9", buf, sizeof buf) && !strcmp(buf, "A1B2C3D4E5F6,SET_LIMIT,130,g1-9"));
-  CHECK(buildSetLimitCommand("A1B2C3D4E5F6", 250, "g1-9", buf, sizeof buf) && !strcmp(buf, "A1B2C3D4E5F6,SET_LIMIT,200,g1-9"));
-  const char *p1 = "A1B2C3D4E5F6,SOCKET CURRENT:1.0,SOCKET RELAY:1,ACK:g1-9,LIM:130";
-  CHECK(parseSocketPacket(p1, strlen(p1), k) && k.hasLimit && k.limitDa == 130);
-  const char *p2 = "A1B2C3D4E5F6,SOCKET CURRENT:1.0,SOCKET RELAY:1,LIM:999";
+  CHECK(buildSetLimitCommand("A1B2C3D4E5F6", 80, "g1-9", buf, sizeof buf) && !strcmp(buf, "A1B2C3D4E5F6,SET_LIMIT,80,g1-9"));
+  CHECK(buildSetLimitCommand("A1B2C3D4E5F6", 250, "g1-9", buf, sizeof buf) && !strcmp(buf, "A1B2C3D4E5F6,SET_LIMIT,100,g1-9"));
+  const char *p1 = "A1B2C3D4E5F6,SOCKET CURRENT:1.0,SOCKET RELAY:1,ACK:g1-9,LIM:80";
+  CHECK(parseSocketPacket(p1, strlen(p1), k) && k.hasLimit && k.limitDa == 80);
+  const char *p2 = "A1B2C3D4E5F6,SOCKET CURRENT:1.0,SOCKET RELAY:1,LIM:130";
   CHECK(parseSocketPacket(p2, strlen(p2), k) && !k.hasLimit);
 }
 
@@ -894,7 +909,7 @@ int main() {
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();
-  test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
+  test_local_auth(); test_device_ids(); test_ota_url(); test_ota_url_prod_opt_in(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock();

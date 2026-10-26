@@ -8,23 +8,35 @@ and drops `SET dev_secret`.
 Build from this directory with PlatformIO (`espressif32@7.0.1`):
 
 ```bash
-pio run                  # esp32dev — production, wss://api.acecore.tech
-pio run -e esp32dev_dev  # bench, wss://api-dev.acecore.tech (TLS, not cleartext)
-make -C test/host        # host tests for lib/pc_core
+pio run                   # default env esp32dev — live cloud api-dev (what Upload hits)
+pio run -e esp32dev_prod  # production api.acecore.tech, only when you mean it
+pio run -e esp32dev_dev   # same live cloud, bare board (battery ADC off)
+make -C test/host         # host tests for lib/pc_core
 ```
 
-`esp32dev` and `esp32dev_dev` differ only in host and the dev-board flags in `platformio.ini`.
-Production is `api.acecore.tech`. The dev API is `api-dev.acecore.tech`. Both use TLS on port 443.
-Neither env is the old cleartext bench IP.
+Caleb 2026-10-26: **api-dev.acecore.tech is the live Upload cloud.** `pio run` and the
+PlatformIO Upload button use `default_envs = esp32dev`: TLS
+`wss://api-dev.acecore.tech/ws/device` and OTA base `https://api-dev.acecore.tech`.
+Production `api.acecore.tech` is env `esp32dev_prod` only. Every env keeps the OTA
+hardware model string `esp32dev` (`POWERCELL_HARDWARE_MODEL`) so existing units,
+including ACE9678, still match the backend model. Firmware version on every env is **2.5.0**.
 
-Partition file `min_spiffs.csv` (Arduino-ESP32 2.0.17) gives each OTA slot 0x1E0000 bytes.
-1.0.1 used `default.csv` (0x140000). NVS and otadata offsets are unchanged. A unit needs one
-USB reflash of the merged image before it can take a 2.5.0 OTA. Do not send an image larger
-than 0x140000 to a unit still on `default.csv`.
+## Flash rules
+
+After factory identity is in NVS (serial, device secret, label hotspot password):
+
+- Never erase flash. Do not run `pio run -t erase`, esptool `erase_flash`, or an IDE erase-before-upload option.
+- Never flash a merged binary (bootloader + partition table + app). Use app-only upload: `pio run -t upload`. A merged image can wipe NVS and the identity with it.
+
+A merged image is only for a blank chip that does not yet have an identity, and only if that chip must move off the 1.0.1 `default.csv` app slot (`0x140000`) onto `min_spiffs.csv` (`0x1E0000`). Do that before `SERIAL` / `SECRET`. Do not send an image larger than `0x140000` to a unit still on `default.csv`. NVS (`0x9000` / `0x5000`) and otadata offsets match in both tables; erase and merged flash are still forbidden once identity exists.
 
 No secrets are compiled in. `include/secrets.example.h` is the template. `include/secrets.h`
 is gitignored; the 1.0.1 copy that held a real API key is not on this branch. Provision with
 the USB console or `tools/provision.py`. Rotate that old API key if a 1.0.1 unit used it.
+
+There is no zip packager in this repo. A source zip must omit `include/secrets.h`, `.pio/`,
+`*.env`, `*provision*.env`, and `.powercell-dev-*` (all gitignored). Do not add binaries
+that were built with a compiled-in key.
 
 `lib/PowercellOTA` and `include/websocket_ca.h` stay so `smart-socket-firmware/` still builds.
 The collector env sets `lib_ignore = PowercellOTA` (OTA for 2.5.0 is `src/ota.cpp`).
@@ -38,9 +50,9 @@ What the Powercore app needs from this firmware:
 - As-bought factory reset (`POST /v2/factory_reset` or console `FACTORY_RESET` twice) wipes owner, passcode, phones, Wi-Fi, and sockets, and keeps serial, device secret, label hotspot password, `api_key`, and `ota_url`.
 - `hotspot_only` (`POST /v2/network_mode` `{"mode":"hotspot_only"}`) leaves the SoftAP up, does not join a router, and does not open the cloud socket.
 
-The smart-socket image in this repo is still Dubem's. See [Smart socket](#smart-socket) before expecting LoRa sockets to pair.
+The AcePlug socket in `smart-socket-firmware/` uses the same 433 MHz profile as this collector. See [Smart socket](#smart-socket). KyleCI PR #1 is the review branch. Do not merge it into QGatePass/Acecore until both the collector `esp32dev` build and the socket `esp32dev` build are green.
 
-The notes below are the v17 firmware write-up. The host table in [Dev bench build](#dev-bench-build-esp32dev_dev) replaces an older cleartext description.
+The notes below are the v17 firmware write-up. The host table in [Cloud hosts](#cloud-hosts) is the current contract: Upload is api-dev.
 
 ---
 
@@ -50,31 +62,36 @@ A clean rewrite of the ESP32 "collector" firmware for the Powercell (an inverter
 - **Aug–Sep 2026 (Drive) firmware:** STM32 UART text link at 9600 baud and a JK BMS.
 - **Oct 2026 firmware, 1.0.1 to 1.0.4:** a PZEM-004T meter, a battery voltage divider, ESP-NOW smart sockets and HTTPS OTA. The newest source is `acecore-collector-now 2.zip` (1.0.4, 14 Oct).
 
-The collector speaks the backend WebSocket and OTA contract documented below. It does not speak the LoRa profile of the smart-socket firmware checked in on this branch (see [Smart socket](#smart-socket)).
+The collector speaks the backend WebSocket and OTA contract documented below, and the same LoRa profile as `smart-socket-firmware/` (see [Smart socket](#smart-socket)).
 
 ## Build, test, flash
 ```
-pio run                      # env esp32dev (production api.acecore.tech; model name esp32dev, same as 1.0.x)
-pio run -e esp32dev_dev      # bench api-dev.acecore.tech over TLS
-pio run -e esp32dev_framed   # STM32 binary protocol at 115200 (once the STM32 side ships it)
-pio run -e esp32dev_nolora   # bench build without the LoRa radio (frees IO26 for the STM32 NRST bodge)
-make -C test/host            # host unit tests: CRC, frame codec, legacy parser, ring queue, JK-BMS frames, identity
+pio run                      # env esp32dev (live api-dev.acecore.tech; OTA model esp32dev; version 2.5.0)
+pio run -e esp32dev_prod     # production api.acecore.tech — not the Upload default
+pio run -e esp32dev_framed   # STM32 binary protocol at 115200, still api-dev
+pio run -e esp32dev_nolora   # no LoRa radio (frees IO26), still api-dev
+pio run -e esp32dev_dev      # api-dev, bare board, battery ADC off
+make -C test/host            # host unit tests
 pio run -t upload && pio device monitor
 ```
 Toolchain: espressif32@7.0.1, Arduino-ESP32 2.0.17 (IDF 4.4), the same as 1.0.x.
+`pio run -t upload` is app-only. After identity exists, do not erase and do not flash a merged bin (see Flash rules at the top).
 
-## Dev bench build (esp32dev_dev)
+## Cloud hosts
 
-`platformio.ini` is the host contract. The two app/backend envs are both TLS. They are not interchangeable.
+`platformio.ini` is the host contract. Upload with no env selected is `esp32dev`.
 
-| Env | WebSocket | OTA base | Notes |
-|---|---|---|---|
-| `esp32dev` (default, production) | `wss://api.acecore.tech/ws/device` port 443 | `https://api.acecore.tech` | `POWERCELL_DEV_BUILD` is 0 |
-| `esp32dev_dev` (bench) | `wss://api-dev.acecore.tech/ws/device` port 443 | `https://api-dev.acecore.tech` | `POWERCELL_DEV_BUILD=1`, `FEATURE_BAT_SENSE_ADC=0` |
+| Env | Selected by Upload? | WebSocket | OTA base | Notes |
+|---|---|---|---|---|
+| `esp32dev` | yes (`default_envs`) | `wss://api-dev.acecore.tech/ws/device` port 443 | `https://api-dev.acecore.tech` | Live cloud. Model `esp32dev`. Version 2.5.0. |
+| `esp32dev_framed` | no | same as `esp32dev` | same as `esp32dev` | `STM32_LINK_PROTOCOL=1` |
+| `esp32dev_nolora` | no | same as `esp32dev` | same as `esp32dev` | `FEATURE_LORA=0` |
+| `esp32dev_dev` | no | same as `esp32dev` | same as `esp32dev` | Bare board. `POWERCELL_DEV_BUILD=1`, `FEATURE_BAT_SENSE_ADC=0`. Still TLS. |
+| `esp32dev_prod` | no | `wss://api.acecore.tech/ws/device` port 443 | `https://api.acecore.tech` | Production. Pick it only on purpose. Same model string `esp32dev`. |
 
-- Do not flash `esp32dev` when the unit should talk to api-dev, and do not flash `esp32dev_dev` onto a production unit. An NVS `ota_url` overrides the compile-time OTA base and must be the same host the unit is enrolled on (`SET ota_url` / `tools/provision.py`).
-- `esp32dev_dev` does not enable cleartext. `POWERCELL_DEV_INSECURE` is the only way to get `ws://` or `http://` OTA, and `config.h` fails the build if `POWERCELL_WS_TLS=0` or `POWERCELL_DEV_INSECURE=1` appear outside a dev build. This tree does not point either env at a raw IP.
-- IO34 battery sense is off on `esp32dev_dev` (bare board). The backend's `set_local_token` is refused on cleartext, so the dev local token is provisioned over USB.
+- An NVS `ota_url` overrides the compile-time OTA base and must be the host the unit is enrolled on (`SET ota_url` / `tools/provision.py`).
+- No checked-in env is cleartext. `POWERCELL_DEV_INSECURE` is the only way to get `ws://` or `http://` OTA, and `config.h` fails the build if that flag is set without `POWERCELL_DEV_BUILD`. This tree does not point any env at a raw IP.
+- IO34 battery sense is off only on `esp32dev_dev` (bare board). The backend's `set_local_token` is refused on cleartext, so a local token is provisioned over USB.
 - No secrets are compiled in. `tools/provision.py --port COMx --file <KEY=VALUE file>` sends `SET api_key`, `wifi_ssid`, `wifi_pass`, `gw_name`, `device_secret`, `ota_url`, `local_tok` over the USB console and prints only OK/ERR and the token fingerprint. Provisioning files are gitignored. (v17: one factory identity secret; `DEV_SECRET` / `SET dev_secret` removed.)
 - WebSocket keepalive: client ping every 15 s, pong timeout 10 s, disconnect after 2 misses; server pings are answered in `ws.loop()`. The periodic OTA check runs alongside the socket; only an actual install pauses it (`lib/pc_core/src/ota_gate.h`). A main-loop pass over 500 ms logs `LOOP SLOW`, and `LOOP STATS` reports the worst pass each minute.
 - Bare-board behaviour: missing ADS1115/LoRa/SD/STM32/BMS are logged once; battery `source` is `none`; an ON command without a live STM32 is rejected at once with `stm32_timeout` and IO15 stays LOW (`lib/pc_core/src/power_policy.h`, host-tested).
@@ -194,7 +211,7 @@ When the BMS is silent for 10 s, every BMS field is `null` (never 0) and voltage
 - **Commands in:** `command` (PR #3 wire name) and `set_state` (legacy) are handled the same way: `{"type":"command","command_id","target_type":"gateway"|"socket","target_id":null|"<socket>","desired_state":"on"|"off"}`. A gateway command with `target_id` null targets this unit.
 - **Command ack out:** `{"type":"command_result","command_id","status":"confirmed"|"rejected","command_status":same,"error_message"?, ...}`. `status`/`command_status` is what the backend reads; `result`, `reason` stay for older servers. A repeated command id answers with the earlier outcome.
 - **Also in:** `ping`, `socket_lifecycle`, `offline_sync_ack`, `set_local_token` (below).
-- **OTA:** `POST {ota_url}/api/ota/check` with `Authorization: Bearer <API_KEY>`, `X-Device-ID`, optional `X-Device-Secret`, body `{"device_id":"AABBCCDDEEFF","firmware_version":"2.1.0",...}`. The response must have `update_available`; when true, `version`, `url`, `sha256` (top level or in `firmware`; they must agree). `sha256` is required (64 hex). The `url` is followed only if it is on the configured `ota_url` host and is one of `/api/ota/download`, `/api/firmware/download`, `/api/firmware.bin`; otherwise `{ota_url}/api/ota/download?device_id=<12 hex>` is used. The download must send `Content-Length`. The image is checked for SHA-256, the ESP32 image magic and the embedded identity `POWERCELL_FW|collector|esp32dev|<version>|END`, then boots in rollback-protected PENDING_VERIFY.
+- **OTA:** `POST {ota_url}/api/ota/check` with `Authorization: Bearer <API_KEY>`, `X-Device-ID`, optional `X-Device-Secret`, body `{"device_id":"AABBCCDDEEFF","firmware_version":"2.5.0",...}`. The response must have `update_available`; when true, `version`, `url`, `sha256` (top level or in `firmware`; they must agree). `sha256` is required (64 hex). The `url` is followed only if it is on the configured `ota_url` host and is one of `/api/ota/download`, `/api/firmware/download`, `/api/firmware.bin`; otherwise `{ota_url}/api/ota/download?device_id=<12 hex>` is used. The download must send `Content-Length`. The image is checked for SHA-256, the ESP32 image magic and the embedded identity `POWERCELL_FW|collector|esp32dev|<version>|END`, then boots in rollback-protected PENDING_VERIFY.
 
 ## Local API (port 80, PR #3 "Local device web server")
 Credential: HTTP Basic `powercell:<local_access_token>`. The token comes from the backend (see "Local token handoff"). The label `admin_tok` is a **setup credential only**: Basic `powercell:<label token>` works only from a client on the setup AP, and only for `GET /`, `POST /login`, `POST /provision`.
@@ -242,7 +259,7 @@ INFO                      # prints LABEL ap_pass=... admin_token=... for the lab
 LOCK                      # secrets can no longer be read or changed over USB (local_tok excepted)
 REBOOT
 ```
-`OTA_CONFIG {json}` from 1.0.x is still accepted (`token` is ignored). `FACTORY_RESET` (typed twice) wipes everything.
+`OTA_CONFIG {json}` from 1.0.x is still accepted (`token` is ignored). `FACTORY_RESET` (typed twice) on 2.5.0 is the as-bought reset: it keeps factory identity. It does not wipe the serial or device secret.
 
 ## Migration notes (1.0.x → 2.0 by OTA)
 - **Secrets:** on first boot, 2.0 copies the 1.0.x NVS values into `pc_secure`:
@@ -254,7 +271,7 @@ REBOOT
 - **Gateway name:** it changes from `ACE4447` / `ACE9678` to `ACE-XXXXXX` unless you `SET gw_name ACE9678` on that unit. The backend should accept MAC-based gateway targets, which 2.0 accepts.
 - **Network:** the static IP from 1.0.x is replaced by DHCP. The setup AP SSID changes to `Powercell-XXXXXX`.
 - **Not migrated:** the old `energy_wh`, and the 2.0.0 ESP energy counter (`pc_energy` NVS) is no longer used; the old offline queue (JSON in `offline_sync/events`).
-- **Version:** 2.0.0 is reported as `firmware_version`. Publish it under kind `collector`, model `esp32dev`.
+- **Version:** 2.5.0 is reported as `firmware_version`. Publish it under kind `collector`, model `esp32dev` (that model string is unchanged on `esp32dev_prod`).
 - **STM32 link:** the STM32 still sends 9600 text, so the default `legacy_text` works with today's STM32 firmware. Switch both sides to framed together.
 
 ## Telemetry fields (WS `telemetry`, additive to 1.0.x)
@@ -268,8 +285,8 @@ REBOOT
 ## Status
 | Area | Status |
 |---|---|
-| Builds (esp32dev, esp32dev_framed, esp32dev_nolora, esp32dev_dev) | Done. Flash use 92 % of the 1.25 MB app slot |
-| Host tests | Done (154 checks) |
+| Builds (esp32dev live api-dev, esp32dev_prod, esp32dev_framed, esp32dev_nolora, esp32dev_dev), firmware 2.5.0 | App slot is 0x1E0000 (`min_spiffs.csv`), not the old 1.25 MB slot |
+| Host tests | `make -C test/host` |
 | STM32 legacy parser, framed protocol and commands | Done. Bench test against real STM32 output is pending |
 | Backend WS, OTA with rollback, offline queue, local API, provisioning | Done. On-device testing is pending |
 | JK-PB BMS (RS485) | Done. Tested on synthetic frames; needs a bench capture from the fitted BMS |
@@ -309,32 +326,60 @@ The onboarding spec path above is not in this repo. v15 changed factory reset: a
 
 ## Smart socket
 
-`smart-socket-firmware/` is Dubem's socket firmware from main, unchanged apart from one header.
+Caleb 2026-10-26: collector and AcePlug sockets ship together on this KyleCI branch. `smart-socket-firmware/` is the v0.1 image (433 MHz, not the old 915 MHz SF7 / 50 A firmware). QGatePass/Acecore `main` stays untouched until this PR shows both the collector `esp32dev` build and the socket `esp32dev` build green. Do not merge it there from this branch.
 
-The v17 source zip also contains a newer socket `main.cpp` (433 MHz, SF9, preamble 12, command ids, 20 A trip, `SET_LIMIT`, `RESET_LOCKOUT`, `trip_lockout.h`). That file was not copied. It does not build in this tree: it includes `powercell_lora_profile.h` and `lora_diagnostics.h`, which are not in the zip or on main, and its radio and command grammar are not Dubem's.
+Both sides use `include/powercell_lora_profile.h`:
 
-| | Dubem socket (this branch) | v17 collector LoRa parser |
+| Setting | Value |
+|---|---|
+| Frequency | 433 MHz |
+| Spreading factor | 9 |
+| Bandwidth | 125 kHz |
+| Coding rate | 4/5 |
+| Preamble | 12 |
+| Sync word | `0xF1` |
+| CRC | on |
+| TX power | 20 dBm |
+| SPI clock | 2 MHz |
+
+Commands: `<id>,RELAY_ON,<cmdId>`, `<id>,RELAY_OFF,<cmdId>`, `<id>,RESET_LOCKOUT,<cmdId>`, `<id>,SET_LIMIT,<deciamps>,<cmdId>`. The fitted contact is **10 A**. Software protection is warn at 8 A (clear below 7 A) and trip at 10 A. User limits are 1.0–10.0 A (10–100 deciamps). This is not a 20 A SKU. Lockout is 3 trips in 5 minutes. Telemetry adds `ACK`, `LIM`, `WARN:CURRENT_HIGH`, and `ALERT:LOCKOUT`.
+
+**AcePlug v0.1 pins** are firmware-proven (Caleb + HW, 2026-10-26). CAD is still pending. They are the `#define`s in `smart-socket-firmware/src/main.cpp`:
+
+| Signal | GPIO | Note |
 |---|---|---|
-| Radio | 915 MHz, SF7, preamble 8, sync `0xF1`, TX 17 dBm, polling | 433 MHz, SF9, BW 125 kHz, CR 4/5, preamble 12, sync `0xF1` |
-| Command | `<id>,RELAY_ON` / `<id>,RELAY_OFF` | `<id>,RELAY_ON,<cmdId>`, `RELAY_OFF`, `RESET_LOCKOUT`, `SET_LIMIT,<deciamps>,<cmdId>` |
-| Telemetry | current, relay, firmware, `ALERT:OVERCURRENT` at 50 A | also `ACK`, `LIM`, `WARN:CURRENT_HIGH`, `ALERT:LOCKOUT` |
-| Trip | 50 A, no lockout | 20 A trip, 16 A warn, 3 trips in 5 min latch |
+| `RELAY_PIN` / SOCKET_RELAY | **15** | Firmware-proven. Not v0.2 IO27. |
+| `LORA_CS_PIN` | 5 | Firmware-proven |
+| `LORA_RESET_PIN` | 25 | Firmware-proven |
+| `LORA_DIO0_PIN` | 26 | Firmware-proven |
+| `LORA_SCK_PIN` / `LORA_MISO_PIN` / `LORA_MOSI_PIN` | 18 / 19 / 23 | Firmware-proven |
+| `LED_PIN` | 4 | Firmware-proven |
+| `CURRENT_PIN` | 35 | EmonLib ADC. Not BL0942. |
+| `RESET_BUTTON_PIN` | 0 | Module BOOT button, not a PCB net |
 
-`smart-socket-firmware/src/trip_lockout.h` is the header-only lockout helper the host tests include. Dubem's `main.cpp` does not include it, so the socket image is unchanged.
+The collector header is different (CS IO4, RESET IO26, DIO0 not wired). The socket does not include `include/pins.h`.
 
-Until a socket image is built for the v17 profile, the collector will bring the 433 MHz radio up and will not exchange relay commands with sockets flashed from this repo's `smart-socket-firmware/`.
+Do not apply the GPIO14 / 4 / 2 / 33 / 22 / 21 list in `LORA_SOCKET_PROTOCOL.md`. That note is not the collector and not AcePlug.
 
-Build the socket from its own directory (`pio run` in `smart-socket-firmware/`). It still uses `../lib/PowercellOTA` and `../include/websocket_ca.h`.
+**v0.2 is deferred** and is not compiled: RELAY 27, LoRa CS 32, RST 26, DIO0 34, BL0942 UART on IO16/IO17. Do not flash a v0.2 board with this image.
+
+IO15 is an ESP32 strapping pin. `setup()` drives it low before other subsystems so the coil stays off through boot.
+
+Build the socket from its own directory (`pio run` in `smart-socket-firmware/`). It uses `../lib/PowercellOTA` and `../include/websocket_ca.h`. Version string is 2.5.0, kind `socket`. There is no machine-specific `upload_port`.
+
+## Removed from this branch
+
+The 1.0.1 SPIFFS UI (`data/`), the 1.0.x binaries under `dist/`, and the PHP stubs
+(`turn-on-device.php`, `websocket-server.php`) are deleted here. They are not in `legacy/`.
+Firmware 2.5.0 does not serve that UI. Those files remain on `main` history.
 
 ## Kept from the 1.0.1 tree
 
-These files are still in the repo. They describe 1.0.1, not the 2.5.0 collector contract:
+These notes describe 1.0.1, not the 2.5.0 collector contract:
 
-- `ESP32_PRODUCTION_INTEGRATION.md`, `WEBSOCKET_SERVER_INTEGRATION.md`, `websocket-server.php`, `turn-on-device.php` — 1.0.1 WebSocket server notes.
-- `OTA_SETUP_GUIDE.md`, `OTA_UPDATES.md` — 1.0.1 USB/OTA steps. 2.5.0 OTA uses the API key as Bearer, checks the embedded `POWERCELL_FW|collector|esp32dev|<version>|END` identity, and needs the `min_spiffs.csv` layout.
-- `LORA_SOCKET_PROTOCOL.md` — a binary RadioLib packet. It matches neither Dubem's ASCII socket in `smart-socket-firmware/` nor the v17 ASCII profile above.
+- `ESP32_PRODUCTION_INTEGRATION.md`, `WEBSOCKET_SERVER_INTEGRATION.md` — 1.0.1 WebSocket notes. The live collector host is api-dev, not the host written in those files.
+- `OTA_SETUP_GUIDE.md`, `OTA_UPDATES.md` — 1.0.1 USB/OTA steps. 2.5.0 OTA uses the API key as Bearer, checks the embedded `POWERCELL_FW|collector|esp32dev|2.5.0|END` identity, and needs the `min_spiffs.csv` layout. After identity exists, do not erase and do not flash a merged bin.
+- `LORA_SOCKET_PROTOCOL.md` — an old binary RadioLib packet. The socket that ships here is the ASCII 433 MHz profile in [Smart socket](#smart-socket).
 - `OFFLINE_BATTERY_ALERTS.md`, `FLUTTER_WEBVIEW_OFFLINE_NOTIFICATIONS.md`, `ANALYSIS.md` — 1.0.1 product notes.
-- `data/` — 1.0.1 SPIFFS pages. Firmware 2.5.0 does not mount SPIFFS.
-- `dist/firmware/` — 1.0.0 / 1.0.1 binaries already on main. They are not 2.5.0 images.
 
 `include/pinDefines.h` from 1.0.1 was removed. The collector pin map is `include/pins.h`.

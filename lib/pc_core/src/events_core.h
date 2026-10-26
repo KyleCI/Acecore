@@ -28,7 +28,7 @@ inline bool faultActive(uint32_t bits) { return (bits & kFaultMask) != 0; }
 constexpr float kOverloadAmps = 19.0f, kOverloadClearAmps = 17.0f;  // ESP rule: any link without bit16
 constexpr float kTempWarnC = 70.0f, kTempWarnClearC = 65.0f;
 constexpr float kGridMinV = 160.0f, kGridRestoreV = 170.0f;
-constexpr float kSocketTripA = 20.0f, kSocketTripClearA = 18.0f, kSocketWarnA = 16.0f, kSocketWarnClearA = 15.0f;
+constexpr float kSocketTripA = 10.0f, kSocketTripClearA = 9.0f, kSocketWarnA = 8.0f, kSocketWarnClearA = 7.0f;
 
 struct Event {
   Type type = Type::InverterFault;
@@ -50,7 +50,7 @@ struct SocketIn {
   bool online = false;
   float current = 0;
   bool alertOvercurrent = false;  // socket tripped (LoRa ALERT:OVERCURRENT)
-  bool alertWarning = false;      // socket >= 16 A (LoRa WARN:CURRENT_HIGH)
+  bool alertWarning = false;      // socket >= 8 A (LoRa WARN:CURRENT_HIGH)
   bool lockout = false;            // socket latched off after 3 trips in 5 min (ALERT:LOCKOUT)
   float lockoutA = 0;              // last trip current (A)
   char cmd[12] = {};              // last command_status: pending|confirmed|rejected|timeout

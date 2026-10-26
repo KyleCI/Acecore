@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 // Repeated-trip lockout (Acecore 2.2, Oct 22 2026). Pure logic, host tested from
-// esp32_fw/test/host. Each relay trip (20 A hard trip, or a future user-limit trip)
+// esp32_fw/test/host. Each relay trip (10 A software trip, or a user-limit trip)
 // calls onTrip(). The 3rd trip within a rolling 5 min latches the lockout: no auto
 // reclose, RELAY_ON refused, persisted by the caller in NVS. reset() (LoRa
 // RESET_LOCKOUT or the socket button) clears the latch and the trip history.

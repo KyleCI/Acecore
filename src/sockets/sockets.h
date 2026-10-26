@@ -31,7 +31,7 @@ bool sendRelayCommand(String deviceId, bool turnOn);
 // Clears a socket's 3-trips lockout (LoRa RESET_LOCKOUT). Tracked like a relay command
 // (command_status, command_type "reset_lockout"); false if offline/busy or unsupported.
 bool sendResetLockout(String deviceId);
-// SET_LIMIT over LoRa, deciamps 10..200 (tracked like a relay command, command_type "set_limit").
+// SET_LIMIT over LoRa, deciamps 10..100 (tracked like a relay command, command_type "set_limit").
 bool sendSetLimit(String deviceId, uint8_t deciamps);
 uint32_t socketCommandSequence(String deviceId);
 bool checkRegistered(String deviceId);

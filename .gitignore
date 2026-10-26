@@ -1,4 +1,5 @@
 .pio/
+**/.pio/
 .vscode/
 test/host/host_tests
 include/secrets.h

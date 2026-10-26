@@ -55,7 +55,14 @@ production packet.
 
 ## Collector pins
 
-LoRa uses a separate HSPI bus because VSPI is occupied by the MPPT slave:
+Do **not** use this GPIO list. It is not firmware 2.5.0 and it is not AcePlug v0.1.
+
+The collector map is `include/pins.h` (LoRa CS IO4, RESET IO26, DIO0 unused).
+AcePlug v0.1, firmware-proven and CAD pending, is RELAY IO15, LoRa CS IO5,
+RST IO25, DIO0 IO26, SPI 18/19/23, LED IO4, current ADC IO35 (EmonLib).
+v0.2 (RELAY 27, CS 32, RST 26, DIO0 34, BL0942) is not in this tree.
+
+The old note below is historical only:
 
 - SCK: GPIO14
 - MISO: GPIO4
@@ -63,7 +70,3 @@ LoRa uses a separate HSPI bus because VSPI is occupied by the MPPT slave:
 - NSS/CS: GPIO33
 - RESET: GPIO22
 - DIO0: GPIO21
-
-These values are compile-time settings in `include/config.h` and must match the
-production PCB wiring. GPIO2 is a boot-strapping pin; ensure the LoRa module
-does not pull it high or low during reset, or remap MOSI to a board-safe pin.

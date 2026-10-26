@@ -67,7 +67,8 @@ void saveStatus(const char *st, const String &err = "") {
 // Backend PR #3 (FirmwareService): the hardware key is the shared API_KEY as
 // "Authorization: Bearer <API_KEY>"; device secret optional (X-Device-Secret).
 #if POWERCELL_OTA_ALLOW_HTTP
-// esp32dev_dev only: the dev server has no TLS. Never compiled into other envs.
+// Cleartext OTA. No checked-in env sets POWERCELL_DEV_INSECURE, so this is not
+// the api-dev or production image.
 using OtaClient = WiFiClient;
 void prepareClient(OtaClient &) {}
 #else
@@ -106,7 +107,7 @@ bool skewRetry(HTTPClient &http, int code, int attempt) {
   return true;
 }
 
-// POST {base}/api/ota/check  {"device_id":"AABBCCDDEEFF","firmware_version":"2.1.0",...}
+// POST {base}/api/ota/check  {"device_id":"AABBCCDDEEFF","firmware_version":"2.5.0",...}
 bool checkRequest(const String &base, const String &apiKey, String *response) {
   OtaClient client; prepareClient(client);
   HTTPClient http; http.setConnectTimeout(kConnectMs); http.setTimeout(kReadMs);

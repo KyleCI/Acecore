@@ -4,7 +4,7 @@
 // AcePlug socket config (contract: official-powercell-app PR #8, backend/docs/SOCKET_CONFIG.md,
 // socket_command_contract.json 1.0.10). Pure logic, host tested. Per-socket config is stored in
 // NVS as one blob (sizeof(Config), about 90 B). Local engine, highest priority first:
-//   1. safety (ESP backup monitor: current above the user limit / 20 A with the relay still on)
+//   1. safety (ESP backup monitor: current above the user limit / 10 A with the relay still on)
 //   2. SoC shedding (per-socket thresholds, priority essential|heavy) and the battery critical latch
 //   3. inverter overload (heavy sockets)
 //   4. cloud override (ai|weather) until it expires; only while the mode is ai or weather
@@ -18,8 +18,8 @@ enum class Prio : uint8_t { Heavy, Essential };
 enum class Reason : uint8_t { None, SafetyTrip, SocHeavy, SocEssential, InverterOverload, CloudOverride, Schedule, DayNight, ApplianceLockout, Manual };
 enum class Fallback : uint8_t { None, CloudOffline, OverrideExpired };
 constexpr uint8_t kMaxSched = 8, kMaxSockets = 10, kNameMax = 24;
-constexpr uint8_t kMinDa = 10, kMaxDa = 200;  // limit in deciamps: 1.0 .. 20.0 A
-constexpr uint8_t kTripAmps = 20;             // fixed hard trip, not a setting
+constexpr uint8_t kMinDa = 10, kMaxDa = 100;  // limit in deciamps: 1.0 .. 10.0 A (10 A contact)
+constexpr uint8_t kTripAmps = 10;             // fixed software trip, not a setting
 constexpr uint32_t kTtlS = 1800;              // override ttl default and cap
 constexpr uint32_t kCloudGraceMs = 60000;     // cloud down this long before the AI/Weather fallback
 
@@ -47,7 +47,7 @@ bool parsePrio(const char *s, Prio &p);
 const char *prioName(Prio p);
 const char *reasonName(Reason r);    // nullptr for None
 const char *fallbackName(Fallback f);  // nullptr for None
-// amps -> deciamps, clamped to 1..20 A. *clamped set when the input was outside. false: not a number > 0.
+// amps -> deciamps, clamped to 1.0..10.0 A. *clamped set when the input was outside. false: not a number > 0.
 bool limitDa(float amps, uint8_t &da, bool *clamped);
 bool validShed(int off, int on);  // 0 <= off < on <= 100
 // Override deadline in ms from now: expires_at (when the clock is synced) capped by ttl (<= 1800 s).

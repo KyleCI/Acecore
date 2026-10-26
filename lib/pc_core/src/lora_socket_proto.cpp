@@ -60,7 +60,7 @@ bool parseSocketPacket(const char *in, size_t n, SocketPacket &out) {
   }
   if (field(rest, "LIM:", v, sizeof v)) {
     char *e = nullptr; long l = strtol(v, &e, 10);
-    if (e != v && !*e && l >= 10 && l <= 200) { out.limitDa = (uint8_t)l; out.hasLimit = true; }
+    if (e != v && !*e && l >= 10 && l <= 100) { out.limitDa = (uint8_t)l; out.hasLimit = true; }
   }
   return out.hasCurrent && out.hasRelay;
 }
@@ -80,7 +80,7 @@ size_t buildResetLockoutCommand(const char *id12, const char *cmdId, char *buf, 
   return buildCommand(id12, "RESET_LOCKOUT", cmdId, buf, cap);
 }
 size_t buildSetLimitCommand(const char *id12, uint8_t da, const char *cmdId, char *buf, size_t cap) {
-  char verb[16]; snprintf(verb, sizeof verb, "SET_LIMIT,%u", (unsigned)(da < 10 ? 10 : da > 200 ? 200 : da));
+  char verb[24]; snprintf(verb, sizeof verb, "SET_LIMIT,%u", (unsigned)(da < 10 ? 10 : da > 100 ? 100 : da));
   return buildCommand(id12, verb, cmdId, buf, cap);
 }
 }  // namespace lora

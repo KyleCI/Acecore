@@ -2,7 +2,9 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
-// Persistent backend channel: wss://api.acecore.tech/ws/device?device_id=<MAC with colons>
+// Persistent backend channel. Default host is the live cloud
+// wss://api-dev.acecore.tech/ws/device (POWERCELL_WS_HOST). Production
+// api.acecore.tech is the esp32dev_prod env only. Query: device_id=<MAC with colons>
 // Handshake headers: API-KEY (unchanged) and X-Device-ID (12-hex MAC, added).
 // Messages out: telemetry (5 s), state_snapshot (30 s + on change), command_result,
 // pong, offline_sync. Messages in: ping, set_state, socket_lifecycle, offline_sync_ack.
