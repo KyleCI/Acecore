@@ -1,0 +1,9 @@
+.pio/
+.vscode/
+test/host/host_tests
+include/secrets.h
+*.bin
+__MACOSX/
+*.env
+*provision*.env
+.powercell-dev-*
