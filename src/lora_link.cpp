@@ -1,9 +1,10 @@
 // SX1278 on the collector LoRa header: 433 MHz, SF9, BW 125 kHz, CR 4/5,
 // preamble 12, sync 0xF1, CRC on, TX 20 dBm (include/powercell_lora_profile.h).
 // Collector pins: CS3 = IO4, RESET = IO26, shared SPI, DIO0 not used (polling).
-// AcePlug v0.1 (firmware-proven, CAD pending) uses the same modulation with
-// RELAY IO15, LoRa CS IO5, RST IO25, DIO0 IO26, and EmonLib on IO35.
-// v0.2 and the LORA_SOCKET_PROTOCOL.md GPIO map are not compiled here.
+// AcePlug v0.1 (CAD-verified, Smart Socket.kicad U3) uses the same modulation
+// with RELAY IO15, LoRa CS IO5, RST IO25, DIO0 IO26, and a ZMCT103 CT on IO35.
+// The schematic symbol RFM95W-915S2 is not this profile: the fitted module
+// must be 433 MHz. v0.2 is not compiled here.
 // The ASCII protocol is sockets/sockets_lora.cpp.
 #include "config.h"
 #if FEATURE_LORA

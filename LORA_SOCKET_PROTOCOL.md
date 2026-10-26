@@ -58,8 +58,9 @@ production packet.
 Do **not** use this GPIO list. It is not firmware 2.5.0 and it is not AcePlug v0.1.
 
 The collector map is `include/pins.h` (LoRa CS IO4, RESET IO26, DIO0 unused).
-AcePlug v0.1, firmware-proven and CAD pending, is RELAY IO15, LoRa CS IO5,
-RST IO25, DIO0 IO26, SPI 18/19/23, LED IO4, current ADC IO35 (EmonLib).
+AcePlug v0.1, CAD-verified on Smart Socket.kicad U3, is RELAY IO15, LoRa CS IO5,
+RST IO25, DIO0 IO26, SPI 18/19/23, LED IO4, ZMCT103 CT on ADC IO35 (EmonLib).
+The schematic symbol RFM95W-915S2 is not the air profile; fit a 433 MHz module.
 v0.2 (RELAY 27, CS 32, RST 26, DIO0 34, BL0942) is not in this tree.
 
 The old note below is historical only:

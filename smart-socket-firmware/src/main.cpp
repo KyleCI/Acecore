@@ -9,18 +9,20 @@
 #include "trip_lockout.h"
 #include "powercell_lora_profile.h"
 
-// AcePlug v0.1 pins (firmware-proven, Caleb + HW 2026-10-26). CAD is pending.
+// AcePlug v0.1 pins, CAD-verified from Smart Socket.kicad U3 (ESP32-WROOM-32).
 // Does not include collector pins.h or config.h.
 // Not v0.2 (RELAY 27, CS 32, RST 26, DIO0 34, BL0942 UART 16/17).
 // Not the GPIO14/4/2/33/22/21 map in LORA_SOCKET_PROTOCOL.md.
-// Current is EmonLib on ADC IO35. BL0942 is v0.2 only.
-// RF matches include/powercell_lora_profile.h (433 MHz, sync 0xF1, SF9).
+// Current is the ZMCT103 CT through EmonLib on ADC IO35. BL0942 is v0.2 only.
+// RF is include/powercell_lora_profile.h (433 MHz, sync 0xF1, SF9). The
+// schematic symbol RFM95W-915S2 is not the air profile: the fitted module
+// must be a 433 MHz part.
 
 namespace {
-constexpr int LED_PIN          = 4;   // v0.1, firmware-proven
+constexpr int LED_PIN          = 4;   // v0.1 CAD, Smart Socket.kicad U3
 constexpr int RELAY_PIN        = 15;  // v0.1 SOCKET_RELAY. Not v0.2 IO27.
-constexpr int CURRENT_PIN      = 35;  // v0.1 EmonLib ADC. Not BL0942.
-constexpr int LORA_CS_PIN      = 5;   // v0.1
+constexpr int CURRENT_PIN      = 35;  // v0.1 ZMCT103 CT, EmonLib ADC. Not BL0942.
+constexpr int LORA_CS_PIN      = 5;   // v0.1 NSS
 constexpr int LORA_RESET_PIN   = 25;  // v0.1
 constexpr int LORA_DIO0_PIN    = 26;  // v0.1
 static_assert(RELAY_PIN == 15 && RELAY_PIN != 27, "v0.1 relay is IO15");
@@ -41,6 +43,7 @@ constexpr uint8_t LORA_SYNC_WORD         = POWERCELL_LORA_SYNC_WORD;
 constexpr int     LORA_SCK_PIN           = 18;
 constexpr int     LORA_MISO_PIN          = 19;
 constexpr int     LORA_MOSI_PIN          = 23;
+static_assert(LORA_SCK_PIN == 18 && LORA_MISO_PIN == 19 && LORA_MOSI_PIN == 23, "v0.1 SPI");
 constexpr float   CURRENT_CALIBRATION    = 5.1F;
 // Fitted contact is 10 A. Software warn 8 A, software trip 10 A (clear warn 7 A).
 // Not a 20 A contact and not a 20 A SKU. Was OVERCURRENT_AMPS = 50 A, then 20/16.
