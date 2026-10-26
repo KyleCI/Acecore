@@ -1,0 +1,1 @@
+{"name":"pc_core","version":"1.0.0","description":"Hardware-independent Powercell logic (CRC, STM32 frame + legacy parsers, ring queue, energy, identity). Host-testable.","frameworks":"*","platforms":"*"}

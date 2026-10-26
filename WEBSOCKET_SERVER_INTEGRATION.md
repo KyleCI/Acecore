@@ -1,3 +1,6 @@
+> **Firmware 1.0.1 reference.** The collector on this branch is firmware **2.5.0**.
+> This file is kept from Dubem's tree. For the current collector (app `/v2/*`, `api.acecore.tech` vs `api-dev.acecore.tech`, factory identity), start at [README.md](README.md).
+
 # PowerCell WebSocket Server Integration Contract
 
 This document defines the server-side contract for communicating with the PowerCell ESP32 collector firmware.
