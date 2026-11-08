@@ -261,6 +261,30 @@ bool region_blank(const uint8_t *p, uint32_t n) {
 
 uint32_t crc32_ieee_bytes(const uint8_t *p, uint32_t n) { return crc32_ieee(p, n); }
 
+bool journal_header_valid(const uint8_t *header) {
+  if (!header) return false;
+  Header h;
+  if (!decode_header(header, &h)) return false;
+  return h.slot_count == kDefaultSlots && h.slot_bytes == kDefaultSlotBytes;
+}
+
+bool journal_slot_valid(const uint8_t *slot) {
+  if (!slot) return false;
+  if (region_blank(slot, kDefaultSlotBytes)) return true;
+  if (slot[0] != 1 && slot[0] != 2) return false;
+  uint32_t len = (uint32_t)slot[2] | ((uint32_t)slot[3] << 8);
+  if (len == 0 || 20u + len > kDefaultSlotBytes) return false;
+  return crc32_ieee(slot + 8, 12 + len) == get_u32(slot + 4);
+}
+
+bool journal_image_valid(const uint8_t *image, uint32_t n) {
+  if (!image || n != kStoreBytes || !journal_header_valid(image)) return false;
+  for (uint32_t i = 0; i < kDefaultSlots; ++i) {
+    if (!journal_slot_valid(image + kHeaderBytes + i * kDefaultSlotBytes)) return false;
+  }
+  return true;
+}
+
 ModelConfig default_model() {
   ModelConfig c;
   c.model_revision = kModelRevision;

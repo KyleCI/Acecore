@@ -24,9 +24,9 @@ The record is retired only when the text frame is exactly the durable ACK: `stat
 
 `{"status":"success"}`, an HTTP 200, a negative `ack: false`, `unavailable`, a model or identity conflict, a wrong stream, a non-integer `record_id`, or a malformed frame does not retire the slot. The diagnostic is a short token. The stored object is not dropped, relabeled, or resent under a new identity.
 
-The journal device id remains the 12-hex form already stored in the 16-byte header field. It is not rewritten into the colon-separated MAC used on the socket query. If the backend's authenticated id differs, the expected result is `device_mismatch` and the slot stays pending.
+The journal device id remains the 12-hex form already stored in the 16-byte header field. It is not rewritten into the colon-separated MAC, and it is not case-folded, when an ACK echoes a different id. `device_mismatch` and any other negative frame leave the stored object unchanged and wait out a bounded backoff. Reconnect does not clear that wait and does not drop the record.
 
-Host tests drive the session with in-memory frames. They do not open a socket and do not call `api.acecore.tech`. The vendored Python forwarder is executed locally against the firmware-emitted 184000 mWh body. This tree does not contain the backend database, so the commit-to-row step of `EnergyEstimateRepository::commitNew` was not run here.
+Host tests drive the session with in-memory frames and drive the journal commit steps with an in-memory directory. They do not open a socket, do not call `api.acecore.tech`, and do not power-cycle SPIFFS. A passing host fault test is not a hardware power-cut result. The SPIFFS adapter only compiles those same steps. This tree does not contain the backend database, so the commit-to-row step of `EnergyEstimateRepository::commitNew` was not run here. The stored id for ACE9678 is not known here and is not guessed.
 
 ## Live AC source
 

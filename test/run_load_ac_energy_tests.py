@@ -17,6 +17,7 @@ with tempfile.TemporaryDirectory(prefix="powercell-load-ac-") as directory:
         [
             compiler, "-std=c++11", "-Wall", "-Wextra", "-Werror",
             "-I", str(root / "include"),
+            str(root / "src/journal_files.cpp"),
             str(root / "src/load_ac_energy.cpp"),
             str(root / "src/load_ac_energy_upload.cpp"),
             str(root / "src/stm32_text_validity.cpp"),

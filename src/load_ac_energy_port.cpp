@@ -1,6 +1,7 @@
 #include "load_ac_energy_port.h"
 
 #include "i2c_bus_lock.h"
+#include "journal_files.h"
 #include "load_ac_energy.h"
 #include "load_ac_energy_upload.h"
 #include "original_v01_profile.h"
@@ -17,15 +18,57 @@ constexpr const char *kJournalPath = "/load_ac_energy.jrnl";
 constexpr const char *kJournalTmp = "/load_ac_energy.jrnl.tmp";
 constexpr const char *kJournalBak = "/load_ac_energy.jrnl.bak";
 
+class SpiffsDirectory : public loadac::JournalDirectory {
+ public:
+  bool exists(const char *path) const override { return path && SPIFFS.exists(path); }
+
+  uint32_t file_size(const char *path) const override {
+    if (!path || !SPIFFS.exists(path)) return 0;
+    File in = SPIFFS.open(path, "r");
+    if (!in) return 0;
+    uint32_t n = (uint32_t)in.size();
+    in.close();
+    return n;
+  }
+
+  bool remove_file(const char *path) override {
+    if (!path || !SPIFFS.exists(path)) return true;
+    return SPIFFS.remove(path);
+  }
+
+  bool rename_file(const char *from, const char *to) override {
+    if (!from || !to) return false;
+    return SPIFFS.rename(from, to);
+  }
+
+  bool write_all(const char *path, const uint8_t *src, uint32_t n) override {
+    if (!path || !src) return false;
+    File out = SPIFFS.open(path, "w");
+    if (!out) return false;
+    size_t wrote = out.write(src, n);
+    out.flush();
+    out.close();
+    return wrote == n;
+  }
+
+  bool read_at(const char *path, uint32_t offset, uint8_t *dst, uint32_t n) const override {
+    if (!path || !dst) return false;
+    File in = SPIFFS.open(path, "r");
+    if (!in || !in.seek(offset, SeekSet)) {
+      if (in) in.close();
+      return false;
+    }
+    bool ok = in.read(dst, n) == (int)n;
+    in.close();
+    return ok;
+  }
+};
+
 class SpiffsStore : public loadac::ByteStore {
  public:
   SpiffsStore() { memset(live_, 0, sizeof(live_)); }
 
-  bool load_existing() {
-    if (load_file(kJournalPath)) return true;
-    if (load_file(kJournalBak)) return true;
-    return !SPIFFS.exists(kJournalPath) && !SPIFFS.exists(kJournalBak);
-  }
+  bool load_existing() { return loadac::journal_load(files_, kPaths, live_, sizeof(live_)); }
 
   bool read(uint32_t offset, uint8_t *dst, uint32_t n) override {
     if (!dst || offset + n > sizeof(live_)) return false;
@@ -41,74 +84,21 @@ class SpiffsStore : public loadac::ByteStore {
 
   uint32_t size() const override { return sizeof(live_); }
 
+  // Host fault tests call journal_commit on an in-memory directory. This
+  // adapter only compiles the same steps onto SPIFFS; it is not a power-cut test.
   bool persist() override {
-    if (!write_verified(kJournalTmp)) {
-      reload();
-      return false;
-    }
-    if (SPIFFS.exists(kJournalPath)) {
-      SPIFFS.remove(kJournalBak);
-      if (!SPIFFS.rename(kJournalPath, kJournalBak)) {
-        reload();
-        return false;
-      }
-    }
-    if (!SPIFFS.rename(kJournalTmp, kJournalPath) || !matches_file(kJournalPath)) {
-      SPIFFS.remove(kJournalPath);
-      if (SPIFFS.exists(kJournalBak)) SPIFFS.rename(kJournalBak, kJournalPath);
-      reload();
-      return false;
-    }
-    return true;
+    if (loadac::journal_commit(files_, kPaths, live_, sizeof(live_))) return true;
+    loadac::journal_load(files_, kPaths, live_, sizeof(live_));
+    return false;
   }
 
  private:
-  bool write_verified(const char *path) {
-    File out = SPIFFS.open(path, "w");
-    if (!out) return false;
-    size_t n = out.write(live_, sizeof(live_));
-    out.flush();
-    out.close();
-    return n == sizeof(live_) && matches_file(path);
-  }
-
-  bool matches_file(const char *path) {
-    File in = SPIFFS.open(path, "r");
-    if (!in) return false;
-    uint8_t chunk[128];
-    uint32_t off = 0;
-    bool ok = true;
-    while (off < sizeof(live_)) {
-      uint32_t want = sizeof(live_) - off;
-      if (want > sizeof(chunk)) want = sizeof(chunk);
-      if (in.read(chunk, want) != (int)want || memcmp(chunk, live_ + off, want) != 0) {
-        ok = false;
-        break;
-      }
-      off += want;
-    }
-    in.close();
-    return ok;
-  }
-
-  bool load_file(const char *path) {
-    if (!SPIFFS.exists(path)) return false;
-    File in = SPIFFS.open(path, "r");
-    if (!in) return false;
-    size_t n = in.read(live_, sizeof(live_));
-    in.close();
-    return n == sizeof(live_);
-  }
-
-  void reload() {
-    memset(live_, 0, sizeof(live_));
-    if (load_file(kJournalPath)) return;
-    memset(live_, 0, sizeof(live_));
-    load_file(kJournalBak);
-  }
-
+  SpiffsDirectory files_;
   uint8_t live_[loadac::kStoreBytes];
+  static const loadac::JournalPaths kPaths;
 };
+
+const loadac::JournalPaths SpiffsStore::kPaths = {kJournalPath, kJournalBak, kJournalTmp};
 
 SpiffsStore store;
 loadac::Meter meter;

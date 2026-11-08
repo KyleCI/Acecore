@@ -1,3 +1,4 @@
+#include "journal_files.h"
 #include "load_ac_energy.h"
 #include "load_ac_energy_upload.h"
 #include "original_v01_profile.h"
@@ -1096,6 +1097,329 @@ static void test_socket_ack_persist_and_queue() {
   CHECK(memcmp(slot + 20, versioned, strlen(versioned)) == 0);
 }
 
+static const JournalPaths kJournalPaths = {"main", "bak", "tmp"};
+
+struct MemDir : JournalDirectory {
+  struct Node {
+    bool present;
+    uint32_t len;
+    uint8_t data[kStoreBytes];
+  };
+  Node main_file, bak_file, tmp_file;
+  int short_writes;
+  uint32_t short_len;
+  bool short_returns_ok;
+  bool flip_written_byte;
+  bool fail_main_rename;
+  bool fail_tmp_rename;
+
+  MemDir()
+      : short_writes(0), short_len(0), short_returns_ok(false), flip_written_byte(false), fail_main_rename(false),
+        fail_tmp_rename(false) {
+    clear_node(&main_file);
+    clear_node(&bak_file);
+    clear_node(&tmp_file);
+  }
+
+  static void clear_node(Node *node) {
+    node->present = false;
+    node->len = 0;
+    memset(node->data, 0, sizeof(node->data));
+  }
+
+  Node *node(const char *path) {
+    if (path && strcmp(path, "main") == 0) return &main_file;
+    if (path && strcmp(path, "bak") == 0) return &bak_file;
+    if (path && strcmp(path, "tmp") == 0) return &tmp_file;
+    return 0;
+  }
+  const Node *node(const char *path) const { return const_cast<MemDir *>(this)->node(path); }
+
+  bool exists(const char *path) const override {
+    const Node *n = node(path);
+    return n && n->present;
+  }
+  uint32_t file_size(const char *path) const override {
+    const Node *n = node(path);
+    return n && n->present ? n->len : 0;
+  }
+  bool remove_file(const char *path) override {
+    Node *n = node(path);
+    if (!n) return false;
+    clear_node(n);
+    return true;
+  }
+  bool rename_file(const char *from, const char *to) override {
+    if (fail_main_rename && from && to && strcmp(from, "main") == 0 && strcmp(to, "bak") == 0) return false;
+    if (fail_tmp_rename && from && to && strcmp(from, "tmp") == 0 && strcmp(to, "main") == 0) return false;
+    Node *src = node(from);
+    Node *dst = node(to);
+    if (!src || !dst || !src->present) return false;
+    *dst = *src;
+    clear_node(src);
+    return true;
+  }
+  bool write_all(const char *path, const uint8_t *src, uint32_t n) override {
+    Node *file = node(path);
+    if (!file || !src || n > kStoreBytes) return false;
+    uint32_t put = n;
+    bool ok = true;
+    if (short_writes > 0) {
+      short_writes--;
+      put = short_len < n ? short_len : n;
+      ok = short_returns_ok && put == n;
+    }
+    memset(file->data, 0, sizeof(file->data));
+    memcpy(file->data, src, put);
+    if (flip_written_byte && put > 0) file->data[0] ^= 0xFFu;
+    file->len = put;
+    file->present = true;
+    return ok && !flip_written_byte;
+  }
+  bool read_at(const char *path, uint32_t offset, uint8_t *dst, uint32_t n) const override {
+    const Node *f = node(path);
+    if (!f || !dst || !f->present || offset + n > f->len) return false;
+    memcpy(dst, f->data + offset, n);
+    return true;
+  }
+
+  void plant(const char *path, const uint8_t *image, uint32_t n) {
+    Node *f = node(path);
+    clear_node(f);
+    if (!f || !image || n > kStoreBytes) return;
+    memcpy(f->data, image, n);
+    f->len = n;
+    f->present = true;
+  }
+};
+
+static bool load_matches(MemDir &dir, const uint8_t *image) {
+  uint8_t got[kStoreBytes];
+  if (!journal_load(dir, kJournalPaths, got, kStoreBytes)) return false;
+  return memcmp(got, image, kStoreBytes) == 0;
+}
+
+static void test_journal_power_cut_keeps_pending_record() {
+  MemoryStore store;
+  Meter meter;
+  char body[kDefaultSlotBytes];
+  CHECK(emit_hour(meter, store, body, sizeof(body)));
+  uint8_t pending[kStoreBytes];
+  uint8_t retired[kStoreBytes];
+  CHECK(store.read(0, pending, kStoreBytes));
+  CHECK(journal_image_valid(pending, kStoreBytes));
+  CHECK(pending[kHeaderBytes] == 1);
+  char ack[1024];
+  CHECK(ack_for(ack, sizeof(ack), body, "false", "29", "0", "false", kStream, 0));
+  CHECK(meter.note_server_commit_replay(1, 1, 0, body));
+  CHECK(store.read(0, retired, kStoreBytes));
+  CHECK(journal_image_valid(retired, kStoreBytes));
+  CHECK(retired[kHeaderBytes] == 2);
+  uint32_t rlen = (uint32_t)pending[kHeaderBytes + 2] | ((uint32_t)pending[kHeaderBytes + 3] << 8);
+  CHECK(rlen == strlen(body));
+  CHECK(memcmp(pending + kHeaderBytes + 20, body, rlen) == 0);
+  CHECK(memcmp(retired + kHeaderBytes + 20, body, rlen) == 0);
+  CHECK(memcmp(pending, retired, kStoreBytes) != 0);
+
+  MemDir dir;
+  dir.plant("main", pending, kStoreBytes);
+  CHECK(journal_write_tmp(dir, kJournalPaths, retired, kStoreBytes));
+  CHECK(load_matches(dir, pending));
+  CHECK(dir.main_file.data[kHeaderBytes] == 1);
+
+  CHECK(journal_move_main_to_bak(dir, kJournalPaths));
+  CHECK(!dir.exists("main"));
+  CHECK(load_matches(dir, pending));
+
+  CHECK(journal_rename_tmp_to_main(dir, kJournalPaths));
+  dir.main_file.len = 64;
+  CHECK(load_matches(dir, pending));
+
+  dir.plant("main", retired, kStoreBytes);
+  dir.main_file.data[0] ^= 0xFFu;
+  CHECK(load_matches(dir, pending));
+
+  dir.plant("main", retired, kStoreBytes);
+  dir.main_file.data[kHeaderBytes + 30] ^= 0x1u;
+  CHECK(load_matches(dir, pending));
+  CHECK(dir.bak_file.present);
+  CHECK(memcmp(dir.bak_file.data, pending, kStoreBytes) == 0);
+
+  dir.plant("main", pending, kStoreBytes);
+  dir.remove_file("bak");
+  dir.remove_file("tmp");
+  dir.short_writes = 1;
+  dir.short_len = 80;
+  dir.short_returns_ok = false;
+  CHECK(!journal_write_tmp(dir, kJournalPaths, retired, kStoreBytes));
+  CHECK(load_matches(dir, pending));
+  dir.short_writes = 1;
+  dir.short_len = 80;
+  dir.short_returns_ok = true;
+  CHECK(!journal_write_tmp(dir, kJournalPaths, retired, kStoreBytes));
+  CHECK(load_matches(dir, pending));
+  dir.flip_written_byte = true;
+  CHECK(!journal_write_tmp(dir, kJournalPaths, retired, kStoreBytes));
+  dir.flip_written_byte = false;
+  CHECK(load_matches(dir, pending));
+
+  dir.fail_main_rename = true;
+  CHECK(!journal_move_main_to_bak(dir, kJournalPaths));
+  dir.fail_main_rename = false;
+  CHECK(dir.exists("main"));
+  CHECK(load_matches(dir, pending));
+
+  CHECK(journal_write_tmp(dir, kJournalPaths, retired, kStoreBytes));
+  CHECK(journal_move_main_to_bak(dir, kJournalPaths));
+  dir.fail_tmp_rename = true;
+  CHECK(!journal_commit(dir, kJournalPaths, retired, kStoreBytes));
+  dir.remove_file("tmp");
+  dir.plant("tmp", retired, kStoreBytes);
+  CHECK(!journal_rename_tmp_to_main(dir, kJournalPaths));
+  CHECK(journal_restore_main_from_bak(dir, kJournalPaths));
+  dir.fail_tmp_rename = false;
+  CHECK(load_matches(dir, pending));
+  CHECK(dir.main_file.data[kHeaderBytes] == 1);
+
+  dir.plant("main", pending, kStoreBytes);
+  dir.remove_file("bak");
+  dir.remove_file("tmp");
+  dir.fail_tmp_rename = true;
+  CHECK(!journal_commit(dir, kJournalPaths, retired, kStoreBytes));
+  dir.fail_tmp_rename = false;
+  CHECK(load_matches(dir, pending));
+  CHECK(memcmp(dir.main_file.data, pending, kStoreBytes) == 0);
+
+  dir.plant("main", pending, kStoreBytes);
+  dir.remove_file("bak");
+  dir.remove_file("tmp");
+  CHECK(journal_commit(dir, kJournalPaths, retired, kStoreBytes));
+  CHECK(load_matches(dir, retired));
+  CHECK(dir.main_file.data[kHeaderBytes] == 2);
+
+  uint8_t torn[kStoreBytes];
+  memset(torn, 0xA5, sizeof(torn));
+  dir.plant("main", torn, 100);
+  dir.plant("bak", torn, kStoreBytes);
+  uint8_t rejected[kStoreBytes];
+  CHECK(!journal_load(dir, kJournalPaths, rejected, kStoreBytes));
+
+  MemDir fresh;
+  CHECK(journal_write_tmp(fresh, kJournalPaths, retired, kStoreBytes));
+  uint8_t empty[kStoreBytes];
+  memset(empty, 0, sizeof(empty));
+  uint8_t loaded[kStoreBytes];
+  CHECK(journal_load(fresh, kJournalPaths, loaded, kStoreBytes));
+  CHECK(memcmp(loaded, empty, kStoreBytes) == 0);
+  CHECK(fresh.exists("tmp"));
+  CHECK(!fresh.exists("main"));
+
+  MemoryStore recovered;
+  CHECK(recovered.write(0, pending, kStoreBytes));
+  CHECK(recovered.persist());
+  Meter again;
+  CHECK(again.begin(recovered, test_cfg()));
+  char kept[kDefaultSlotBytes];
+  CHECK(again.record_json(0, kept, sizeof(kept)));
+  CHECK(strcmp(kept, body) == 0);
+  CHECK(again.http_success_kept(1, 1));
+  char id[32];
+  CHECK(json_str(kept, "device_id", id, sizeof(id)) && strcmp(id, "001122334455") == 0);
+  CHECK(again.status().pf_assumed_millis == 800);
+}
+
+static void test_negative_ack_backoff_across_reconnect() {
+  MemoryStore store;
+  Meter meter;
+  char body[kDefaultSlotBytes];
+  CHECK(emit_hour(meter, store, body, sizeof(body)));
+  char frozen[kDefaultSlotBytes];
+  memcpy(frozen, body, sizeof(frozen));
+  UploadSession up;
+  up.on_link(true, 0);
+  char frame[2048];
+  char first[2048];
+  CHECK(take_frame(up, meter, 0, frame, sizeof(frame)));
+  memcpy(first, frame, sizeof(first));
+  for (int i = 0; i < 30; ++i) CHECK(!up.arm(meter, 0, frame, sizeof(frame)));
+  up.on_link(false, 1);
+  up.on_link(true, 1);
+  CHECK(take_frame(up, meter, 1, frame, sizeof(frame)));
+  CHECK(strcmp(frame, first) == 0);
+  up.on_link(false, 2);
+  up.on_link(true, 2);
+  CHECK(take_frame(up, meter, 2, frame, sizeof(frame)));
+  CHECK(strcmp(frame, first) == 0);
+  CHECK(meter.http_success_kept(1, 1));
+  CHECK(meter.record_json(0, body, sizeof(body)) && strcmp(body, frozen) == 0);
+
+  char bad[1400];
+  char dev[40], epoch[24], boot[24], seq[24];
+  CHECK(json_str(frozen, "device_id", dev, sizeof(dev)));
+  CHECK(json_str(frozen, "meter_epoch", epoch, sizeof(epoch)));
+  CHECK(json_str(frozen, "boot_id", boot, sizeof(boot)));
+  CHECK(json_str(frozen, "seq", seq, sizeof(seq)));
+  snprintf(bad, sizeof(bad),
+           "{\"status\":\"error\",\"ack\":false,\"error\":\"device_mismatch\","
+           "\"message\":\"device_id does not match the authenticated device.\","
+           "\"contract\":\"estimate.load_ac_energy.v1\",\"stream\":\"estimate.load_ac_energy\","
+           "\"device_id\":\"AA:BB:CC:DD:EE:FF\",\"meter_epoch\":\"%s\",\"boot_id\":\"%s\",\"seq\":\"%s\","
+           "\"clock_correction_version\":0}",
+           epoch, boot, seq);
+  up.on_text(meter, bad, 100);
+  CHECK(strcmp(up.diagnostic(), "device_mismatch") == 0);
+  CHECK(!up.inflight());
+  for (int i = 0; i < 40; ++i) {
+    up.on_link(false, 100);
+    up.on_link(true, 100);
+    CHECK(!up.arm(meter, 100, frame, sizeof(frame)));
+    CHECK(!up.arm(meter, 100 + kUploadRetryMinMs - 1, frame, sizeof(frame)));
+  }
+  CHECK(meter.record_json(0, body, sizeof(body)) && strcmp(body, frozen) == 0);
+  CHECK(take_frame(up, meter, 100 + kUploadRetryMinMs, frame, sizeof(frame)));
+  CHECK(strcmp(frame, first) == 0);
+  CHECK(strstr(frame, "001122334455") != 0);
+  CHECK(strstr(frame, "AA:BB:CC:DD:EE:FF") == 0);
+  CHECK(strstr(frame, "aabbccddeeff") == 0);
+
+  CHECK(ack_for(bad, sizeof(bad), frozen, "false", "29", "0", "false", kStream, "aabbccddeeff"));
+  up.on_text(meter, bad, 100 + kUploadRetryMinMs);
+  CHECK(strcmp(up.diagnostic(), "identity_mismatch") == 0);
+  CHECK(meter.record_json(0, body, sizeof(body)) && strcmp(body, frozen) == 0);
+  CHECK(json_str(body, "device_id", dev, sizeof(dev)) && strcmp(dev, "001122334455") == 0);
+  uint32_t blocked = 100 + kUploadRetryMinMs;
+  for (int i = 0; i < 20; ++i) {
+    up.on_link(false, blocked + 1);
+    up.on_link(true, blocked + 1);
+    CHECK(!up.arm(meter, blocked + 1, frame, sizeof(frame)));
+  }
+
+  const char *errors[] = {"unavailable", "model_pf", "conflicting_duplicate", "energy_formula", "rejected"};
+  uint32_t now = 100000;
+  for (uint32_t i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+    relink(up, now);
+    CHECK(take_frame(up, meter, now, frame, sizeof(frame)));
+    CHECK(strcmp(frame, first) == 0);
+    snprintf(bad, sizeof(bad),
+             "{\"status\":\"error\",\"ack\":false,\"error\":\"%s\",\"message\":\"kept\","
+             "\"contract\":\"estimate.load_ac_energy.v1\",\"stream\":\"estimate.load_ac_energy\","
+             "\"device_id\":\"%s\",\"seq\":\"%s\"}",
+             errors[i], dev, seq);
+    up.on_text(meter, bad, now + 1);
+    CHECK(strcmp(up.diagnostic(), errors[i]) == 0);
+    CHECK(!up.inflight());
+    CHECK(!up.arm(meter, now + 1, frame, sizeof(frame)));
+    up.on_link(false, now + 2);
+    up.on_link(true, now + 2);
+    CHECK(!up.arm(meter, now + 2, frame, sizeof(frame)));
+    CHECK(meter.record_json(0, body, sizeof(body)) && strcmp(body, frozen) == 0);
+    now += 100000;
+  }
+  CHECK(meter.status().persisted_mwh == 184000);
+  CHECK(meter.status().pf_assumed_millis == 800);
+  CHECK(!meter.status().transport_enabled);
+}
+
 int main() {
   test_crc_and_calendar();
   test_ds1307_and_backoff();
@@ -1110,6 +1434,8 @@ int main() {
   test_socket_ack_184000();
   test_socket_ack_rejections_keep_bytes();
   test_socket_ack_persist_and_queue();
+  test_journal_power_cut_keeps_pending_record();
+  test_negative_ack_backoff_across_reconnect();
   printf("load_ac_energy tests: pass=%d fail=%d\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

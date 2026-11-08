@@ -517,9 +517,10 @@ bool same_identity(const Fields &f, const char *device, const char *epoch, const
          strcmp(f.seq, seq) == 0 && f.clock_version == clock && f.simulation == simulation;
 }
 
-bool negative_for_inflight(const Fields &f, const char *device, const char *epoch, const char *boot, const char *seq,
-                           uint32_t clock) {
-  if (f.device_set && strcmp(f.device_id, device) != 0) return false;
+bool negative_for_inflight(const Fields &f, const char *epoch, const char *boot, const char *seq, uint32_t clock) {
+  // device_id on a negative frame is not checked. The server may echo its
+  // authenticated id, which can differ from the stored journal id. That still
+  // must not retire or rewrite the record; it only schedules a bounded retry.
   if (f.epoch_set && strcmp(f.meter_epoch, epoch) != 0) return false;
   if (f.boot_set && strcmp(f.boot_id, boot) != 0) return false;
   if (f.seq_set && strcmp(f.seq, seq) != 0) return false;
@@ -562,12 +563,11 @@ void UploadSession::reset(uint32_t now_ms) {
   set_diag("reset");
 }
 
-void UploadSession::on_link(bool up, uint32_t now_ms) {
+void UploadSession::on_link(bool up, uint32_t) {
   link_ = up;
   if (!up) {
     if (phase_ == Phase::Inflight || phase_ == Phase::Armed) set_diag("disconnected");
     phase_ = Phase::Idle;
-    ready_at_ = now_ms;
   }
 }
 
@@ -674,7 +674,7 @@ void UploadSession::on_text(Meter &meter, const char *json, uint32_t now_ms) {
     return;
   }
   if (kind == FrameKind::Negative) {
-    if (!negative_for_inflight(fields, device_id_, meter_epoch_, boot_id_, seq_, clock_version_)) {
+    if (!negative_for_inflight(fields, meter_epoch_, boot_id_, seq_, clock_version_)) {
       set_diag("identity_mismatch");
       return;
     }

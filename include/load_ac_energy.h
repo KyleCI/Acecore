@@ -237,6 +237,11 @@ struct MeterStatus {
 uint32_t status_json(const MeterStatus &status, const char *source_path, bool include_missing_path,
                       char *dst, uint32_t cap);
 uint32_t crc32_ieee_bytes(const uint8_t *data, uint32_t n);
+bool journal_header_valid(const uint8_t *header);
+bool journal_slot_valid(const uint8_t *slot);
+// Full journal image: header CRC plus each occupied slot CRC. A short, torn,
+// or bit-flipped image is not a validated journal.
+bool journal_image_valid(const uint8_t *image, uint32_t n);
 
 class Meter {
  public:
