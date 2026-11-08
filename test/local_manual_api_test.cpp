@@ -33,6 +33,74 @@ static ClientHeaders json_headers() {
   return headers;
 }
 
+static void login_unit(ManualApi* api, const DeviceNames& device, char* bearer_lan, size_t cap) {
+  api->set_random(fill_random, nullptr);
+  uint8_t salt[16];
+  memset(salt, 9, sizeof salt);
+  const char* setup =
+      "{\"passcode\":\"135790\",\"phone_id\":\"11111111-2222-3333-4444-555555555555\","
+      "\"phone_name\":\"Powercore\"}";
+  CHECK(api->setup_passcode(setup, json_headers(), true, salt, 1000, 0).status == 200);
+  const char* login_json =
+      "{\"device_id\":\"aa:bb:cc:dd:ee:ff\",\"passcode\":\"135790\","
+      "\"phone_id\":\"11111111-2222-3333-4444-555555555555\",\"phone_name\":\"Powercore\"}";
+  HttpReply logged = api->login(login_json, json_headers(), device, 5000, 1700001000, 9);
+  char lan[80];
+  CHECK(field(logged.body, "lan_token", lan, sizeof lan) && lan[0]);
+  snprintf(bearer_lan, cap, "Bearer %s", lan);
+}
+
+static void other_factory_images(const DeviceNames& device, const UnitFacts& facts) {
+  char bearer[96];
+  ManualApi small(3500, "hw-v0.1.1-3.5kw");
+  login_unit(&small, device, bearer, sizeof bearer);
+  const char* small_get =
+      "{\"schema\":1,\"result\":\"readback\",\"reason\":\"none\",\"applied\":false,\"durable_commit\":false,"
+      "\"writable\":false,\"authority\":\"factory_image\",\"overload_configured\":true,"
+      "\"physical_shutdown_verified\":false,\"factory_variant\":\"hw-v0.1.1-3.5kw\","
+      "\"readback\":{\"rated_active_w\":3500,\"usable_active_w\":3150,\"factory_rated_active_w\":3500,"
+      "\"stored_rated_active_w\":null,\"rating_match\":true}}";
+  CHECK(strcmp(small.rating_get(bearer, 1000).body, small_get) == 0);
+  CHECK(strstr(small.status(bearer, device, facts, 1000).body, "\"usable_active_w\":3150"));
+  HttpReply at_bound = small.ac_post(
+      bearer, "{\"schema\":1,\"ceiling_w\":3150,\"mode\":\"warn_only\",\"base_revision\":0}", json_headers(), 1000);
+  CHECK(at_bound.status == 200 && strstr(at_bound.body, "\"ceiling_w\":3150"));
+  HttpReply over = small.ac_post(
+      bearer, "{\"schema\":1,\"ceiling_w\":3151,\"mode\":\"warn_only\",\"base_revision\":1}", json_headers(), 1000);
+  CHECK(over.status == 400 && strstr(over.body, "\"reason\":\"ceiling_above_usable\""));
+  CHECK(strstr(small.ac_get(bearer, 1000).body, "\"ceiling_w\":3150"));
+
+  ManualApi missing;
+  login_unit(&missing, device, bearer, sizeof bearer);
+  HttpReply missing_get = missing.rating_get(bearer, 1000);
+  CHECK(missing_get.status == 200);
+  CHECK(strstr(missing_get.body, "\"reason\":\"rating_unprovisioned\""));
+  CHECK(strstr(missing_get.body, "\"overload_configured\":false"));
+  CHECK(strstr(missing_get.body, "\"rated_active_w\":null"));
+  CHECK(strstr(missing_get.body, "\"usable_active_w\":null"));
+  CHECK(strstr(missing_get.body, "\"factory_variant\":\"unrated\""));
+  CHECK(strstr(missing_get.body, "4500") == nullptr);
+  CHECK(strstr(missing_get.body, "3150") == nullptr);
+  CHECK(missing.rating_post(bearer, "{\"schema\":1,\"rated_active_w\":5000,\"base_revision\":0}", json_headers(),
+                            1000)
+            .status == 403);
+  CHECK(!missing.rating().armed());
+  CHECK(missing.rating().usableW() == 0);
+  CHECK(missing.ac_post(bearer, "{\"schema\":1,\"ceiling_w\":500,\"mode\":\"warn_only\",\"base_revision\":0}",
+                        json_headers(), 1000)
+            .status == 400);
+  CHECK(strstr(missing.status(bearer, device, facts, 1000).body, "\"overload_configured\":false"));
+
+  ManualApi unknown(4000, "hw-v0.1.1-bad");
+  login_unit(&unknown, device, bearer, sizeof bearer);
+  HttpReply unknown_get = unknown.rating_get(bearer, 1000);
+  CHECK(strstr(unknown_get.body, "\"reason\":\"unknown_rating\""));
+  CHECK(strstr(unknown_get.body, "\"factory_rated_active_w\":4000"));
+  CHECK(strstr(unknown_get.body, "\"usable_active_w\":null"));
+  CHECK(strstr(unknown_get.body, "3600") == nullptr);
+  CHECK(!unknown.rating().armed());
+}
+
 int main() {
   DeviceNames device;
   device.requested = nullptr;
@@ -45,7 +113,7 @@ int main() {
   facts.model = "hw-v0.1.1";
   facts.firmware = "1.0.1";
 
-  ManualApi api;
+  ManualApi api(5000, "hw-v0.1.1-5kw");
   api.set_random(fill_random, nullptr);
   HttpReply info = api.setup_info(device, facts);
   CHECK(info.status == 200);
@@ -133,30 +201,45 @@ int main() {
   CHECK(api.battery_post(bearer_lan, fraction, json_headers(), 6000).status == 400);
   CHECK(strstr(api.battery_get(bearer_lan, 6000).body, "\"low_percent\":30"));
 
+  const char* rating_get =
+      "{\"schema\":1,\"result\":\"readback\",\"reason\":\"none\",\"applied\":false,\"durable_commit\":false,"
+      "\"writable\":false,\"authority\":\"factory_image\",\"overload_configured\":true,"
+      "\"physical_shutdown_verified\":false,\"factory_variant\":\"hw-v0.1.1-5kw\","
+      "\"readback\":{\"rated_active_w\":5000,\"usable_active_w\":4500,\"factory_rated_active_w\":5000,"
+      "\"stored_rated_active_w\":null,\"rating_match\":true}}";
+  CHECK(strcmp(api.rating_get(bearer_lan, 6800).body, rating_get) == 0);
+  CHECK(api.rating_get(bearer_session, 6800).status == 401);
+  CHECK(strstr(api.status(bearer_lan, device, facts, 6800).body, "\"factory_variant\":\"hw-v0.1.1-5kw\""));
+  CHECK(strstr(api.status(bearer_lan, device, facts, 6800).body, "\"rating_writable\":false"));
+  ManualImage before_write;
+  api.capture(&before_write);
+  HttpReply rejected = api.rating_post(
+      bearer_lan, "{\"schema\":1,\"rated_active_w\":3500,\"base_revision\":0}", json_headers(), 6900);
+  CHECK(rejected.status == 403);
+  CHECK(strstr(rejected.body, "\"reason\":\"factory_provisioned\""));
+  CHECK(strstr(rejected.body, "\"applied\":false"));
+  CHECK(strstr(rejected.body, "\"durable_commit\":false"));
+  CHECK(strstr(rejected.body, "\"usable_active_w\":4500"));
+  CHECK(api.rating_post(bearer_lan, "{\"schema\":1,\"rated_active_w\":5000,\"base_revision\":0}", json_headers(),
+                        6900)
+            .status == 403);
   CHECK(api.rating_post(bearer_session, "{\"schema\":1,\"rated_active_w\":5000,\"base_revision\":0}",
-                        json_headers(), 6800)
+                        json_headers(), 6900)
             .status == 401);
-  HttpReply unknown = api.rating_post(bearer_lan, "{\"schema\":1,\"rated_active_w\":4000,\"base_revision\":0}",
-                                      json_headers(), 6800);
-  CHECK(unknown.status == 400 && strstr(unknown.body, "\"reason\":\"unknown_rating\""));
-  CHECK(strstr(unknown.body, "\"applied\":false"));
-  HttpReply rated = api.rating_post(bearer_lan, "{\"schema\":1,\"rated_active_w\":5000,\"base_revision\":0}",
-                                    json_headers(), 6900);
-  CHECK(rated.status == 200 && strstr(rated.body, "\"applied\":true"));
-  CHECK(strstr(rated.body, "\"durable_commit\":true"));
-  CHECK(strstr(rated.body, "\"usable_active_w\":4500"));
-  CHECK(strstr(rated.body, "\"rated_active_w\":5000"));
-  HttpReply small = api.rating_post(bearer_lan, "{\"schema\":1,\"rated_active_w\":3500,\"base_revision\":1}",
-                                    json_headers(), 6950);
-  CHECK(small.status == 200 && strstr(small.body, "\"usable_active_w\":3150"));
-  CHECK(strstr(api.status(bearer_lan, device, facts, 6950).body, "\"usable_active_w\":3150"));
+  CHECK(api.rating_post("API-KEY secret", "{\"schema\":1,\"rated_active_w\":5000,\"base_revision\":0}",
+                        json_headers(), 6900)
+            .status == 401);
+  CHECK(strcmp(api.rating_get(bearer_lan, 6900).body, rating_get) == 0);
+  ManualImage after_write;
+  api.capture(&after_write);
+  CHECK(after_write.rating_store_present == before_write.rating_store_present);
+  CHECK(after_write.stored_rated_active_w == before_write.stored_rated_active_w);
+  CHECK(api.rating().usableW() == 4500);
   HttpReply too_high = api.ac_post(
-      bearer_lan, "{\"schema\":1,\"ceiling_w\":4000,\"mode\":\"warn_only\",\"base_revision\":0}", json_headers(),
+      bearer_lan, "{\"schema\":1,\"ceiling_w\":4501,\"mode\":\"warn_only\",\"base_revision\":0}", json_headers(),
       6960);
   CHECK(too_high.status == 400 && strstr(too_high.body, "\"reason\":\"ceiling_above_usable\""));
-  HttpReply back = api.rating_post(bearer_lan, "{\"schema\":1,\"rated_active_w\":5000,\"base_revision\":2}",
-                                   json_headers(), 6970);
-  CHECK(back.status == 200 && strstr(back.body, "\"usable_active_w\":4500"));
+  CHECK(strstr(api.ac_get(bearer_lan, 6960).body, "\"ceiling_w\":0"));
   const char* ceiling =
       "{\"schema\":1,\"ceiling_w\":500,\"mode\":\"warn_and_shutdown\",\"base_revision\":0}";
   HttpReply ac = api.ac_post(bearer_lan, ceiling, json_headers(), 7000);
@@ -179,7 +262,7 @@ int main() {
 
   ManualImage image;
   api.capture(&image);
-  ManualApi rebooted;
+  ManualApi rebooted(5000, "hw-v0.1.1-5kw");
   CHECK(rebooted.restore(image));
   CHECK(rebooted.battery_get(bearer_session, 8000).status == 401);
   HttpReply restored = rebooted.battery_get(bearer_lan, 8000);
@@ -189,6 +272,37 @@ int main() {
   CHECK(strstr(rebooted.rating_get(bearer_lan, 8000).body, "\"rated_active_w\":5000"));
   CHECK(!user_output_on_allowed(true, true));
   CHECK(user_output_on_allowed(true, false));
+  ManualApi stored(5000, "hw-v0.1.1-5kw");
+  image.rating_store_present = true;
+  image.stored_rated_active_w = 3500;
+  CHECK(stored.restore(image));
+  HttpReply mismatch = stored.rating_get(bearer_lan, 8100);
+  CHECK(strstr(mismatch.body, "\"reason\":\"rating_mismatch\""));
+  CHECK(strstr(mismatch.body, "\"overload_configured\":false"));
+  CHECK(strstr(mismatch.body, "\"usable_active_w\":null"));
+  CHECK(strstr(mismatch.body, "\"factory_rated_active_w\":5000"));
+  CHECK(strstr(mismatch.body, "\"stored_rated_active_w\":3500"));
+  CHECK(stored.rating_post(bearer_lan, "{\"schema\":1,\"rated_active_w\":5000}", json_headers(), 8100).status == 403);
+  CHECK(stored.rating().usableW() == 0);
+  ManualImage mismatched;
+  stored.capture(&mismatched);
+  CHECK(mismatched.rating_store_present);
+  CHECK(mismatched.stored_rated_active_w == 3500);
+  CHECK(stored.ac_post(bearer_lan, "{\"schema\":1,\"ceiling_w\":500,\"mode\":\"warn_only\",\"base_revision\":0}",
+                       json_headers(), 8100)
+            .status == 400);
+  image.stored_rated_active_w = 999;
+  CHECK(stored.restore(image));
+  CHECK(strstr(stored.rating_get(bearer_lan, 8200).body, "\"reason\":\"rating_invalid\""));
+  CHECK(stored.rating().usableW() == 0);
+  stored.capture(&mismatched);
+  CHECK(mismatched.stored_rated_active_w == 999);
+  image.rating_store_present = false;
+  CHECK(stored.restore(image));
+  CHECK(strcmp(stored.rating_get(bearer_lan, 8300).body, rating_get) == 0);
+  CHECK(stored.rating().armed());
+  CHECK(strcmp(api.rating_get(bearer_lan, 8300).body, rating_get) == 0);
+  other_factory_images(device, facts);
 
   HttpReply bad = api.login(
       "{\"device_id\":\"aa:bb:cc:dd:ee:ff\",\"passcode\":\"246801\","

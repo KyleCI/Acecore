@@ -31,6 +31,7 @@ const char* settings_reason_name(SettingsReason reason) {
     case SettingsReason::UnknownRating: return "unknown_rating";
     case SettingsReason::CeilingAboveUsable: return "ceiling_above_usable";
     case SettingsReason::UsableUnset: return "usable_unset";
+    case SettingsReason::FactoryProvisioned: return "factory_provisioned";
   }
   return "unknown";
 }

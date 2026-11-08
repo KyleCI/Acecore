@@ -113,23 +113,31 @@ does not survive reboot.
 
 ### System rating
 
-`GET` or `POST /v1/system-rating` with the saved `lan_token`. This is rated
-active watts, not kVA. The only accepted values are 5000 and 3500. Usable
-power is 90 percent and is not writable: 4500 W and 3150 W. Any other number,
-including a float, is `unknown_rating` or `not_integer` and is not stored.
-`usable_kw` on setup info stays null. There is no rating for an unknown system.
+The rating is read-only. The factory selects it by flashing one image.
+`GET /v1/system-rating` uses the saved `lan_token`. A login session is
+`session_not_sufficient`. `POST /v1/system-rating` does not change the rating.
+A saved LAN token receives HTTP 403 `reason:"factory_provisioned"`,
+`applied:false`, and `durable_commit:false`. The same rejection is returned
+when the body repeats the value already in the image. There is no web,
+socket, or serial command that writes it.
+
+This is rated active watts, not kVA. No power factor is applied. The only
+armed images are 5000 W usable 4500 W (`hw-v0.1.1-5kw`) and 3500 W usable
+3150 W (`hw-v0.1.1-3.5kw`). `usable_kw` and `rated_kva` on setup info stay
+null. An image without a rating, an image whose rating is not one of those
+two, or a leftover `system_cfg/rated` value that does not equal the image,
+leaves `overload_configured` false and `usable_active_w` null. The firmware
+does not fill in or overwrite that stored value.
 
 ```json
-{"schema":1,"rated_active_w":5000,"base_revision":0}
+{"schema":1,"result":"readback","reason":"none","applied":false,"durable_commit":false,"writable":false,"authority":"factory_image","overload_configured":true,"physical_shutdown_verified":false,"factory_variant":"hw-v0.1.1-5kw","readback":{"rated_active_w":5000,"usable_active_w":4500,"factory_rated_active_w":5000,"stored_rated_active_w":null,"rating_match":true}}
 ```
 
-```json
-{"schema":1,"result":"applied","reason":"none","applied":true,"durable_commit":true,"pending":false,"physical_shutdown_verified":false,"readback":{"rated_active_w":5000,"usable_active_w":4500,"applied_revision":1}}
-```
-
-`GET /v2/status` then includes `rated_active_w`, `usable_active_w`, and
-`overload_configured`. Before a rating they are null and false.
-`total_output_coverage_verified` stays false.
+The 3.5 kW image is the same object with `factory_variant` `hw-v0.1.1-3.5kw`,
+`rated_active_w` 3500, and `usable_active_w` 3150. `GET /v2/status` repeats
+`factory_variant`, `rated_active_w`, `usable_active_w`,
+`overload_configured`, and `rating_writable:false` for a session or a LAN
+token. `total_output_coverage_verified` stays false.
 
 The system overload compares fresh PZEM active watts with that usable value.
 It is not the old 19 A STM32 rule. A sample at the usable value does not trip.
@@ -147,9 +155,10 @@ software using the meter. It is not a separate hardware breaker.
 ```
 
 `mode` is `warn_only` or `warn_and_shutdown`. The ceiling must be an integer
-from 50 to the configured usable watts. A higher ceiling is
-`ceiling_above_usable` and does not change the system limit. `warn_only`
-does not shut down at the ceiling. The usable-power overload still does.
+from 50 through the armed usable watts. A higher ceiling is
+`ceiling_above_usable` and does not change the system limit. While the
+rating is not armed the ceiling save is `usable_unset`. `warn_only` does
+not shut down at the ceiling. The usable-power overload still does.
 A battery POST cannot set or clear either value.
 
 A battery-only body does not change the AC ceiling. `ceiling_w: 0` in a battery POST is ignored. `30/18` is one legal sample, not the only accepted pair. Defaults before any save are low 25 and warning 15. Inhibit 10 and restart 15 are read-only.

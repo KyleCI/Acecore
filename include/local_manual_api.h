@@ -54,13 +54,13 @@ struct ManualImage {
   int ceiling_w = 0;
   int ac_mode = 0;
   uint32_t ac_revision = 0;
-  int rated_active_w = 0;
-  uint32_t rating_revision = 0;
+  bool rating_store_present = false;
+  int stored_rated_active_w = 0;
 };
 
 class ManualApi {
  public:
-  ManualApi();
+  explicit ManualApi(int factory_rated_w = 0, const char* factory_variant = "unrated");
   void set_random(void (*fn)(uint8_t*, size_t, void*), void* ctx);
   void set_persist_fail(bool fail);
   void capture(ManualImage* out) const;

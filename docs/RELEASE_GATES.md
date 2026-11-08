@@ -6,11 +6,12 @@ listed separately from items that still need a person, a secret, or a bench.
 ## Ready in software, host-tested, not run on a unit
 
 - `POST /v2/login`, `GET /v2/setup/info`, `GET /v2/status`.
-- `POST /v1/system-rating` for rated active watts 5000 or 3500. Usable power
-  is computed, 4500 W or 3150 W, and is the overload bound. A lower Manual
-  ceiling cannot raise it. On v0.1.1 a sustained fresh reading above the bound
-  requests GPIO15 high. That does not turn the output back on, and it is not
-  a separate hardware breaker.
+- Factory images `esp32dev_hw_v011_5kw` and `esp32dev_hw_v011_35kw`. Usable
+  power is 4500 W or 3150 W and is the overload bound. `GET /v1/system-rating`
+  is read-only. A LAN `POST` is rejected and does not change the image or
+  NVS. A lower Manual ceiling cannot raise the bound. On v0.1.1 a sustained
+  fresh reading above the bound requests GPIO15 high. That does not turn the
+  output back on, and it is not a separate hardware breaker.
 - Local Manual Save for battery percentages and the AC ceiling, with
   `result: applied`, `applied: true`, `durable_commit: true`, and a later GET
   of the same revision and values. A login session is

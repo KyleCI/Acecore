@@ -34,7 +34,8 @@ enum class SettingsReason : uint8_t {
   PersistFailed,
   UnknownRating,
   CeilingAboveUsable,
-  UsableUnset
+  UsableUnset,
+  FactoryProvisioned
 };
 
 struct SettingsState {

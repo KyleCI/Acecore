@@ -29,15 +29,18 @@ it before deploying this firmware.
 ## Hardware v0.1.1
 
 The default `esp32dev` build is the original collector: STM32 text on UART1,
-LoRa, and the GPIO25 power light. Hardware v0.1.1 is a separate environment,
-`esp32dev_hw_v011`. It has no STM32 and no LoRa. UART1 is the PZEM port on
-GPIO25/GPIO26, GPIO15 is the active-low DSP enable, and GPIO33 is the SD card select.
-The SD card stores a copy of the ESP32 console. Details, the serial-tee limits,
-and the bench list are in [docs/HARDWARE_V0.1.1.md](docs/HARDWARE_V0.1.1.md).
+LoRa, and the GPIO25 power light. Hardware v0.1.1 has no STM32 and no LoRa.
+UART1 is the PZEM port on GPIO25/GPIO26, GPIO15 is the active-low DSP enable,
+and GPIO33 is the SD card select. The factory rating is the image:
+`esp32dev_hw_v011_5kw` or `esp32dev_hw_v011_35kw`. The unrated
+`esp32dev_hw_v011` image leaves overload off. Details are in
+[docs/HARDWARE_V0.1.1.md](docs/HARDWARE_V0.1.1.md) and
+[docs/FACTORY_RATING.md](docs/FACTORY_RATING.md).
 
 ```bash
 pio run -e esp32dev
-pio run -e esp32dev_hw_v011
+pio run -e esp32dev_hw_v011_5kw
+pio run -e esp32dev_hw_v011_35kw
 python3 test/run_hw_v011_tests.py
 ```
 

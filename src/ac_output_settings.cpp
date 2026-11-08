@@ -77,62 +77,53 @@ int SystemRating::usableFor(int rated_active_w) {
   return 0;
 }
 
-RatingDecision SystemRating::readback() const {
-  RatingDecision out;
-  out.readback = state_;
-  out.readback.physical_shutdown_verified = false;
-  return out;
+SystemRating::SystemRating(int factory_rated_w, const char* variant)
+    : factory_rated_w_(factory_rated_w), variant_(variant && variant[0] ? variant : "unrated") {
+  evaluate();
 }
 
-void SystemRating::load(int rated_active_w, uint32_t revision) {
-  state_.rated_active_w = rated_active_w;
-  state_.usable_active_w = usableFor(rated_active_w);
-  state_.applied_revision = revision;
-  state_.durable = true;
+void SystemRating::observeStore(bool present, int stored_rated_w) {
+  store_present_ = present;
+  stored_rated_w_ = stored_rated_w;
+  evaluate();
 }
 
-RatingDecision SystemRating::set(SettingsAuth auth, int schema, bool rated_is_int, int rated_active_w,
-                                 int existing_ceiling_w, uint32_t base_revision, bool persist_ok) {
-  RatingDecision out = readback();
-  if (auth != SettingsAuth::Ok) {
-    out.reason = auth == SettingsAuth::SessionOnly ? SettingsReason::SessionNotSufficient
-                                                   : SettingsReason::Unauthorized;
-    return out;
+const char* SystemRating::reason() const {
+  switch (state_.availability) {
+    case RatingAvailability::Armed:
+      return "none";
+    case RatingAvailability::Unprovisioned:
+      return "rating_unprovisioned";
+    case RatingAvailability::Unknown:
+      return "unknown_rating";
+    case RatingAvailability::Mismatch:
+      return "rating_mismatch";
+    case RatingAvailability::InvalidStore:
+      return "rating_invalid";
   }
-  if (schema != 1) {
-    out.reason = SettingsReason::UnsupportedSchema;
-    return out;
+  return "rating_unprovisioned";
+}
+
+void SystemRating::evaluate() {
+  state_.schema = 1;
+  state_.factory_rated_w = factory_rated_w_;
+  state_.variant = variant_;
+  state_.store_present = store_present_;
+  state_.stored_rated_w = store_present_ ? stored_rated_w_ : 0;
+  state_.physical_shutdown_verified = false;
+  const int derived = usableFor(factory_rated_w_);
+  if (factory_rated_w_ == 0) {
+    state_.availability = RatingAvailability::Unprovisioned;
+  } else if (derived == 0) {
+    state_.availability = RatingAvailability::Unknown;
+  } else if (store_present_ && stored_rated_w_ != factory_rated_w_) {
+    state_.availability = usableFor(stored_rated_w_) == 0 ? RatingAvailability::InvalidStore
+                                                          : RatingAvailability::Mismatch;
+  } else {
+    state_.availability = RatingAvailability::Armed;
   }
-  if (!rated_is_int) {
-    out.reason = SettingsReason::NotInteger;
-    return out;
-  }
-  const int usable = usableFor(rated_active_w);
-  if (usable == 0) {
-    out.reason = SettingsReason::UnknownRating;
-    return out;
-  }
-  if (existing_ceiling_w > usable) {
-    out.reason = SettingsReason::CeilingAboveUsable;
-    return out;
-  }
-  if (base_revision != state_.applied_revision) {
-    out.reason = SettingsReason::StaleRevision;
-    return out;
-  }
-  if (!persist_ok) {
-    out.reason = SettingsReason::PersistFailed;
-    return out;
-  }
-  state_.rated_active_w = rated_active_w;
-  state_.usable_active_w = usable;
-  state_.applied_revision += 1;
-  state_.durable = true;
-  out = readback();
-  out.applied = true;
-  out.durable_commit = true;
-  out.reason = SettingsReason::None;
-  return out;
+  state_.overload_configured = state_.availability == RatingAvailability::Armed;
+  state_.usable_active_w = state_.overload_configured ? derived : 0;
 }
 
 }  // namespace powercell

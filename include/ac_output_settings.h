@@ -41,23 +41,28 @@ class AcOutputSettings {
   AcState state_;
 };
 
+enum class RatingAvailability : uint8_t {
+  Armed = 0,
+  Unprovisioned,
+  Unknown,
+  Mismatch,
+  InvalidStore
+};
+
 struct RatingState {
   int schema = 1;
-  int rated_active_w = 0;
+  int factory_rated_w = 0;
   int usable_active_w = 0;
-  uint32_t applied_revision = 0;
-  bool durable = true;
+  bool store_present = false;
+  int stored_rated_w = 0;
+  RatingAvailability availability = RatingAvailability::Unprovisioned;
+  const char* variant = "unrated";
+  bool overload_configured = false;
   bool physical_shutdown_verified = false;
 };
 
-struct RatingDecision {
-  bool applied = false;
-  bool durable_commit = false;
-  bool pending = false;
-  SettingsReason reason = SettingsReason::None;
-  RatingState readback;
-};
-
+// The rated watts are fixed when the object is created from the factory image.
+// observeStore records a leftover NVS value and never writes it.
 class SystemRating {
  public:
   static constexpr int kRated5kW = 5000;
@@ -66,13 +71,19 @@ class SystemRating {
   static constexpr int kUsable35kW = 3150;
   static int usableFor(int rated_active_w);
 
-  RatingDecision readback() const;
-  void load(int rated_active_w, uint32_t revision);
-  RatingDecision set(SettingsAuth auth, int schema, bool rated_is_int, int rated_active_w,
-                     int existing_ceiling_w, uint32_t base_revision, bool persist_ok);
+  SystemRating(int factory_rated_w, const char* variant);
+  void observeStore(bool present, int stored_rated_w);
+  bool armed() const { return state_.overload_configured; }
+  int usableW() const { return state_.usable_active_w; }
+  const char* reason() const;
   const RatingState& state() const { return state_; }
 
  private:
+  void evaluate();
+  int factory_rated_w_ = 0;
+  const char* variant_ = "unrated";
+  bool store_present_ = false;
+  int stored_rated_w_ = 0;
   RatingState state_;
 };
 

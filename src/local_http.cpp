@@ -1,6 +1,7 @@
 #include "local_http.h"
 
 #include "ac_output_policy.h"
+#include "factory_rating.h"
 #include "local_manual_api.h"
 #include "offline_battery_notifications.h"
 #include "provisioning.h"
@@ -15,7 +16,7 @@
 #include <time.h>
 
 namespace {
-powercell::ManualApi api;
+powercell::ManualApi api(POWERCELL_FACTORY_RATED_ACTIVE_W, POWERCELL_FACTORY_VARIANT);
 bool begun = false;
 
 struct Body {
@@ -119,10 +120,15 @@ void applySaved() {
   batteryApplyThresholds(static_cast<float>(api.battery().state().low_percent),
                          static_cast<float>(api.battery().state().warning_percent));
   const int mode = static_cast<int>(api.ac().state().mode);
-  powercell::acOutputPolicy().setUsable(api.rating().state().usable_active_w);
-  powercell::acOutputPolicy().setCeiling(api.ac().state().ceiling_w,
-                                         mode == 1 ? powercell::AcMode::WarnAndShutdown
-                                                   : powercell::AcMode::WarnOnly);
+  if (api.rating().armed()) {
+    powercell::acOutputPolicy().setUsable(api.rating().usableW());
+    powercell::acOutputPolicy().setCeiling(api.ac().state().ceiling_w,
+                                           mode == 1 ? powercell::AcMode::WarnAndShutdown
+                                                     : powercell::AcMode::WarnOnly);
+  } else {
+    powercell::acOutputPolicy().setUsable(0);
+    powercell::acOutputPolicy().setCeiling(0, powercell::AcMode::WarnOnly);
+  }
 }
 }  // namespace
 
@@ -157,8 +163,10 @@ void manualApiBegin() {
     prefs.end();
   }
   if (prefs.begin("system_cfg", true)) {
-    image.rated_active_w = prefs.getInt("rated", 0);
-    image.rating_revision = prefs.getUInt("rev", 0);
+    if (prefs.isKey("rated")) {
+      image.rating_store_present = true;
+      image.stored_rated_active_w = prefs.getInt("rated", 0);
+    }
     prefs.end();
   }
   api.restore(image);
@@ -187,11 +195,6 @@ static bool saveImage() {
   ok = prefs.putInt("ceiling", image.ceiling_w) == sizeof(int) &&
        prefs.putInt("mode", image.ac_mode) == sizeof(int) &&
        prefs.putUInt("rev", image.ac_revision) == sizeof(uint32_t);
-  prefs.end();
-  if (!ok) return false;
-  if (!prefs.begin("system_cfg", false)) return false;
-  ok = prefs.putInt("rated", image.rated_active_w) == sizeof(int) &&
-       prefs.putUInt("rev", image.rating_revision) == sizeof(uint32_t);
   prefs.end();
   return ok;
 }
@@ -316,12 +319,6 @@ void manualRegister(AsyncWebServer& server) {
     const char* json = stored ? stored->data : "";
     String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
     powercell::HttpReply reply = api.rating_post(auth.c_str(), json, headersOf(request), millis());
-    if (reply.status == 200 && !saveImage()) {
-      request->send(500, "application/json",
-                    "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"persist_failed\",\"applied\":false}");
-      return;
-    }
-    if (reply.status == 200) applySaved();
     sendReply(request, reply);
   }, nullptr, onBody);
   server.on("/state", HTTP_POST, [](AsyncWebServerRequest* request) {

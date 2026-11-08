@@ -6,14 +6,20 @@ version string stays `1.0.1`. The v0.1.1 build reports hardware model
 OTA job for `hw-v0.1.1` until the bench below has been run. This change does
 not add an OTA feature and nothing here is flashed or deployed.
 
-Two PlatformIO environments:
+PlatformIO environments:
 
 | Environment | Profile | What it keeps |
 | --- | --- | --- |
-| `esp32dev` (default) | Original | UART1 STM32 text on RX GPIO33 / TX GPIO2, LoRa SPI, light GPIO25, relay GPIO15 |
-| `esp32dev_hw_v011` | v0.1.1 | No STM32 and no LoRa. Sensors and the SD serial log only |
+| `esp32dev` (default) | Original | UART1 STM32 text on RX GPIO33 / TX GPIO2, LoRa SPI, light GPIO25, relay GPIO15. No factory rating |
+| `esp32dev_hw_v011` | v0.1.1, unrated | No STM32 and no LoRa. Overload stays off. Do not flash this onto a rated unit |
+| `esp32dev_hw_v011_5kw` | v0.1.1, 5000 W | Same board. Embedded variant `hw-v0.1.1-5kw`. Usable overload bound 4500 W |
+| `esp32dev_hw_v011_35kw` | v0.1.1, 3500 W | Same board. Embedded variant `hw-v0.1.1-3.5kw`. Usable overload bound 3150 W |
 
-Build them with `pio run -e esp32dev` and `pio run -e esp32dev_hw_v011`.
+The factory flashes one of the two rated images. That choice is the rating.
+No passcode, LAN token, socket, or serial command sets it. Build with
+`pio run -e esp32dev`, `pio run -e esp32dev_hw_v011_5kw`, and
+`pio run -e esp32dev_hw_v011_35kw`. The variant string is inside
+`firmware.bin`. See [FACTORY_RATING.md](FACTORY_RATING.md).
 Host checks, with no board attached:
 
 ```bash
