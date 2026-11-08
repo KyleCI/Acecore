@@ -47,25 +47,24 @@ There is no other supported scheme. `API-KEY` is not accepted on this path.
 
 ## Save status
 
-Manual Save is not complete. The app requires `Authorization: Bearer
-<lan_token>` from `POST /v2/login`. This branch does not implement that
-login. HTTP 401 here is the blocker, not an applied configuration.
-`authenticated_configuration` and `settings_save_complete` are both false.
-Provenance and the later integration boundary are in
-`docs/AUTH_AND_RECOVERY_EVIDENCE.md`.
+The pinned local contract, including login and settings fixtures, is
+`docs/LOCAL_MANUAL_CONTRACT.md`. The app still has no local settings client.
+`POST /v2/login` is implemented. Manual Save uses the returned `lan_token`.
+A request without the saved `lan_token` is HTTP 401 and does not return the
+stored numbers. Provenance is in `docs/AUTH_AND_RECOVERY_EVIDENCE.md`.
 
 ## What this firmware does today
 
-`classify_lan_authorization()` never returns success. A missing, empty, or
-non-bearer header is `unauthorized`. A non-empty `Bearer` token is recognized
-and rejected as `lan_token_unsupported`. No NVS write happens. The live
-thresholds stay at the defaults. Both methods respond **401** with:
+`POST /v2/login` issues `session` and `lan_token`. Settings routes accept only
+the `lan_token`. A missing or non-bearer header, the login `session`, an
+`API-KEY`, or the OTA bearer is rejected. An applied POST writes NVS and the
+readback is what a later GET returns after reboot. Unauthorized example:
 
 ```json
 {
   "schema": 1,
   "result": "rejected",
-  "reason": "lan_token_unsupported",
+  "reason": "unauthorized",
   "applied": false,
   "durable_commit": false,
   "pending": false,
@@ -82,10 +81,9 @@ thresholds stay at the defaults. Both methods respond **401** with:
 }
 ```
 
-`output_authority` is `software_inhibit_only` on both profiles.
-`physical_auto_off` is false: the latch does not drive a pin.
-`physical_shutdown_verified` is always false. v0.1.1 GPIO15 is the power
-light and is not a discharge cutoff.
+`physical_shutdown_verified` is always false. On v0.1.1 the battery latch
+drives GPIO15 high, which is AC-output off. That is user-confirmed, not a
+bench measurement. The original profile does not auto-drive its relay.
 
 `pending` is always false. This firmware does not queue a save.
 

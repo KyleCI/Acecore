@@ -1,6 +1,7 @@
 #include <housekeeping.h>
 #include "offline_sync.h"
 #include "offline_battery_notifications.h"
+#include "local_http.h"
 #include <PowercellOTA.h>
 #include <energy.h>
 #ifdef POWERCELL_HW_V011
@@ -41,7 +42,7 @@ void setup()
         Serial.println("[SPIFFS] Mounted.");
     }
 
-    firmwareOTA.begin(false, WEBSOCKET_CA_CERT, []() { applyDeviceState(false); return true; });
+    firmwareOTA.begin(false, WEBSOCKET_CA_CERT, []() { applyDeviceState(false, "ota"); return true; });
 
 #ifndef POWERCELL_HW_V011
     // ---- LoRa register checks: the first line that differs from
@@ -86,6 +87,7 @@ void setup()
     initOfflineBatteryNotifications(server);
     loraDiag("after notif");
 
+    manualApiBegin();
     httpRoutes();
     loraDiag("after routes");
     server.begin();

@@ -6,7 +6,7 @@ namespace powercell {
 
 // Direct-local battery settings for this collector source.
 // Hard cutoff (<=10) and restart eligibility (>=15) are not writable.
-// KyleCI/Acecore does not issue a per-phone LAN bearer token and has no /v2/login.
+// Device login is POST /v2/login. Manual Save uses the returned lan_token.
 enum class SettingsAuth : uint8_t {
   Ok = 0,
   Missing,

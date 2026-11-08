@@ -41,7 +41,7 @@ class LanAccess {
   // device_ok is the caller's matchesDeviceId result. A mismatch is bad credentials.
   LoginStatus login(bool device_ok, const char* passcode, const char* phone, const char* name,
                     uint32_t now_ms, uint32_t unix_s, uint32_t client_key,
-                    char session[49], char lan[49]);
+                    char session[49], char lan[49], uint32_t* retry_after_s = nullptr);
   // First passcode only. Salt is 16 bytes from the caller (firmware: esp_fill_random).
   LoginStatus setup_passcode(const char* passcode, const char* phone, const char* name,
                              const uint8_t salt[16], uint32_t now_ms, uint32_t unix_s,

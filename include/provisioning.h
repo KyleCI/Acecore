@@ -30,5 +30,6 @@ void serviceWifiFallback();
 void startProvisioning();
 void startAppServer();
 // Returns false when a fresh discharge latch blocks turning the output on.
-bool applyDeviceState(bool state);
+bool applyDeviceState(bool state, const char* origin = "user");
+bool paymentLockEngaged();
 void httpRoutes();

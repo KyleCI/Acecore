@@ -8,3 +8,4 @@ void serviceOfflineBatteryNotifications();
 // False only while the discharge latch is held or its saved state could not be read.
 // This is the collector's own ON command. It is not proof a DSP or BMS FET opened.
 bool batteryOutputOnAllowed();
+void batteryApplyThresholds(float low, float warning);

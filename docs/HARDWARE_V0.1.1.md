@@ -173,7 +173,8 @@ drives GPIO15 high, which is AC-output off. Charging is not switched and the
 BMS FETs are not written. The original profile does not auto-drive its relay.
 Boot still writes the off level before `pinMode`. User ON is rejected while
 the latch is held. `physical_shutdown_verified` stays false. The AC-power
-ceiling does not use this output. Settings save is not complete. There is
+ceiling does not use this output. Local login and Manual Save are in
+`docs/LOCAL_MANUAL_CONTRACT.md`. There is
 no payment-lock actuator in this firmware.
 
 ## Bench still required

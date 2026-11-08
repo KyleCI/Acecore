@@ -210,19 +210,24 @@ LanKind LanAccess::authorize(const char* header, uint32_t now_ms) const {
 
 LoginStatus LanAccess::login(bool device_ok, const char* passcode, const char* phone, const char* name,
                              uint32_t now_ms, uint32_t unix_s, uint32_t client_key, char session[49],
-                             char lan[49]) {
+                             char lan[49], uint32_t* retry_after_s) {
+  if (retry_after_s) *retry_after_s = 0;
   size_t phone_n = phone ? strlen(phone) : 0;
   size_t name_n = name ? strlen(name) : 0;
   size_t pass_n = passcode ? strlen(passcode) : 0;
   if (!phone_n || phone_n > 40 || name_n > 32 || !pass_n || pass_n > 64) return LoginStatus::BadRequest;
   uint32_t retry = 0;
   if (state_->global.locked(now_ms, &retry) || state_->slot(client_key, now_ms).limiter.locked(now_ms, &retry)) {
+    if (retry_after_s) *retry_after_s = retry;
     return LoginStatus::Locked;
   }
   bool ok = device_ok && has_passcode_ && checkPasscode(passcode, state_->verifier);
   if (!ok) {
     state_->global.fail(now_ms);
     state_->slot(client_key, now_ms).limiter.fail(now_ms);
+    uint32_t again = 0;
+    state_->global.locked(now_ms, &again);
+    if (retry_after_s) *retry_after_s = again;
     return LoginStatus::BadCredentials;
   }
   state_->slot(client_key, now_ms).limiter.success();

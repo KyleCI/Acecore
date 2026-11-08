@@ -5,7 +5,8 @@
 #include <pinDefines.h>
 #include "wifi_fallback.h"
 #include "offline_battery_notifications.h"
-#include "battery_settings.h"
+#include "local_http.h"
+#include "output_gate.h"
 #ifdef POWERCELL_HW_V011
 #include "board_pins.h"
 #include "hw_v011.h"
@@ -193,8 +194,18 @@ void startAppServer()
   Serial.println("[HTTP] App server started at http://192.168.1.100");
 }
 
-bool applyDeviceState(bool state)
+bool paymentLockEngaged()
 {
+  Preferences prefs;
+  if (!prefs.begin("pc_ident", true)) return false;
+  const bool locked = prefs.isKey("pay_lock") && prefs.getBool("pay_lock", false);
+  prefs.end();
+  return locked;
+}
+
+bool applyDeviceState(bool state, const char* origin)
+{
+  if (!payment_allows_output(paymentLockEngaged(), state, origin)) return false;
   if (state && firmwareOTA.busy()) return false;
   if (state && !batteryOutputOnAllowed()) {
     Serial.println("[Battery] On blocked until the battery is at least 15% and you turn it on");
@@ -213,90 +224,21 @@ bool applyDeviceState(bool state)
 }
 
 
-static void sendBatterySettings(AsyncWebServerRequest* req, int code,
-                                const powercell::SettingsDecision& decision, bool include_readback)
-{
-  JsonDocument doc;
-  doc["schema"] = 1;
-  doc["result"] = decision.applied ? "applied" : "rejected";
-  doc["reason"] = powercell::settings_reason_name(decision.reason);
-  doc["applied"] = decision.applied;
-  doc["durable_commit"] = decision.durable_commit;
-  doc["pending"] = false;
-  doc["physical_shutdown_verified"] = false;
-  doc["actuator_semantics"] = "user_confirmed";
-  doc["cutoff_stops_charging"] = false;
-  doc["payment_lock_actuator"] = false;
-#ifdef POWERCELL_HW_V011
-  doc["physical_auto_off"] = "implemented_ac_output_only";
-  doc["output_authority"] = "v011_dsp_active_low_user_confirmed";
-  doc["collector_profile"] = "hw-v0.1.1";
-#else
-  doc["physical_auto_off"] = "disabled";
-  doc["output_authority"] = "software_inhibit_only";
-  doc["collector_profile"] = "original";
-#endif
-  doc["authenticated_configuration"] = false;
-  doc["settings_save_complete"] = false;
-  doc["collector_source"] = "KyleCI/Acecore";
-  doc["lan_token_issued"] = false;
-  doc["deployed_2_5_11_compatible"] = false;
-  if (include_readback) {
-    JsonObject readback = doc["readback"].to<JsonObject>();
-    readback["schema"] = decision.readback.schema;
-    readback["low_percent"] = decision.readback.low_percent;
-    readback["warning_percent"] = decision.readback.warning_percent;
-    readback["inhibit_percent"] = decision.readback.inhibit_percent;
-    readback["restart_percent"] = decision.readback.restart_percent;
-    readback["applied_revision"] = decision.readback.applied_revision;
-    readback["durable"] = decision.readback.durable;
-    readback["physical_shutdown_verified"] = false;
-    readback["bms_own_soc_hold"] = true;
-    readback["charging_evidence_required"] = false;
-  } else {
-    doc["readback_present"] = false;
-  }
-  String body;
-  serializeJson(doc, body);
-  req->send(code, "application/json", body);
-}
-
-static powercell::SettingsAuth lanAuthorization(AsyncWebServerRequest* req)
-{
-  if (!req->hasHeader("Authorization")) return powercell::SettingsAuth::Missing;
-  String header = req->header("Authorization");
-  header.trim();
-  const char prefix[] = "Bearer ";
-  if (!header.startsWith(prefix)) return powercell::SettingsAuth::Malformed;
-  String token = header.substring(sizeof(prefix) - 1);
-  token.trim();
-  if (!token.length()) return powercell::SettingsAuth::Missing;
-  // This source does not issue or store a per-phone LAN token. A presented
-  // Bearer token is recognized and rejected. It is not compared to the OTA token.
-  return powercell::SettingsAuth::LanTokenUnsupported;
-}
-
-static void rejectBatterySettings(AsyncWebServerRequest* req)
-{
-  powercell::BatterySettings unused;
-  const powercell::SettingsDecision decision =
-      unused.set(lanAuthorization(req), 1, true, 25, true, 15, 0, false);
-  sendBatterySettings(req, 401, decision, false);
-}
-
 void httpRoutes() {
 #ifdef POWERCELL_HW_V011
     hwV011Routes(server);
 #endif
-    auto settingsReject = [](AsyncWebServerRequest* req) { rejectBatterySettings(req); };
-    server.on("/v1/battery-settings", HTTP_GET, settingsReject);
-    server.on("/v1/battery-settings", HTTP_POST, settingsReject);
+    manualRegister(server);
     // ─────────────────────────────────────────────────────────────────────────
     // HTTP Routes
     // ─────────────────────────────────────────────────────────────────────────
 
     server.on("/ON", HTTP_GET, [](AsyncWebServerRequest *req)
     {
+        if (!payment_allows_output(paymentLockEngaged(), true, "user")) {
+            req->send(403, "text/plain", "payment_locked");
+            return;
+        }
         if (!applyDeviceState(true)) {
             req->send(409, "text/plain", "battery_output_inhibited");
             return;
@@ -313,6 +255,10 @@ void httpRoutes() {
 
     server.on("/OFF", HTTP_GET, [](AsyncWebServerRequest *req)
     {
+        if (!payment_allows_output(paymentLockEngaged(), false, "user")) {
+            req->send(403, "text/plain", "payment_locked");
+            return;
+        }
         applyDeviceState(false);
         queueOfflineEvent("gateway_state", "", "off");
 

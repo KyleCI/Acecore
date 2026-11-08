@@ -1,7 +1,8 @@
 # Auth provenance and latch-recovery evidence
 
 This note records what is in this repository. It does not treat deployed
-firmware 2.5.11 as this tree, and it does not complete Manual Save.
+firmware 2.5.11 as this tree. Local login and Manual Save are specified in
+`docs/LOCAL_MANUAL_CONTRACT.md`.
 `GET` and `POST /v1/battery-settings` stay unsupported: a bearer token is
 rejected with HTTP 401, `authenticated_configuration` false, and
 `settings_save_complete` false. No new login, token, or credential check

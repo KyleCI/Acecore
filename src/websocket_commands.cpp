@@ -6,6 +6,7 @@
 #include "collector_lora.h"
 #include "websocket_ca.h"
 #include "offline_sync.h"
+#include "output_gate.h"
 #ifdef POWERCELL_HW_V011
 #include "hw_v011.h"
 #endif
@@ -179,6 +180,10 @@ void incoming(uint8_t *payload, size_t length) {
   if (kind == "gateway") {
     if (target != GATEWAY_NAME && !target.equalsIgnoreCase(WiFi.macAddress())) {
       reject(id, kind, target, desired, "unknown_target"); return;
+    }
+    if (!payment_allows_output(paymentLockEngaged(), desired, "user")) {
+      reject(id, kind, target, desired, "payment_locked");
+      return;
     }
     if (!applyDeviceState(desired)) {
       reject(id, kind, target, desired, "battery_output_inhibited");

@@ -3,6 +3,7 @@
 #include "board_pins.h"
 #include "bms.h"
 #include "provisioning.h"
+#include "local_http.h"
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
@@ -143,6 +144,11 @@ void initOfflineBatteryNotifications(AsyncWebServer& server) {
   serviceOfflineBatteryNotifications();
 
   server.on("/data", HTTP_GET, [](AsyncWebServerRequest* request) {
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    if (manualDataStatus(auth.c_str()) == 401) {
+      request->send(401, "application/json", "{\"error\":\"unauthorized\"}");
+      return;
+    }
     String data;
     if (!copySnapshot(data)) {
       request->send(503, "application/json", "{\"error\":\"Battery snapshot temporarily unavailable\"}");
@@ -228,8 +234,8 @@ void serviceOfflineBatteryNotifications() {
   // v0.1.1 writes DSP off (high). The original profile does not drive its relay.
   const bool hold = !policy.outputOnAllowed();
   if (powercell::battery_ac_output_auto_off(powercell::build_profile()) && hold) {
-    if (deviceState) applyDeviceState(false);
-    else if (policy.takeOutputOffEdge()) applyDeviceState(false);
+    if (deviceState) applyDeviceState(false, "battery_critical");
+    else if (policy.takeOutputOffEdge()) applyDeviceState(false, "battery_critical");
   } else {
     policy.takeOutputOffEdge();
   }
@@ -250,3 +256,9 @@ void serviceOfflineBatteryNotifications() {
 }
 
 bool batteryOutputOnAllowed() { return outputOnAllowed; }
+
+void batteryApplyThresholds(float low, float warning) {
+  if (snapshotMutex) xSemaphoreTake(snapshotMutex, portMAX_DELAY);
+  policy.setThresholds(low, warning);
+  if (snapshotMutex) xSemaphoreGive(snapshotMutex);
+}
