@@ -1,118 +1,107 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://acecore.tech/contracts/estimate.load_ac_energy.v1.schema.json",
+  "$id": "https://acecore.local/contracts/estimate.load_ac_energy.v1.schema.json",
   "title": "estimate.load_ac_energy.v1",
-  "description": "Interim AC load estimate for original collector hardware v0.1. Energy is Vrms*Irms*PF_assumed integrated only over valid monotonic intervals. PF_assumed defaults to 0.800 (pf_assumed_millis 800) by Caleb's 2026-11-08 decision and is not a measured power factor. This object is not BMS DC discharge, not PV energy, and not a v0.1.1 PZEM watt-hour. Do not multiply PZEM watt-hours by 0.8. uint64 counters are decimal strings. A stored record keeps its own model_revision and pf_assumed_millis; consumers must not rewrite them.",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "required": [
     "contract",
-    "record_kind",
+    "simulation",
     "device_id",
     "stream",
     "meter_epoch",
     "boot_id",
     "seq",
+    "clock_correction_version",
+    "model",
     "monotonic_start_ms",
     "monotonic_end_ms",
     "utc_start",
     "utc_end",
+    "time_quality",
     "counter_start_mwh",
     "counter_end_mwh",
     "interval_estimated_mwh",
     "covered_ms",
     "interval_ms",
-    "time_quality",
-    "mode",
-    "coverage_scope",
-    "attribution",
-    "model_revision",
-    "source_version",
-    "source_path",
-    "pf_assumed_millis",
-    "pf_is_assumption",
-    "assumption_provenance",
-    "estimate_available",
-    "unavailable_reason",
-    "civil_day",
-    "timezone",
-    "utc_offset_s",
-    "synthetic",
-    "transport",
-    "bms_dc_used"
+    "sample_validity",
+    "source_mode_coverage",
+    "inputs"
   ],
   "properties": {
     "contract": { "const": "estimate.load_ac_energy.v1" },
-    "record_kind": { "enum": ["status", "interval", "gap", "daily_checkpoint"] },
-    "device_id": { "type": "string", "minLength": 1, "maxLength": 15 },
-    "stream": { "const": "load_ac_energy" },
-    "meter_epoch": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
-    "boot_id": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
-    "seq": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
-    "monotonic_start_ms": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
-    "monotonic_end_ms": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
-    "utc_start": { "type": ["string", "null"], "pattern": "^-?(0|[1-9][0-9]*)$" },
-    "utc_end": { "type": ["string", "null"], "pattern": "^-?(0|[1-9][0-9]*)$" },
-    "counter_start_mwh": { "type": ["string", "null"], "pattern": "^(0|[1-9][0-9]*)$" },
-    "counter_end_mwh": { "type": ["string", "null"], "pattern": "^(0|[1-9][0-9]*)$" },
-    "interval_estimated_mwh": {
-      "type": ["string", "null"],
-      "pattern": "^(0|[1-9][0-9]*)$",
-      "description": "Estimated milliwatt-hours for this interval only. Null when the interval is unknown. Not a measured watt-hour."
+    "simulation": { "type": "boolean" },
+    "device_id": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "stream": { "const": "estimate.load_ac_energy" },
+    "meter_epoch": { "$ref": "#/$defs/uint64" },
+    "boot_id": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" },
+    "seq": { "$ref": "#/$defs/uint64" },
+    "clock_correction_version": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "source_path", "version", "pf_kind", "pf_assumption_millis", "coverage_scope"],
+      "properties": {
+        "revision": { "const": "estimate.load_ac_energy.v1" },
+        "source_path": { "const": "ac_vrms_mv_x_ac_irms_ma_x_pf_millis" },
+        "version": { "const": "0.1.0" },
+        "pf_kind": { "const": "assumed", "description": "Not a measured power factor. Measured watt-hours are a separate future stream." },
+        "pf_assumption_millis": { "const": 800, "description": "Original v0.1 assumption, PF 0.800. Firmware applies it once. The API does not apply it again." },
+        "coverage_scope": { "enum": ["inverter_output_only", "common_output", "unknown"] }
+      }
     },
-    "allocated_estimated_mwh": { "type": ["string", "null"], "pattern": "^(0|[1-9][0-9]*)$" },
-    "unallocated_estimated_mwh": { "type": ["string", "null"], "pattern": "^(0|[1-9][0-9]*)$" },
-    "covered_ms": { "type": "integer", "minimum": 0 },
-    "interval_ms": { "type": "integer", "minimum": 0 },
-    "time_quality": {
-      "enum": ["uncertain", "unanchored", "plausible_tick", "anchored", "adjusted", "stale_nvs_rejected"]
+    "monotonic_start_ms": { "$ref": "#/$defs/uint64" },
+    "monotonic_end_ms": { "$ref": "#/$defs/uint64" },
+    "utc_start": { "$ref": "#/$defs/instant" },
+    "utc_end": { "$ref": "#/$defs/instant" },
+    "time_quality": { "enum": ["rtc_ds1307", "uncertain", "absent"] },
+    "counter_start_mwh": { "$ref": "#/$defs/uint64" },
+    "counter_end_mwh": { "$ref": "#/$defs/uint64" },
+    "interval_estimated_mwh": { "$ref": "#/$defs/uint64" },
+    "covered_ms": { "$ref": "#/$defs/uint64" },
+    "interval_ms": { "$ref": "#/$defs/uint64" },
+    "sample_validity": { "enum": ["valid", "partial", "invalid", "absent"] },
+    "source_mode_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inverter_output_only_ms", "common_output_ms", "unknown_ms"],
+      "properties": {
+        "inverter_output_only_ms": { "$ref": "#/$defs/uint64" },
+        "common_output_ms": { "$ref": "#/$defs/uint64" },
+        "unknown_ms": { "$ref": "#/$defs/uint64" }
+      }
     },
-    "mode": { "enum": ["unknown", "idle", "inverter", "grid_bypass", "transfer", "fault"] },
-    "coverage_scope": { "enum": ["inverter_output_only", "common_output", "unknown"] },
-    "attribution": { "enum": ["unallocated", "allocated", "valid_zero"] },
-    "model_revision": {
+    "inputs": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ac_vrms_mv", "ac_irms_ma", "pf_assumed_millis", "ac_v_valid", "ac_i_valid"],
+          "properties": {
+            "ac_vrms_mv": { "$ref": "#/$defs/uint64" },
+            "ac_irms_ma": { "$ref": "#/$defs/uint64" },
+            "pf_assumed_millis": { "type": "integer", "minimum": 0, "maximum": 1000 },
+            "ac_v_valid": { "type": "boolean" },
+            "ac_i_valid": { "type": "boolean" }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "uint64": {
       "type": "string",
       "pattern": "^(0|[1-9][0-9]*)$",
-      "description": "2 is the original v0.1 estimator whose default PF assumption is 0.800. Older records may say 1 and must be left unchanged."
+      "description": "Canonical unsigned decimal. Not a JSON number."
     },
-    "source_version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
-    "source_path": { "type": "string" },
-    "pf_assumed_millis": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 1000,
-      "description": "Assumed power factor times 1000. 800 means 0.800. Not a measured PF."
-    },
-    "pf_is_assumption": { "const": true },
-    "assumption_provenance": { "type": "string" },
-    "estimate_available": { "type": "boolean" },
-    "unavailable_reason": { "type": "string" },
-    "missing_path": { "type": "string" },
-    "civil_day": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
-    "timezone": { "const": "Africa/Lagos" },
-    "utc_offset_s": { "const": 3600 },
-    "synthetic": { "type": "boolean" },
-    "transport": { "const": "pending_contract" },
-    "bms_dc_used": { "const": false },
-    "v_rms_mV": { "type": ["integer", "null"] },
-    "i_rms_mA": { "type": ["integer", "null"] },
-    "loss_events": { "type": "integer", "minimum": 0 },
-    "overflow_alarm": { "type": "boolean" },
-    "journal_untrusted": { "type": "boolean" }
-  },
-  "not": {
-    "anyOf": [
-      { "required": ["energy"] },
-      { "required": ["wh"] },
-      { "required": ["kwh"] },
-      { "required": ["mwh"] },
-      { "required": ["energy_wh"] },
-      { "required": ["energy_kwh"] },
-      { "required": ["inverter_energy"] },
-      { "required": ["consumed_wh"] },
-      { "required": ["energy_consumed"] },
-      { "required": ["output_energy"] },
-      { "required": ["output_energy_wh"] }
-    ]
+    "instant": {
+      "description": "Null, an ISO-8601 string with Z or an offset, or {epoch_ms} / {local, offset}.",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string" },
+        { "type": "object" }
+      ]
+    }
   }
 }

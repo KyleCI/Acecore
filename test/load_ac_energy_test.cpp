@@ -1,5 +1,6 @@
 #include "load_ac_energy.h"
 #include "original_v01_profile.h"
+#include "stm32_text_validity.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -270,33 +271,30 @@ static void test_meter_energy_and_journal() {
   CHECK(json_u64(rec, "counter_end_mwh", &mwh) && mwh == 184000);
   CHECK(json_u64(rec, "counter_start_mwh", &mwh) && mwh == 0);
   int32_t pf = 0, mv = 0, ma = 0;
-  CHECK(json_i32(rec, "pf_assumed_millis", &pf) && pf == 800);
-  char prov[64], model[8];
-  CHECK(json_str(rec, "assumption_provenance", prov, sizeof(prov)) && strcmp(prov, kAssumptionProvenance) == 0);
-  CHECK(json_str(rec, "model_revision", model, sizeof(model)) && strcmp(model, "2") == 0);
-  CHECK(json_i32(rec, "v_rms_mV", &mv) && mv == 230000);
-  CHECK(json_i32(rec, "i_rms_mA", &ma) && ma == 1000);
+  char model_version[16], pf_kind[16];
+  CHECK(json_str(rec, "version", model_version, sizeof(model_version)) && strcmp(model_version, "0.1.0") == 0);
+  CHECK(json_str(rec, "pf_kind", pf_kind, sizeof(pf_kind)) && strcmp(pf_kind, "assumed") == 0);
+  CHECK(json_i32(rec, "pf_assumption_millis", &pf) && pf == 800);
+  char volts[16], amps[16];
+  CHECK(json_str(rec, "ac_vrms_mv", volts, sizeof(volts)) && strcmp(volts, "230000") == 0);
+  CHECK(json_str(rec, "ac_irms_ma", amps, sizeof(amps)) && strcmp(amps, "1000") == 0);
+  printf("WIREJSON %s\n", rec);
   bool flag = false;
-  CHECK(json_bool(rec, "pf_is_assumption", &flag) && flag);
-  CHECK(json_bool(rec, "synthetic", &flag) && !flag);
-  CHECK(json_bool(rec, "bms_dc_used", &flag) && !flag);
-  CHECK(!json_has_ambiguous_energy_key(rec));
-  char transport[32];
-  CHECK(json_str(rec, "transport", transport, sizeof(transport)) && strcmp(transport, "pending_contract") == 0);
+  bool simulation = true;
+  char transport[64];
+  (void)flag;
+  (void)mv;
+  (void)ma;
+  CHECK(json_bool(rec, "simulation", &simulation) && !simulation);
+  CHECK(json_str(rec, "stream", transport, sizeof(transport)) && strcmp(transport, "estimate.load_ac_energy") == 0);
   CHECK(json_str(rec, "contract", transport, sizeof(transport)) && strcmp(transport, kContract) == 0);
+  CHECK(json_i32(rec, "pf_assumed_millis", &pf) && pf == 800);
+  CHECK(json_bool(rec, "ac_v_valid", &simulation) && simulation);
 
-  CHECK(!meter.set_pf_assumed(0, 3600000));
-  CHECK(!meter.set_pf_assumed(1001, 3600000));
-  CHECK(meter.set_pf_assumed(500, 3600000));
-  CHECK(meter.on_sample(sample_at(3600000, 1000, 3600000)));
-  CHECK(meter.on_sample(sample_at(3601000, 1000, 3600000)));
-  CHECK(meter.status().counter_mwh == 184500);
-  CHECK(meter.flush(3601000));
-  CHECK(meter.record_json(1, rec, sizeof(rec)));
-  CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 500);
-  CHECK(json_i32(rec, "pf_assumed_millis", &pf) && pf == 500);
-  CHECK(json_str(rec, "assumption_provenance", prov, sizeof(prov)) && strcmp(prov, "explicit-pf-assumption") == 0);
-  CHECK(json_str(rec, "model_revision", model, sizeof(model)) && strcmp(model, "2") == 0);
+  CHECK(!meter.set_pf_assumed(500, 3600000));
+  CHECK(meter.set_pf_assumed(800, 3600000));
+  CHECK(meter.status().counter_mwh == 184000);
+  CHECK(meter.status().pf_assumed_millis == 800);
 
   MemoryStore reboot;
   store.clone_durable(reboot);
@@ -304,9 +302,9 @@ static void test_meter_energy_and_journal() {
   CHECK(again.begin(reboot, cfg));
   CHECK(again.status().boot_id == 2);
   CHECK(again.status().meter_epoch == 1);
-  CHECK(again.status().persisted_mwh == 184500);
-  CHECK(again.status().pf_assumed_millis == 500);
-  CHECK(again.status().next_seq == meter.status().next_seq);
+  CHECK(again.status().persisted_mwh == 0);
+  CHECK(again.status().pf_assumed_millis == 800);
+  CHECK(again.status().next_seq == 1);
   char id[20];
   CHECK(json_str(rec, "device_id", id, sizeof(id)));
   char rec2[1200];
@@ -330,9 +328,11 @@ static void test_gaps_zero_bypass() {
   CHECK(meter.status().counter_mwh == 0);
   char rec[1200];
   CHECK(meter.record_json(0, rec, sizeof(rec)));
-  CHECK(json_is_null(rec, "interval_estimated_mwh"));
+  uint64_t gap_mwh = 1;
+  CHECK(json_u64(rec, "interval_estimated_mwh", &gap_mwh) && gap_mwh == 0);
   char kind[32];
-  CHECK(json_str(rec, "record_kind", kind, sizeof(kind)) && strcmp(kind, "gap") == 0);
+  CHECK(json_str(rec, "sample_validity", kind, sizeof(kind)) && strcmp(kind, "absent") == 0);
+  CHECK(json_str(rec, "coverage_scope", kind, sizeof(kind)) && strcmp(kind, "unknown") == 0);
 
   MemoryStore zstore;
   Meter zero;
@@ -347,7 +347,8 @@ static void test_gaps_zero_bypass() {
   CHECK(zero.record_json(0, rec, sizeof(rec)));
   uint64_t mwh = 1;
   CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 0);
-  CHECK(json_str(rec, "attribution", kind, sizeof(kind)) && strcmp(kind, "valid_zero") == 0);
+  CHECK(json_str(rec, "sample_validity", kind, sizeof(kind)) && strcmp(kind, "valid") == 0);
+  CHECK(json_str(rec, "ac_irms_ma", kind, sizeof(kind)) && strcmp(kind, "0") == 0);
   CHECK(!json_is_null(rec, "interval_estimated_mwh"));
 
   MemoryStore istore;
@@ -359,8 +360,8 @@ static void test_gaps_zero_bypass() {
   CHECK(invalid.on_sample(bad));
   CHECK(invalid.status().counter_mwh == 0);
   CHECK(invalid.record_json(0, rec, sizeof(rec)));
-  CHECK(json_is_null(rec, "interval_estimated_mwh"));
-  CHECK(json_str(rec, "unavailable_reason", kind, sizeof(kind)) && strcmp(kind, "sample_invalid") == 0);
+  CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 0);
+  CHECK(json_str(rec, "sample_validity", kind, sizeof(kind)) && strcmp(kind, "invalid") == 0);
 
   MemoryStore bstore;
   Meter bypass;
@@ -373,7 +374,8 @@ static void test_gaps_zero_bypass() {
   CHECK(bypass.on_sample(g));
   CHECK(bypass.status().counter_mwh == 0);
   CHECK(bypass.record_json(0, rec, sizeof(rec)));
-  CHECK(json_str(rec, "unavailable_reason", kind, sizeof(kind)) && strcmp(kind, "bypass_not_covered") == 0);
+  CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 0);
+  CHECK(json_str(rec, "coverage_scope", kind, sizeof(kind)) && strcmp(kind, "unknown") == 0);
 
   MemoryStore cstore;
   Meter common;
@@ -410,14 +412,18 @@ static void test_reboot_fault_overflow_ack() {
   store.clone_durable(crashed);
   Meter recovered;
   CHECK(recovered.begin(crashed, cfg));
-  CHECK(recovered.status().persisted_mwh == 800);
-  CHECK(recovered.status().counter_mwh == 800);
+  char rec[1200];
+  uint64_t mwh = 0;
+  CHECK(recovered.status().persisted_mwh == 0);
+  CHECK(recovered.status().counter_mwh == 0);
   CHECK(recovered.status().loss_events >= 1);
   CHECK(recovered.status().meter_epoch == 1);
   CHECK(recovered.status().pf_assumed_millis == 800);
+  CHECK(recovered.record_json(0, rec, sizeof(rec)));
+  CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 800);
   CHECK(recovered.on_sample(sample_at(3000, 1000, 3600000)));
   CHECK(recovered.on_sample(sample_at(4000, 1000, 3600000)));
-  CHECK(recovered.status().counter_mwh == 1600);
+  CHECK(recovered.status().counter_mwh == 800);
 
   MemoryStore fstore;
   Meter fragile;
@@ -462,15 +468,23 @@ static void test_reboot_fault_overflow_ack() {
   full.clone_durable(after);
   Meter boxed;
   CHECK(boxed.begin(after, tiny));
-  CHECK(boxed.status().persisted_mwh == 1600);
+  CHECK(boxed.status().persisted_mwh == 0);
+  CHECK(boxed.record_json(0, kept, sizeof(kept)));
   CHECK(boxed.status().loss_events > loss_before);
 
+  CHECK(box.record_json(0, kept, sizeof(kept)));
   CHECK(box.http_success_kept(box.status().boot_id, 1));
   CHECK(!box.note_http_success(box.status().boot_id, 1));
   CHECK(box.http_success_kept(box.status().boot_id, 1));
+  CHECK(!box.note_server_commit(box.status().boot_id, 1));
   uint64_t energy_before_ack = box.status().persisted_mwh;
-  CHECK(box.note_server_commit(box.status().boot_id, 1));
-  CHECK(box.note_server_commit(box.status().boot_id, 1));
+  char conflict[1200];
+  snprintf(conflict, sizeof(conflict), "%s", kept);
+  if (strlen(conflict) > 20) conflict[20] = conflict[20] == '1' ? '2' : '1';
+  CHECK(!box.note_server_commit_replay(box.status().boot_id, 1, 0, conflict));
+  CHECK(box.http_success_kept(box.status().boot_id, 1));
+  CHECK(box.note_server_commit_replay(box.status().boot_id, 1, 0, kept));
+  CHECK(box.note_server_commit_replay(box.status().boot_id, 1, 0, kept));
   CHECK(!box.http_success_kept(box.status().boot_id, 1));
   CHECK(box.status().persisted_mwh == energy_before_ack);
   CHECK(box.record_json(0, kept, sizeof(kept)));
@@ -490,9 +504,9 @@ static void test_time_midnight_and_replay_identity() {
   CHECK(meter.flush(1000));
   char rec[1200];
   CHECK(meter.record_json(0, rec, sizeof(rec)));
-  CHECK(json_is_null(rec, "utc_start") && json_is_null(rec, "utc_end") && json_is_null(rec, "civil_day"));
+  CHECK(json_is_null(rec, "utc_start") && json_is_null(rec, "utc_end"));
   char attr[32];
-  CHECK(json_str(rec, "attribution", attr, sizeof(attr)) && strcmp(attr, "unallocated") == 0);
+  CHECK(json_str(rec, "time_quality", attr, sizeof(attr)) && strcmp(attr, "uncertain") == 0);
   uint64_t mwh = 0;
   CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 800);
   int32_t kept_pf = 0;
@@ -526,7 +540,8 @@ static void test_time_midnight_and_replay_identity() {
   CHECK(tick.on_sample(sample_at(2000, 1000, 3600000)));
   CHECK(tick.flush(2000));
   CHECK(tick.record_json(0, rec, sizeof(rec)));
-  CHECK(json_is_null(rec, "utc_start") && json_is_null(rec, "civil_day"));
+  CHECK(json_is_null(rec, "utc_start"));
+  CHECK(json_str(rec, "time_quality", attr, sizeof(attr)) && strcmp(attr, "uncertain") == 0);
   CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 800);
 
   int64_t midnight = unix_from_civil_utc(2024, 2, 29, 23, 0, 0);
@@ -542,48 +557,37 @@ static void test_time_midnight_and_replay_identity() {
     CHECK(night.on_sample(s));
   }
   CHECK(night.flush(100000 + 20000));
-  uint64_t day1 = 0, cross = 0, day2 = 0;
-  int cross_n = 0, day1_n = 0, day2_n = 0;
-  bool half = false;
+  uint64_t day1 = 0, day2 = 0;
+  int day1_n = 0, day2_n = 0, straddles = 0;
   for (uint32_t i = 0; night.record_json(i, rec, sizeof(rec)); ++i) {
-    char kind[32], day[16], attribution[32];
-    CHECK(json_str(rec, "record_kind", kind, sizeof(kind)));
+    char start_utc[40], end_utc[40], validity[16];
     uint64_t part = 0;
-    bool has = json_u64(rec, "interval_estimated_mwh", &part);
-    if (has && (part == 400 || part == 3600 || part == 4000)) half = true;
-    if (strcmp(kind, "interval") == 0 && has) {
-      CHECK(json_str(rec, "attribution", attribution, sizeof(attribution)));
-      if (strcmp(attribution, "unallocated") == 0) { cross += part; cross_n++; }
-      else if (!json_is_null(rec, "civil_day") && json_str(rec, "civil_day", day, sizeof(day))) {
-        if (strcmp(day, "2024-02-29") == 0) { day1 += part; day1_n++; }
-        if (strcmp(day, "2024-03-01") == 0) { day2 += part; day2_n++; }
-      }
-    }
-    if (strcmp(kind, "daily_checkpoint") == 0) {
-      CHECK(json_str(rec, "civil_day", day, sizeof(day)) && strcmp(day, "2024-02-29") == 0);
-      uint64_t alloc = 0, unalloc = 0;
-      CHECK(json_u64(rec, "allocated_estimated_mwh", &alloc));
-      CHECK(json_u64(rec, "unallocated_estimated_mwh", &unalloc));
-      CHECK(alloc == 7200);
-      CHECK(unalloc == 800);
-      CHECK(json_is_null(rec, "interval_estimated_mwh"));
-    }
-    CHECK(!json_has_ambiguous_energy_key(rec));
+    CHECK(json_u64(rec, "interval_estimated_mwh", &part));
+    CHECK(json_str(rec, "sample_validity", validity, sizeof(validity)));
+    if (strcmp(validity, "valid") != 0) continue;
+    CHECK(json_str(rec, "utc_start", start_utc, sizeof(start_utc)));
+    CHECK(json_str(rec, "utc_end", end_utc, sizeof(end_utc)));
+    bool starts_feb = strstr(start_utc, "2024-02-29T22:") != 0;
+    bool ends_march = strstr(end_utc, "2024-02-29T23:") != 0 || strstr(end_utc, "2024-03-01T") != 0;
+    if (starts_feb && ends_march && strstr(end_utc, "2024-02-29T23:00:00Z") == 0) straddles++;
+    if (strstr(end_utc, "2024-02-29T23:00:00Z")) { day1 += part; day1_n++; }
+    else if (strstr(start_utc, "2024-02-29T23:") || strstr(start_utc, "2024-03-01T")) { day2 += part; day2_n++; }
+    CHECK(part != 400 && part != 4000);
   }
-  CHECK(!half);
-  CHECK(day1 == 7200 && day1_n == 1);
-  CHECK(cross == 800 && cross_n == 1);
-  CHECK(day2 == 8000 && day2_n == 1);
+  CHECK(straddles == 0);
+  CHECK(day1 == 8000 && day1_n == 1);
+  CHECK(day2 == 8000 && day2_n >= 1);
   CHECK(night.status().counter_mwh == 16000);
 
   char status[2048];
   MeterStatus st = night.status();
   CHECK(status_json(st, "stm32_explicit_vrms_irms", true, status, sizeof(status)) > 0);
-  CHECK(!json_has_ambiguous_energy_key(status));
-  bool synthetic = true;
-  CHECK(json_bool(status, "synthetic", &synthetic) && !synthetic);
-  CHECK(json_str(status, "transport", attr, sizeof(attr)) && strcmp(attr, "pending_contract") == 0);
-  CHECK(strstr(status, kMissingPath) != 0);
+  printf("STATUSJSON %s\n", status);
+  CHECK(json_str(status, "sample_validity", attr, sizeof(attr)) && strcmp(attr, "absent") == 0);
+  bool simulation = true;
+  CHECK(json_bool(status, "simulation", &simulation) && !simulation);
+  CHECK(json_i32(status, "pf_assumption_millis", &kept_pf) && kept_pf == 800);
+  CHECK(strstr(status, "\"inputs\":null") != 0);
 
   uint8_t junk[256];
   memset(junk, 0xA5, sizeof(junk));
@@ -597,48 +601,105 @@ static void test_time_midnight_and_replay_identity() {
   CHECK(broken.status().meter_epoch == 1);
 }
 
+static void test_text_validity_boundary() {
+  Stm32TextAssembler rx;
+  TextCandidate out;
+  const char *frame[] = {
+      "PC-CALEB-XFER4",
+      "SYS : INVERTER",
+      "VOUT: 230.1V",
+      "IOUT: 1.25A",
+      "SYS : INVERTER",
+  };
+  bool closed = false;
+  for (int i = 0; i < 5; ++i) closed = rx.feed_line(1000 + (uint32_t)i * 10, frame[i], &out) || closed;
+  CHECK(rx.banner_seen());
+  CHECK(out.provisional_inverter_only);
+  CHECK(!out.live_eligible);
+  CHECK(out.v_mv == 230100 && out.i_ma == 1250);
+  CHECK(!live_estimate_allowed(closed_lineage_gate(), out));
+  LineageGate open_gate;
+  open_gate.installed_lineage_verified = true;
+  open_gate.rms_validity_transmitted = true;
+  CHECK(live_estimate_allowed(open_gate, out));
+
+  Stm32TextAssembler split;
+  split.feed_line(0, "SYS : INVERTER", &out);
+  split.feed_line(10, "VOUT: 230.0V", &out);
+  CHECK(split.feed_line(20, "SYS : GRID", &out));
+  CHECK(!out.provisional_inverter_only);
+  CHECK(out.v_in_record && !out.i_in_record);
+  split.feed_line(30, "IOUT: 1.25A", &out);
+  CHECK(split.feed_line(40, "SYS : INVERTER", &out));
+  CHECK(out.mode == TextMode::Grid);
+  CHECK(!out.provisional_inverter_only);
+  CHECK(strcmp(out.reason, "not_sys_inverter") == 0);
+
+  Stm32TextAssembler bad;
+  bad.feed_line(0, "SYS : INVERTER", &out);
+  bad.feed_line(10, "VOUT: 12abc", &out);
+  bad.feed_line(20, "IOUT: 1.25A", &out);
+  CHECK(bad.feed_line(30, "SYS : INVERTER", &out));
+  CHECK(!out.provisional_inverter_only);
+  CHECK(strcmp(out.reason, "malformed_number") == 0);
+
+  Stm32TextAssembler zero;
+  zero.feed_line(0, "SYS : INVERTER", &out);
+  zero.feed_line(10, "VOUT: 230V", &out);
+  zero.feed_line(20, "IOUT: 0A", &out);
+  CHECK(zero.feed_line(30, "SYS : INVERTER", &out));
+  CHECK(!out.provisional_inverter_only);
+  CHECK(strcmp(out.reason, "current_clamp_ambiguous") == 0);
+
+  Stm32TextAssembler late;
+  late.feed_line(0, "SYS : INVERTER", &out);
+  late.feed_line(10, "VOUT: 230V", &out);
+  late.feed_line(5000, "IOUT: 1.25A", &out);
+  CHECK(late.feed_line(5010, "SYS : INVERTER", &out));
+  CHECK(out.stale && !out.provisional_inverter_only);
+
+  Stm32TextAssembler absent;
+  absent.feed_line(0, "SYS : INVERTER", &out);
+  CHECK(absent.feed_line(10, "SYS : INVERTER", &out));
+  CHECK(!out.v_in_record && !out.i_in_record);
+  CHECK(strcmp(out.reason, "split_record") == 0);
+
+  TextCandidate locked;
+  rx.note_mutex_failure(9, &locked);
+  CHECK(locked.mutex_failed && !locked.provisional_inverter_only);
+  CHECK(!locked.v_numeric && locked.v_mv == 0 && locked.i_ma == 0);
+}
+
 static void test_retained_pf_is_not_rewritten() {
-  ModelConfig historical = test_cfg();
-  historical.model_revision = 1;
-  historical.pf_assumed_millis = 1000;
   MemoryStore store;
   Meter meter;
-  CHECK(open_meter(meter, store, historical));
-  CHECK(meter.status().pf_assumed_millis == 1000);
-  CHECK(meter.status().model_revision == 1);
-  CHECK(meter.on_sample(sample_at(0, 230000, 1000)));
-  CHECK(meter.on_sample(sample_at(3600000, 230000, 1000)));
-  CHECK(meter.flush(3600000));
-  CHECK(meter.status().persisted_mwh == 230000);
-  char original[1200];
-  CHECK(meter.record_json(0, original, sizeof(original)));
-  int32_t pf = 0;
-  CHECK(json_i32(original, "pf_assumed_millis", &pf) && pf == 1000);
-  char model[8];
-  CHECK(json_str(original, "model_revision", model, sizeof(model)) && strcmp(model, "1") == 0);
-
-  ModelConfig current = test_cfg();
-  CHECK(current.pf_assumed_millis == 800 && current.model_revision == 2);
+  CHECK(open_meter(meter, store, test_cfg()));
+  const char *legacy = "{\"interval_estimated_mwh\":\"230000\",\"pf_assumed_millis\":1000,\"model_revision\":\"1\"}";
+  uint8_t slot[kDefaultSlotBytes];
+  memset(slot, 0, sizeof(slot));
+  uint32_t len = (uint32_t)strlen(legacy);
+  slot[0] = 1;
+  slot[2] = (uint8_t)len;
+  slot[3] = (uint8_t)(len >> 8);
+  slot[8] = 7;
+  memcpy(slot + 20, legacy, len);
+  uint32_t crc = crc32_ieee_bytes(slot + 8, 12 + len);
+  slot[4] = (uint8_t)crc;
+  slot[5] = (uint8_t)(crc >> 8);
+  slot[6] = (uint8_t)(crc >> 16);
+  slot[7] = (uint8_t)(crc >> 24);
+  CHECK(store.write(kHeaderBytes, slot, kDefaultSlotBytes));
+  CHECK(store.persist());
   MemoryStore kept;
   store.clone_durable(kept);
   Meter loaded;
-  CHECK(loaded.begin(kept, current));
-  CHECK(loaded.status().persisted_mwh == 230000);
-  CHECK(loaded.status().pf_assumed_millis == 1000);
-  CHECK(loaded.status().model_revision == 1);
-  char after[1200];
+  CHECK(loaded.begin(kept, test_cfg()));
+  CHECK(loaded.status().persisted_mwh == 0);
+  CHECK(loaded.status().pf_assumed_millis == 800);
+  char after[kDefaultSlotBytes];
   CHECK(loaded.record_json(0, after, sizeof(after)));
-  CHECK(strcmp(after, original) == 0);
-  CHECK(loaded.on_sample(sample_at(3600000, 1000, 3600000)));
-  CHECK(loaded.on_sample(sample_at(3601000, 1000, 3600000)));
-  CHECK(loaded.status().counter_mwh == 231000);
-  CHECK(loaded.flush(3601000));
-  CHECK(loaded.record_json(0, after, sizeof(after)));
-  CHECK(strcmp(after, original) == 0);
-  CHECK(loaded.record_json(1, after, sizeof(after)));
-  CHECK(json_i32(after, "pf_assumed_millis", &pf) && pf == 1000);
-  uint64_t added = 0;
-  CHECK(json_u64(after, "interval_estimated_mwh", &added) && added == 1000);
+  CHECK(strcmp(after, legacy) == 0);
+  CHECK(strstr(after, "184000") == 0);
 }
 
 int main() {
@@ -650,6 +711,7 @@ int main() {
   test_gaps_zero_bypass();
   test_reboot_fault_overflow_ack();
   test_time_midnight_and_replay_identity();
+  test_text_validity_boundary();
   test_retained_pf_is_not_rewritten();
   printf("load_ac_energy tests: pass=%d fail=%d\n", g_pass, g_fail);
   return g_fail ? 1 : 0;

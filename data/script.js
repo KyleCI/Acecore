@@ -1,10 +1,15 @@
 function formatAcLoadEstimate(data) {
     const estimate = data && data.load_ac_estimate;
     if (!estimate || estimate.contract !== "estimate.load_ac_energy.v1") return "AC estimate unavailable";
-    if (estimate.synthetic === true) return "AC estimate unavailable";
-    if (estimate.estimate_available !== true) return "AC estimate unavailable";
-    if (estimate.attribution !== "allocated" && estimate.attribution !== "valid_zero") return "AC estimate unavailable";
-    if (estimate.pf_is_assumption !== true) return "AC estimate unavailable";
+    if (estimate.simulation === true) return "AC estimate unavailable";
+    const model = estimate.model;
+    if (!model || model.pf_kind !== "assumed" || model.pf_assumption_millis !== 800) return "AC estimate unavailable";
+    if (model.version !== "0.1.0" || model.coverage_scope === "unknown") return "AC estimate unavailable";
+    if (estimate.sample_validity !== "valid" && estimate.sample_validity !== "partial") return "AC estimate unavailable";
+    const inputs = estimate.inputs;
+    if (!inputs || inputs.ac_v_valid !== true || inputs.ac_i_valid !== true || inputs.pf_assumed_millis !== 800) {
+        return "AC estimate unavailable";
+    }
     const raw = estimate.interval_estimated_mwh;
     if (typeof raw !== "string" || !/^(0|[1-9][0-9]*)$/.test(raw)) return "AC estimate unavailable";
     const milliwattHours = Number(raw);

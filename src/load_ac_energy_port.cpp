@@ -207,34 +207,7 @@ void load_ac_energy_fill(JsonObject dst, bool include_missing_path) {
   dst.set(parsed.as<JsonObject>());
 }
 
-void load_ac_energy_fill_brief(JsonObject dst) {
-  loadac::MeterStatus status = meter.status();
-  int32_t pf = status.pf_assumed_millis > 0 ? status.pf_assumed_millis : loadac::kPfAssumedMillis;
-  uint32_t model = status.model_revision ? status.model_revision : loadac::kModelRevision;
-  dst["contract"] = loadac::kContract;
-  dst["estimate_available"] = status.estimate_available && status.interval_present;
-  dst["unavailable_reason"] = loadac::reason_name(status.estimate_available && status.interval_present
-                                                      ? loadac::UnavailableReason::None
-                                                      : status.reason);
-  dst["pf_assumed_millis"] = pf;
-  dst["pf_is_assumption"] = true;
-  dst["model_revision"] = String(model);
-  dst["assumption_provenance"] = (model == loadac::kModelRevision && pf == loadac::kPfAssumedMillis)
-                                     ? loadac::kAssumptionProvenance
-                                     : "explicit-pf-assumption";
-  dst["coverage_scope"] = "unknown";
-  dst["attribution"] = loadac::attribution_name(status.attribution);
-  dst["synthetic"] = false;
-  dst["transport"] = "pending_contract";
-  dst["bms_dc_used"] = false;
-  if (status.interval_present) {
-    char number[32];
-    snprintf(number, sizeof(number), "%llu", (unsigned long long)status.interval_mwh);
-    dst["interval_estimated_mwh"] = number;
-  } else {
-    dst["interval_estimated_mwh"] = nullptr;
-  }
-}
+void load_ac_energy_fill_brief(JsonObject dst) { load_ac_energy_fill(dst, false); }
 
 void load_ac_energy_register(AsyncWebServer &server) {
   server.on("/load_ac_energy", HTTP_GET, [](AsyncWebServerRequest *request) {

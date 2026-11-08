@@ -21,10 +21,11 @@
 namespace loadac {
 
 constexpr const char *kContract = "estimate.load_ac_energy.v1";
-constexpr const char *kStream = "load_ac_energy";
+constexpr const char *kStream = "estimate.load_ac_energy";
 constexpr int32_t kPfAssumedMillis = 800;
+constexpr const char *kModelWireVersion = "0.1.0";
+constexpr const char *kModelSourcePath = "ac_vrms_mv_x_ac_irms_ma_x_pf_millis";
 constexpr uint32_t kModelRevision = 2;
-constexpr const char *kAssumptionProvenance = "caleb-2026-11-08-default-0.8";
 constexpr uint64_t kEnergyDenom = 3600000000000ULL;
 constexpr uint32_t kHeaderBytes = 256;
 constexpr uint32_t kDefaultSlots = 32;
@@ -254,6 +255,10 @@ class Meter {
 
   bool note_http_success(uint32_t boot_id, uint64_t seq);
   bool note_server_commit(uint32_t boot_id, uint64_t seq);
+  // Ack only when the committed body is the stored body. Identity is
+  // device_id + stream + meter_epoch + boot_id + seq + clock_correction_version.
+  // A different body for that identity is a conflict and is not stored.
+  bool note_server_commit_replay(uint32_t boot_id, uint64_t seq, uint32_t clock_correction_version, const char *body);
 
   MeterStatus status() const;
   uint32_t copy_records(char *dst, uint32_t dst_bytes, uint32_t *count) const;

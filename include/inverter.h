@@ -1,5 +1,6 @@
 #pragma once
 #include <housekeeping.h>
+#include "stm32_text_validity.h"
 
 // Public snapshot struct — safe copy of current inverter state
 struct InverterSnapshot {
@@ -16,5 +17,9 @@ struct InverterSnapshot {
 // Call once from setup() — starts UART + background parsing task
 void initInverterParser(int rxPin, int txPin, long baud);
 
-// Thread-safe read of current inverter state
+// Thread-safe read of current inverter state.
+// A missed mutex leaves this snapshot zero-filled. That is not a valid AC sample.
 InverterSnapshot getInverterStatus();
+
+// Hardened load-candidate view. Mutex failure is invalid, not a zero volt/amp reading.
+loadac::TextCandidate getStm32LoadCandidate();

@@ -59,11 +59,6 @@ void add_u64(Buf *b, uint64_t v) {
   add(b, tmp);
 }
 
-void add_i64(Buf *b, int64_t v) {
-  if (v < 0) { add(b, "-"); add_u64(b, (uint64_t)(-v)); }
-  else add_u64(b, (uint64_t)v);
-}
-
 void add_u32(Buf *b, uint32_t v) { add_u64(b, v); }
 
 void safe_copy(char *dst, size_t n, const char *src) {
@@ -723,8 +718,9 @@ bool Meter::begin(ByteStore &store, const ModelConfig &cfg) {
       h.loss += 1;
       h.tail_open = 0;
     }
-    if (h.pf <= 0 || h.pf > 1000) h.pf = cfg_.pf_assumed_millis;
-    if (!h.model) h.model = cfg_.model_revision;
+    h.seq = 1;
+    h.energy = 0;
+    h.residue = 0;
   }
   if (!h.model) h.model = cfg_.model_revision;
   epoch_ = h.epoch ? h.epoch : 1;
@@ -749,8 +745,8 @@ bool Meter::begin(ByteStore &store, const ModelConfig &cfg) {
   source_blocked_ = true;
   source_qualified_ = false;
   blocked_reason_ = UnavailableReason::Stm32TextVoutIoutNotRms;
-  cfg_.model_revision = h.model;
-  cfg_.pf_assumed_millis = h.pf;
+  cfg_.model_revision = kModelRevision;
+  cfg_.pf_assumed_millis = kPfAssumedMillis;
   day_covered_ms_ = decoded ? h.day_covered : 0;
   day_gaps_ = decoded ? h.day_gaps : 0;
   day_measured_ = decoded && h.day_measured;
@@ -937,16 +933,29 @@ bool Meter::http_success_kept(uint32_t boot_id, uint64_t seq) const {
 
 bool Meter::note_http_success(uint32_t, uint64_t) { return false; }
 
-bool Meter::note_server_commit(uint32_t boot_id, uint64_t seq) {
-  if (!ready_ || !store_) return false;
+bool Meter::note_server_commit(uint32_t, uint64_t) { return false; }
+
+bool Meter::note_server_commit_replay(uint32_t boot_id, uint64_t seq, uint32_t clock_correction_version, const char *body) {
+  if (!ready_ || !store_ || !body || !body[0]) return false;
+  char marker[48];
+  snprintf(marker, sizeof(marker), "\"clock_correction_version\":%u", clock_correction_version);
   for (uint16_t i = 0; i < cfg_.slot_count; ++i) {
     uint8_t slot[kDefaultSlotBytes];
     if (cfg_.slot_bytes > sizeof(slot)) return false;
     uint32_t off = kHeaderBytes + (uint32_t)i * cfg_.slot_bytes;
     if (!store_->read(off, slot, cfg_.slot_bytes)) return false;
     if (get_u64(slot + 8) != seq || get_u32(slot + 16) != boot_id) continue;
+    uint32_t len = (uint32_t)slot[2] | ((uint32_t)slot[3] << 8);
+    if (20u + len > cfg_.slot_bytes || slot[20 + len] != 0) {
+      /* payload is not necessarily NUL-terminated inside the slot */
+    }
+    if (len + 1 > kDefaultSlotBytes) return false;
+    char payload[kDefaultSlotBytes];
+    memcpy(payload, slot + 20, len);
+    payload[len] = 0;
+    if (strcmp(payload, body) != 0 || !strstr(payload, marker)) return false;
     if (slot[0] == 2) return true;
-    if (slot[0] != 1) continue;
+    if (slot[0] != 1) return false;
     slot[0] = 2;
     if (!store_->write(off, slot, cfg_.slot_bytes)) return false;
     return store_->persist();
@@ -954,9 +963,16 @@ bool Meter::note_server_commit(uint32_t boot_id, uint64_t seq) {
   return false;
 }
 
-const char *assumption_provenance(uint32_t model, int32_t pf) {
-  if (model == kModelRevision && pf == kPfAssumedMillis) return kAssumptionProvenance;
-  return "explicit-pf-assumption";
+void format_utc_z(int64_t unix_utc, char *out, size_t n) {
+  int64_t days = floor_div(unix_utc, 86400);
+  int64_t sod = unix_utc - days * 86400;
+  if (sod < 0) sod += 86400;
+  int y = 1970, m = 1, d = 1;
+  civil_from_days(days, &y, &m, &d);
+  int hh = (int)(sod / 3600);
+  int mm = (int)((sod % 3600) / 60);
+  int ss = (int)(sod % 60);
+  snprintf(out, n, "%04d-%02d-%02dT%02d:%02d:%02dZ", y, m, d, hh, mm, ss);
 }
 
 bool Meter::emit(const Segment &seg, int64_t utc_end, bool utc_end_known, CivilDay day) {
@@ -978,72 +994,84 @@ bool Meter::emit(const Segment &seg, int64_t utc_end, bool utc_end_known, CivilD
   }
   if (attr == Attribution::Allocated && day.valid == false) attr = Attribution::Unallocated;
 
+  const bool measurable = seg.kind == RecordKind::Interval && seg.covered_ms > 0 && seg.pf_millis == kPfAssumedMillis &&
+                          coverage_allows(seg.mode, seg.coverage);
+  uint64_t published = 0;
+  if (measurable) {
+    uint64_t ignored = 0;
+    if (!estimated_mwh(seg.v_mV, seg.i_mA, kPfAssumedMillis, seg.covered_ms, &ignored, &published)) return false;
+  }
+  const bool inputs_ok = measurable;
+  const char *sample_validity = "absent";
+  if (!measurable && seg.reason == UnavailableReason::SampleInvalid) sample_validity = "invalid";
+  else if (measurable && seg.covered_ms < (seg.mono_end - seg.mono_start)) sample_validity = "partial";
+  else if (measurable) sample_validity = "valid";
+  uint32_t interval_ms = seg.mono_end >= seg.mono_start ? (uint32_t)(seg.mono_end - seg.mono_start) : 0;
+  if (!measurable) published = 0;
+
   char json[1200];
   Buf b = {json, 0, sizeof(json), true};
+  char boot_text[16];
+  snprintf(boot_text, sizeof(boot_text), "%u", boot_);
+  char utc_a[32], utc_b[32];
+  const char *tq = "absent";
+  if (clock_.anchored && utc_ok) tq = "rtc_ds1307";
+  else if (clock_.have_face || clock_.quality == TimeQuality::StaleNvsRejected || clock_.quality == TimeQuality::Adjusted ||
+           clock_.quality == TimeQuality::PlausibleTick || clock_.quality == TimeQuality::Unanchored)
+    tq = "uncertain";
+  const char *scope = inputs_ok ? coverage_name(seg.coverage) : "unknown";
   add(&b, "{");
   add_str(&b, "contract", kContract, false);
-  add_str(&b, "record_kind", kind_name(seg.kind == RecordKind::Gap ? RecordKind::Gap : seg.kind), true);
+  add_bool(&b, "simulation", false, true);
   add_str(&b, "device_id", device_id_, true);
   add_str(&b, "stream", kStream, true);
   add_u64s(&b, "meter_epoch", epoch_, true);
-  add_u64s(&b, "boot_id", boot_, true);
+  add_str(&b, "boot_id", boot_text, true);
   add_u64s(&b, "seq", seq_, true);
+  add_key(&b, "clock_correction_version", true); add_u32(&b, 0);
+  add(&b, ",\"model\":{");
+  add_str(&b, "revision", kContract, false);
+  add_str(&b, "source_path", kModelSourcePath, true);
+  add_str(&b, "version", kModelWireVersion, true);
+  add_str(&b, "pf_kind", "assumed", true);
+  add_key(&b, "pf_assumption_millis", true); add_u32(&b, (uint32_t)kPfAssumedMillis);
+  add_str(&b, "coverage_scope", scope, true);
+  add(&b, "}");
   add_u64s(&b, "monotonic_start_ms", seg.mono_start, true);
   add_u64s(&b, "monotonic_end_ms", seg.mono_end, true);
   add_key(&b, "utc_start", true);
-  if (utc_ok) { add(&b, "\""); add_i64(&b, utc_start); add(&b, "\""); }
+  if (utc_ok && tq[0] == 'r') { format_utc_z(utc_start, utc_a, sizeof(utc_a)); add(&b, "\""); add(&b, utc_a); add(&b, "\""); }
   else add(&b, "null");
   add_key(&b, "utc_end", true);
-  if (utc_ok && utc_end_known) { add(&b, "\""); add_i64(&b, utc_end); add(&b, "\""); }
+  if (utc_ok && utc_end_known && tq[0] == 'r') { format_utc_z(utc_end, utc_b, sizeof(utc_b)); add(&b, "\""); add(&b, utc_b); add(&b, "\""); }
   else add(&b, "null");
-  uint64_t counter_end = durable_energy_ + seg.added_mwh;
+  uint64_t counter_end = durable_energy_ + published;
+  add_str(&b, "time_quality", tq, true);
   add_u64s(&b, "counter_start_mwh", seg.counter_start, true);
   add_u64s(&b, "counter_end_mwh", counter_end, true);
-  add_null_or_u64(&b, "interval_estimated_mwh", interval_present, seg.added_mwh, true);
-  add_key(&b, "allocated_estimated_mwh", true);
-  add(&b, "null");
-  add_null_or_u64(&b, "unallocated_estimated_mwh", attr == Attribution::Unallocated && interval_present, seg.added_mwh, true);
-  add_key(&b, "covered_ms", true); add_u32(&b, seg.covered_ms);
-  uint32_t interval_ms = seg.mono_end >= seg.mono_start ? (uint32_t)(seg.mono_end - seg.mono_start) : 0;
-  add_key(&b, "interval_ms", true); add_u32(&b, interval_ms);
-  TimeQuality tq = clock_.anchored && utc_ok ? TimeQuality::Anchored : clock_.quality;
-  if (!clock_.anchored && tq == TimeQuality::Anchored) tq = TimeQuality::Uncertain;
-  add_str(&b, "time_quality", quality_name(tq), true);
-  add_str(&b, "mode", mode_name(seg.mode), true);
-  add_str(&b, "coverage_scope", coverage_name(seg.coverage), true);
-  add_str(&b, "attribution", attribution_name(attr), true);
-  add_u64s(&b, "model_revision", cfg_.model_revision, true);
-  add_u64s(&b, "source_version", seg.source_version ? seg.source_version : cfg_.source_version, true);
-  add_str(&b, "source_path", seg.source_path[0] ? seg.source_path : "unknown", true);
-  add_key(&b, "pf_assumed_millis", true); add_u32(&b, (uint32_t)seg.pf_millis);
-  add_bool(&b, "pf_is_assumption", true, true);
-  add_str(&b, "assumption_provenance", assumption_provenance(cfg_.model_revision, seg.pf_millis), true);
-  bool available = interval_present && (attr == Attribution::Allocated || attr == Attribution::ValidZero ||
-                                       (attr == Attribution::Unallocated && seg.kind == RecordKind::Interval));
-  if (seg.kind == RecordKind::Gap) available = false;
-  add_bool(&b, "estimate_available", available && interval_present, true);
-  add_str(&b, "unavailable_reason", reason_name(available ? UnavailableReason::None : seg.reason), true);
-  add_key(&b, "civil_day", true);
-  if (utc_ok && day.valid && attr != Attribution::Unallocated) {
-    char daybuf[16];
-    snprintf(daybuf, sizeof(daybuf), "%04d-%02d-%02d", day.year, day.month, day.day);
-    add(&b, "\""); add(&b, daybuf); add(&b, "\"");
-  } else add(&b, "null");
-  add_str(&b, "timezone", "Africa/Lagos", true);
-  add_key(&b, "utc_offset_s", true); add_u32(&b, (uint32_t)kLagosOffsetSeconds);
-  add_bool(&b, "synthetic", false, true);
-  add_str(&b, "transport", "pending_contract", true);
-  add_key(&b, "loss_events", true); add_u32(&b, loss_);
-  add_bool(&b, "overflow_alarm", overflow_, true);
-  add_bool(&b, "bms_dc_used", false, true);
-  if (seg.kind == RecordKind::Interval) {
-    add_key(&b, "v_rms_mV", true); add_i64(&b, seg.v_mV);
-    add_key(&b, "i_rms_mA", true); add_i64(&b, seg.i_mA);
-  } else {
-    add_key(&b, "v_rms_mV", true); add(&b, "null");
-    add_key(&b, "i_rms_mA", true); add(&b, "null");
+  add_u64s(&b, "interval_estimated_mwh", published, true);
+  add_u64s(&b, "covered_ms", inputs_ok ? seg.covered_ms : 0, true);
+  add_u64s(&b, "interval_ms", interval_ms, true);
+  add_str(&b, "sample_validity", sample_validity, true);
+  add(&b, ",\"source_mode_coverage\":{");
+  add_u64s(&b, "inverter_output_only_ms", (inputs_ok && seg.coverage == Coverage::InverterOutputOnly) ? seg.covered_ms : 0, false);
+  add_u64s(&b, "common_output_ms", (inputs_ok && seg.coverage == Coverage::CommonOutput) ? seg.covered_ms : 0, true);
+  add_u64s(&b, "unknown_ms", inputs_ok ? 0 : interval_ms, true);
+  add(&b, "}");
+  if (!inputs_ok) add(&b, ",\"inputs\":null");
+  else {
+    add(&b, ",\"inputs\":{");
+    add_u64s(&b, "ac_vrms_mv", (uint64_t)seg.v_mV, false);
+    add_u64s(&b, "ac_irms_ma", (uint64_t)seg.i_mA, true);
+    add_key(&b, "pf_assumed_millis", true); add_u32(&b, (uint32_t)kPfAssumedMillis);
+    add_bool(&b, "ac_v_valid", true, true);
+    add_bool(&b, "ac_i_valid", true, true);
+    add(&b, "}");
   }
   add(&b, "}");
+  (void)attr;
+  (void)interval_present;
+  (void)day;
   if (!b.ok || json_has_ambiguous_energy_key(json)) return false;
 
   uint64_t old_energy = durable_energy_;
@@ -1057,7 +1085,7 @@ bool Meter::emit(const Segment &seg, int64_t utc_end, bool utc_end_known, CivilD
   uint64_t old_cov = day_covered_ms_;
   uint32_t old_gaps = day_gaps_;
   bool old_measured = day_measured_;
-  durable_energy_ = old_energy + seg.added_mwh;
+  durable_energy_ = old_energy + published;
   durable_residue_ = residue_;
   tail_open_ = false;
   seq_ = old_seq + 1;
@@ -1148,6 +1176,7 @@ void Meter::start_segment(const AcSample &sample, bool, bool zero, RecordKind ki
   seg_.source_version = sample.source_version ? sample.source_version : cfg_.source_version;
   safe_copy(seg_.source_path, sizeof(seg_.source_path), sample.source_path ? sample.source_path : "unknown");
   seg_.reason = reason;
+  residue_ = 0;
   tail_open_ = true;
   if (!day_.valid && seg_.utc_start_known && clock_.anchored) {
     if (lagos_day(seg_.utc_start, &day_)) day_mono_start_ = sample.mono_ms;
@@ -1160,7 +1189,7 @@ void Meter::close_for_clock_change(uint64_t mono_ms) { commit_segment(mono_ms, f
 bool Meter::flush(uint64_t mono_ms) { return ready_ && commit_segment(mono_ms, false); }
 
 bool Meter::set_pf_assumed(int32_t pf_millis, uint64_t mono_ms) {
-  if (!ready_ || pf_millis <= 0 || pf_millis > 1000) return false;
+  if (!ready_ || pf_millis != kPfAssumedMillis) return false;
   if (!commit_segment(mono_ms, false)) return false;
   cfg_.pf_assumed_millis = pf_millis;
   last_pf_ = pf_millis;
@@ -1196,7 +1225,12 @@ bool Meter::on_sample(const AcSample &sample) {
   int64_t u0 = 0, u1 = 0;
   bool k0 = prev_ok && utc_at(last_.mono_ms, &u0);
   bool k1 = cur_ok && utc_at(sample.mono_ms, &u1);
-  bool cross = k0 && k1 && !same_lagos_day(u0, u1);
+  bool end_is_exact_midnight = false;
+  if (k1) {
+    int64_t local_end = u1 + kLagosOffsetSeconds;
+    end_is_exact_midnight = local_end > 0 && local_end % 86400 == 0;
+  }
+  bool cross = k0 && k1 && !same_lagos_day(u0, end_is_exact_midnight ? u1 - 1 : u1);
   bool too_long = dt > cfg_.max_integrate_ms;
   bool discontinuity = !prev_ok || !cur_ok || too_long || last_.mode != sample.mode ||
                        last_.coverage != sample.coverage || !sample.valid || !last_.valid;
@@ -1241,7 +1275,14 @@ bool Meter::on_sample(const AcSample &sample) {
   if (!zero) {
     if (!estimated_mwh(last_.v_rms_mV, last_.i_rms_mA, last_pf_, dt, &residue_next, &added)) return false;
   }
-  if (cross || !same_shape) {
+  bool rolled_day = false;
+  if (seg_.open && seg_.utc_start_known && k1) {
+    CivilDay opened, step_day;
+    int64_t step_utc = end_is_exact_midnight ? u1 - 1 : u1;
+    if (lagos_day(seg_.utc_start, &opened) && lagos_day(step_utc, &step_day))
+      rolled_day = opened.year != step_day.year || opened.month != step_day.month || opened.day != step_day.day;
+  }
+  if (cross || rolled_day || !same_shape) {
     if (!commit_segment(last_.mono_ms, false)) return false;
     residue_ = residue_next;
     Segment step;
@@ -1462,7 +1503,6 @@ bool Meter::checkpoint_from_buckets(uint64_t mono_ms) {
   add_str(&b, "source_path", "daily_checkpoint", true);
   add_key(&b, "pf_assumed_millis", true); add_u32(&b, (uint32_t)cfg_.pf_assumed_millis);
   add_bool(&b, "pf_is_assumption", true, true);
-  add_str(&b, "assumption_provenance", assumption_provenance(cfg_.model_revision, cfg_.pf_assumed_millis), true);
   bool available = present_alloc && day_gaps_ == 0 && unalloc == 0;
   add_bool(&b, "estimate_available", available, true);
   add_str(&b, "unavailable_reason", available ? "none" : (present_alloc ? "sample_missing" : reason_name(blocked_reason_)), true);
@@ -1488,14 +1528,7 @@ bool Meter::checkpoint_from_buckets(uint64_t mono_ms) {
   uint32_t keep_gaps = day_gaps_;
   bool keep_meas = day_measured_;
   CivilDay keep_day = day_;
-  if (!wear_allow(mono_ms)) {
-    overflow_ = true;
-    return false;
-  }
-  uint64_t use_seq = seq_;
-  uint32_t old_commits = commits_;
-  uint32_t old_window = commits_in_window_;
-  uint64_t old_window_start = window_start_;
+  (void)json;
   allocated_ = 0;
   unallocated_ = 0;
   day_covered_ms_ = 0;
@@ -1503,20 +1536,13 @@ bool Meter::checkpoint_from_buckets(uint64_t mono_ms) {
   day_measured_ = false;
   day_.valid = false;
   day_mono_start_ = 0;
-  seq_ = use_seq + 1;
-  commits_ = old_commits + 1;
-  note_wear(mono_ms);
-  if (!write_slot(use_seq, boot_, json) || !save_header(false) || !persist_image()) {
+  if (!save_header(true)) {
     allocated_ = keep_alloc;
     unallocated_ = keep_un;
     day_covered_ms_ = keep_cov;
     day_gaps_ = keep_gaps;
     day_measured_ = keep_meas;
     day_ = keep_day;
-    seq_ = use_seq;
-    commits_ = old_commits;
-    commits_in_window_ = old_window;
-    window_start_ = old_window_start;
     return false;
   }
   return true;
@@ -1594,61 +1620,48 @@ MeterStatus Meter::status() const {
   return s;
 }
 
-uint32_t status_json(const MeterStatus &status, const char *source_path, bool include_missing_path, char *dst,
-                     uint32_t cap) {
+uint32_t status_json(const MeterStatus &status, const char *, bool, char *dst, uint32_t cap) {
   if (!dst || cap < 32) return 0;
   Buf b = {dst, 0, cap, true};
+  char boot_text[16];
+  snprintf(boot_text, sizeof(boot_text), "%u", status.boot_id);
+  const char *tq = "absent";
+  if (status.time_quality == TimeQuality::Anchored) tq = "rtc_ds1307";
+  else if (status.time_quality != TimeQuality::Uncertain) tq = "uncertain";
   add(&b, "{");
   add_str(&b, "contract", kContract, false);
-  add_str(&b, "record_kind", "status", true);
+  add_bool(&b, "simulation", false, true);
   add_str(&b, "device_id", status.device_id[0] ? status.device_id : "unknown", true);
   add_str(&b, "stream", kStream, true);
   add_u64s(&b, "meter_epoch", status.meter_epoch, true);
-  add_u64s(&b, "boot_id", status.boot_id, true);
-  add_u64s(&b, "seq", status.next_seq, true);
+  add_str(&b, "boot_id", boot_text, true);
+  add_u64s(&b, "seq", status.next_seq ? status.next_seq : 1, true);
+  add_key(&b, "clock_correction_version", true); add_u32(&b, (uint32_t)status.adjustments);
+  add(&b, ",\"model\":{");
+  add_str(&b, "revision", kContract, false);
+  add_str(&b, "source_path", kModelSourcePath, true);
+  add_str(&b, "version", kModelWireVersion, true);
+  add_str(&b, "pf_kind", "assumed", true);
+  add_key(&b, "pf_assumption_millis", true); add_u32(&b, (uint32_t)kPfAssumedMillis);
+  add_str(&b, "coverage_scope", "unknown", true);
+  add(&b, "}");
   add_u64s(&b, "monotonic_start_ms", 0, true);
   add_u64s(&b, "monotonic_end_ms", 0, true);
   add_key(&b, "utc_start", true); add(&b, "null");
   add_key(&b, "utc_end", true); add(&b, "null");
-  add_null_or_u64(&b, "counter_start_mwh", status.counter_trusted, status.persisted_mwh, true);
-  add_null_or_u64(&b, "counter_end_mwh", status.counter_trusted, status.persisted_mwh, true);
-  add_null_or_u64(&b, "interval_estimated_mwh", status.interval_present, status.interval_mwh, true);
-  add_null_or_u64(&b, "allocated_estimated_mwh", status.allocated_present, status.allocated_report_mwh, true);
-  add_null_or_u64(&b, "unallocated_estimated_mwh", status.estimate_available, status.unallocated_mwh, true);
-  add_key(&b, "covered_ms", true); add_u32(&b, 0);
-  add_key(&b, "interval_ms", true); add_u32(&b, 0);
-  add_str(&b, "time_quality", quality_name(status.time_quality), true);
-  add_str(&b, "mode", "unknown", true);
-  add_str(&b, "coverage_scope", "unknown", true);
-  add_str(&b, "attribution", attribution_name(status.attribution), true);
-  add_u64s(&b, "model_revision", status.model_revision ? status.model_revision : kModelRevision, true);
-  add_u64s(&b, "source_version", status.source_version ? status.source_version : 1, true);
-  add_str(&b, "source_path", source_path ? source_path : "stm32_uart1_rx33_tx2_legacy_text", true);
-  int32_t pf = status.pf_assumed_millis > 0 ? status.pf_assumed_millis : kPfAssumedMillis;
-  uint32_t model = status.model_revision ? status.model_revision : kModelRevision;
-  add_key(&b, "pf_assumed_millis", true); add_u32(&b, (uint32_t)pf);
-  add_bool(&b, "pf_is_assumption", true, true);
-  add_str(&b, "assumption_provenance", assumption_provenance(model, pf), true);
-  add_bool(&b, "estimate_available", status.estimate_available && status.interval_present, true);
-  add_str(&b, "unavailable_reason", reason_name(status.estimate_available && status.interval_present ? UnavailableReason::None : status.reason), true);
-  if (include_missing_path) add_str(&b, "missing_path", kMissingPath, true);
-  add_key(&b, "civil_day", true);
-  if (status.civil_text[0] && status.estimate_available && status.interval_present) {
-    add(&b, "\""); add(&b, status.civil_text); add(&b, "\"");
-  } else add(&b, "null");
-  add_str(&b, "timezone", "Africa/Lagos", true);
-  add_key(&b, "utc_offset_s", true); add_u32(&b, (uint32_t)kLagosOffsetSeconds);
-  add_bool(&b, "synthetic", false, true);
-  add_str(&b, "transport", "pending_contract", true);
-  add_key(&b, "loss_events", true); add_u32(&b, status.loss_events);
-  add_bool(&b, "overflow_alarm", status.overflow_alarm, true);
-  add_bool(&b, "journal_untrusted", status.journal_untrusted, true);
-  add_bool(&b, "bms_dc_used", false, true);
-  add_bool(&b, "tail_open", status.tail_open, true);
-  add_key(&b, "v_rms_mV", true); add(&b, "null");
-  add_key(&b, "i_rms_mA", true); add(&b, "null");
-  add(&b, "}");
-  if (!b.ok || json_has_ambiguous_energy_key(dst)) return 0;
+  add_str(&b, "time_quality", tq, true);
+  add_u64s(&b, "counter_start_mwh", status.counter_trusted ? status.persisted_mwh : 0, true);
+  add_u64s(&b, "counter_end_mwh", status.counter_trusted ? status.persisted_mwh : 0, true);
+  add_u64s(&b, "interval_estimated_mwh", 0, true);
+  add_u64s(&b, "covered_ms", 0, true);
+  add_u64s(&b, "interval_ms", 0, true);
+  add_str(&b, "sample_validity", "absent", true);
+  add(&b, ",\"source_mode_coverage\":{");
+  add_u64s(&b, "inverter_output_only_ms", 0, false);
+  add_u64s(&b, "common_output_ms", 0, true);
+  add_u64s(&b, "unknown_ms", 0, true);
+  add(&b, "},\"inputs\":null}");
+  if (!b.ok) return 0;
   return b.n;
 }
 
