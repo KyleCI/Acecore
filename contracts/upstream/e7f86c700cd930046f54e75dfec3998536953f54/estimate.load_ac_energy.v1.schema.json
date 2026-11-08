@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acecore.local/contracts/estimate.load_ac_energy.v1.schema.json",
+  "title": "estimate.load_ac_energy.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "simulation",
+    "device_id",
+    "stream",
+    "meter_epoch",
+    "boot_id",
+    "seq",
+    "clock_correction_version",
+    "model",
+    "monotonic_start_ms",
+    "monotonic_end_ms",
+    "utc_start",
+    "utc_end",
+    "time_quality",
+    "counter_start_mwh",
+    "counter_end_mwh",
+    "interval_estimated_mwh",
+    "covered_ms",
+    "interval_ms",
+    "sample_validity",
+    "source_mode_coverage",
+    "inputs"
+  ],
+  "properties": {
+    "contract": { "const": "estimate.load_ac_energy.v1" },
+    "simulation": { "type": "boolean" },
+    "device_id": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "stream": { "const": "estimate.load_ac_energy" },
+    "meter_epoch": { "$ref": "#/$defs/uint64" },
+    "boot_id": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" },
+    "seq": { "$ref": "#/$defs/uint64" },
+    "clock_correction_version": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "source_path", "version", "pf_kind", "pf_assumption_millis", "coverage_scope"],
+      "properties": {
+        "revision": { "const": "estimate.load_ac_energy.v1" },
+        "source_path": { "const": "ac_vrms_mv_x_ac_irms_ma_x_pf_millis" },
+        "version": { "const": "0.1.0" },
+        "pf_kind": { "const": "assumed", "description": "Not a measured power factor. Measured watt-hours are a separate future stream." },
+        "pf_assumption_millis": { "const": 800, "description": "Original v0.1 assumption, PF 0.800. Firmware applies it once. The API does not apply it again." },
+        "coverage_scope": { "enum": ["inverter_output_only", "common_output", "unknown"] }
+      }
+    },
+    "monotonic_start_ms": { "$ref": "#/$defs/uint64" },
+    "monotonic_end_ms": { "$ref": "#/$defs/uint64" },
+    "utc_start": { "$ref": "#/$defs/instant" },
+    "utc_end": { "$ref": "#/$defs/instant" },
+    "time_quality": { "enum": ["rtc_ds1307", "uncertain", "absent"] },
+    "counter_start_mwh": { "$ref": "#/$defs/uint64" },
+    "counter_end_mwh": { "$ref": "#/$defs/uint64" },
+    "interval_estimated_mwh": { "$ref": "#/$defs/uint64" },
+    "covered_ms": { "$ref": "#/$defs/uint64" },
+    "interval_ms": { "$ref": "#/$defs/uint64" },
+    "sample_validity": { "enum": ["valid", "partial", "invalid", "absent"] },
+    "source_mode_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inverter_output_only_ms", "common_output_ms", "unknown_ms"],
+      "properties": {
+        "inverter_output_only_ms": { "$ref": "#/$defs/uint64" },
+        "common_output_ms": { "$ref": "#/$defs/uint64" },
+        "unknown_ms": { "$ref": "#/$defs/uint64" }
+      }
+    },
+    "inputs": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ac_vrms_mv", "ac_irms_ma", "pf_assumed_millis", "ac_v_valid", "ac_i_valid"],
+          "properties": {
+            "ac_vrms_mv": { "$ref": "#/$defs/uint64" },
+            "ac_irms_ma": { "$ref": "#/$defs/uint64" },
+            "pf_assumed_millis": { "type": "integer", "minimum": 0, "maximum": 1000 },
+            "ac_v_valid": { "type": "boolean" },
+            "ac_i_valid": { "type": "boolean" }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "uint64": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "description": "Canonical unsigned decimal. Not a JSON number."
+    },
+    "instant": {
+      "description": "Null, an ISO-8601 string with Z or an offset, or {epoch_ms} / {local, offset}.",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string" },
+        { "type": "object" }
+      ]
+    }
+  }
+}

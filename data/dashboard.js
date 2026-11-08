@@ -3,6 +3,25 @@
 // between frames; replace it only with a newer valid reading.
 let displayedSolar = null;
 
+function formatAcLoadEstimate(data) {
+    const estimate = data && data.load_ac_estimate;
+    if (!estimate || estimate.contract !== "estimate.load_ac_energy.v1") return "AC estimate unavailable";
+    if (estimate.simulation === true) return "AC estimate unavailable";
+    const model = estimate.model;
+    if (!model || model.pf_kind !== "assumed" || model.pf_assumption_millis !== 800) return "AC estimate unavailable";
+    if (model.version !== "0.1.0" || model.coverage_scope === "unknown") return "AC estimate unavailable";
+    if (estimate.sample_validity !== "valid" && estimate.sample_validity !== "partial") return "AC estimate unavailable";
+    const inputs = estimate.inputs;
+    if (!inputs || inputs.ac_v_valid !== true || inputs.ac_i_valid !== true || inputs.pf_assumed_millis !== 800) {
+        return "AC estimate unavailable";
+    }
+    const raw = estimate.interval_estimated_mwh;
+    if (typeof raw !== "string" || !/^(0|[1-9][0-9]*)$/.test(raw)) return "AC estimate unavailable";
+    const milliwattHours = Number(raw);
+    if (!Number.isFinite(milliwattHours)) return "AC estimate unavailable";
+    return `${(milliwattHours / 1000).toFixed(3)} Wh estimated`;
+}
+
 function finiteNumber(value) {
     if (value === null || value === undefined || value === "") return null;
     const number = Number(value);
@@ -93,7 +112,7 @@ async function updateDashboard() {
             ?? finiteNumber(data.power_drawn);
         document.getElementById("powerOutput").innerText = powerWatts !== null
             ? `${powerWatts.toFixed(2)} W` : "-- W";
-        document.getElementById("energyConsumption").innerText = `${data.inverter_energy?.toFixed(2) ?? "--"} kWh`;
+        document.getElementById("energyConsumption").innerText = formatAcLoadEstimate(data);
         document.getElementById("systemTemp").innerText = (data.inverter_temperature != null) ? `${data.inverter_temperature.toFixed(1)} °C` : "-- °C";
         document.getElementById("outputVoltage").innerText = (data.inverterVoltage != null) ? `${data.inverterVoltage.toFixed(2)} V` : "-- V";
         document.getElementById("inputVoltage").innerText = (data.gridVoltage != null) ? `${data.gridVoltage.toFixed(2)} V` : "-- V";
@@ -120,7 +139,7 @@ async function updateDashboard() {
         const timeToFullEl = document.getElementById("timeToFull"); if (timeToFullEl) timeToFullEl.innerText = "Time to Full: --";
         document.getElementById("batteryTemp").innerText = "-- °C";
         document.getElementById("powerOutput").innerText = "-- W";
-        document.getElementById("energyConsumption").innerText = "-- kWh";
+        document.getElementById("energyConsumption").innerText = "AC estimate unavailable";
         document.getElementById("systemTemp").innerText = "-- °C";
         // Preserve the last complete solar snapshot. A transient network error
         // must not make a working solar display jump back to placeholders.

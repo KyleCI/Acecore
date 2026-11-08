@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acecore.local/contracts/estimate.load_ac_energy.v1.socket-error.schema.json",
+  "title": "estimate.load_ac_energy.v1 socket rejection",
+  "description": "WebSocket text frame when an energy_estimate was not committed. ack is false. There is no record_id. This is not a durable acknowledgement.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "ack", "error", "message", "contract", "stream"],
+  "properties": {
+    "status": { "const": "error" },
+    "ack": { "const": false },
+    "error": {
+      "enum": [
+        "conflicting_duplicate",
+        "counter_discontinuity",
+        "monotonic_overlap",
+        "out_of_order",
+        "utc_overlap",
+        "clock_correction_changed_energy",
+        "model_pf",
+        "device_mismatch",
+        "unsupported_stream",
+        "unsupported_contract",
+        "energy_formula",
+        "decimal_string",
+        "sample_validity",
+        "measurement_unknown",
+        "model",
+        "rejected",
+        "unavailable"
+      ]
+    },
+    "message": { "type": "string", "maxLength": 180 },
+    "contract": { "const": "estimate.load_ac_energy.v1" },
+    "stream": { "const": "estimate.load_ac_energy" },
+    "device_id": { "type": "string", "maxLength": 120 },
+    "meter_epoch": { "type": "string", "maxLength": 20 },
+    "boot_id": { "type": "string", "maxLength": 64 },
+    "seq": { "type": "string", "maxLength": 20 },
+    "clock_correction_version": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+  }
+}

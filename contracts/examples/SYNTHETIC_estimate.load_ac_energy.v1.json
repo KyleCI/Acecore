@@ -1,0 +1,41 @@
+{
+  "contract": "estimate.load_ac_energy.v1",
+  "simulation": true,
+  "device_id": "SYNTHETIC",
+  "stream": "estimate.load_ac_energy",
+  "meter_epoch": "1",
+  "boot_id": "sim-boot-1",
+  "seq": "2",
+  "clock_correction_version": 0,
+  "model": {
+    "revision": "estimate.load_ac_energy.v1",
+    "source_path": "ac_vrms_mv_x_ac_irms_ma_x_pf_millis",
+    "version": "0.1.0",
+    "pf_kind": "assumed",
+    "pf_assumption_millis": 800,
+    "coverage_scope": "inverter_output_only"
+  },
+  "monotonic_start_ms": "3600000",
+  "monotonic_end_ms": "7200000",
+  "utc_start": "2026-11-04T11:00:00Z",
+  "utc_end": "2026-11-04T12:00:00Z",
+  "time_quality": "rtc_ds1307",
+  "counter_start_mwh": "0",
+  "counter_end_mwh": "184000",
+  "interval_estimated_mwh": "184000",
+  "covered_ms": "3600000",
+  "interval_ms": "3600000",
+  "sample_validity": "valid",
+  "source_mode_coverage": {
+    "inverter_output_only_ms": "3600000",
+    "common_output_ms": "0",
+    "unknown_ms": "0"
+  },
+  "inputs": {
+    "ac_vrms_mv": "230000",
+    "ac_irms_ma": "1000",
+    "pf_assumed_millis": 800,
+    "ac_v_valid": true,
+    "ac_i_valid": true
+  }
+}

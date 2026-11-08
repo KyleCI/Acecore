@@ -3,6 +3,7 @@
 #include "offline_battery_notifications.h"
 #include <PowercellOTA.h>
 #include <energy.h>
+#include "load_ac_energy_port.h"
 
 
 
@@ -10,7 +11,7 @@
 void setup()
 {
     Serial.begin(115200);
-    JK_UART.begin(JK_BAUD, SERIAL_8N1, 17, 16);
+    JK_UART.begin(JK_BAUD, SERIAL_8N1, ORIGINAL_V01_BMS_RX, ORIGINAL_V01_BMS_TX);
     INVERTER_UART.begin(INVERTER_BAUD, SERIAL_8N1, INVERTER_RX, INVERTER_TX);
     initInverterParser(INVERTER_RX, INVERTER_TX, INVERTER_BAUD);
     pinMode(RELAY, OUTPUT);
@@ -49,8 +50,11 @@ void setup()
     energy_init();      // restores persisted Wh from NVS
     loraDiag("after energy");
 
-    mppt_init();        // begins accumulating discharge energy from BMS samples
+    mppt_init();        // ADS1115 DC PV bus; not AC load energy
     loraDiag("after mppt");
+
+    load_ac_energy_begin();
+    loraDiag("after ac-estimate");
 
     initOfflineBatteryNotifications(server);
     loraDiag("after notif");
@@ -93,6 +97,7 @@ void loop()
   serviceWebSocketCommands();
   serviceOfflineSync();
   lightUpStatus();
+  load_ac_energy_poll();
   // firmwareOTA.service(loraRadioReady());
   if (shouldRestart) {
     delay(250);

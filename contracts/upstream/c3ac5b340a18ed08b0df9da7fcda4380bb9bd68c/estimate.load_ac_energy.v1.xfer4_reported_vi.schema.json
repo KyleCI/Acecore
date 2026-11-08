@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acecore.local/contracts/estimate.load_ac_energy.v1.xfer4_reported_vi.schema.json",
+  "title": "xfer4_reported_vi_pf080_unvalidated_v1",
+  "description": "Reported inverter VOUT/IOUT estimate. Not the RMS profile. Opt-in is prepared and is not a deployed activation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "simulation",
+    "device_id",
+    "stream",
+    "meter_epoch",
+    "boot_id",
+    "seq",
+    "clock_correction_version",
+    "model",
+    "monotonic_start_ms",
+    "monotonic_end_ms",
+    "utc_start",
+    "utc_end",
+    "time_quality",
+    "counter_start_mwh",
+    "counter_end_mwh",
+    "interval_estimated_mwh",
+    "covered_ms",
+    "interval_ms",
+    "sample_validity",
+    "source_mode_coverage",
+    "inputs"
+  ],
+  "properties": {
+    "contract": { "const": "estimate.load_ac_energy.v1" },
+    "simulation": { "type": "boolean" },
+    "device_id": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "stream": { "const": "estimate.load_ac_energy" },
+    "meter_epoch": { "$ref": "#/$defs/uint64" },
+    "boot_id": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" },
+    "seq": { "$ref": "#/$defs/uint64" },
+    "clock_correction_version": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "gap_reason": {
+      "oneOf": [
+        { "type": "null" },
+        { "enum": ["grid", "transfer", "fault", "stale", "truncated", "txdrop"] }
+      ]
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "model_id",
+        "source_path",
+        "version",
+        "pf_kind",
+        "pf_assumption_millis",
+        "coverage_scope",
+        "source_identity",
+        "source_sha256",
+        "provenance_basis",
+        "validation"
+      ],
+      "properties": {
+        "revision": { "const": "estimate.load_ac_energy.v1" },
+        "model_id": { "const": "xfer4_reported_vi_pf080_unvalidated_v1" },
+        "source_path": { "const": "reported_voltage_mv_x_reported_current_ma_x_pf_millis" },
+        "version": { "const": "0.1.0" },
+        "pf_kind": { "const": "assumed" },
+        "pf_assumption_millis": { "const": 800 },
+        "coverage_scope": { "const": "inverter_output_only" },
+        "source_identity": { "const": "Powercell_caleb_xfer4_flash.zip" },
+        "source_sha256": { "const": "df46e024a3cfdeafd347ed6dc33e2402d470a546ea085b55b215c50c56cc4462" },
+        "provenance_basis": { "const": "user_identified_last_flash" },
+        "validation": { "const": "unvalidated" }
+      }
+    },
+    "monotonic_start_ms": { "$ref": "#/$defs/uint64" },
+    "monotonic_end_ms": { "$ref": "#/$defs/uint64" },
+    "utc_start": { "$ref": "#/$defs/instant" },
+    "utc_end": { "$ref": "#/$defs/instant" },
+    "time_quality": { "enum": ["rtc_ds1307", "uncertain", "absent"] },
+    "counter_start_mwh": { "$ref": "#/$defs/uint64" },
+    "counter_end_mwh": { "$ref": "#/$defs/uint64" },
+    "interval_estimated_mwh": { "$ref": "#/$defs/uint64" },
+    "covered_ms": { "$ref": "#/$defs/uint64" },
+    "interval_ms": { "$ref": "#/$defs/uint64" },
+    "sample_validity": { "enum": ["reported", "clamped_or_zero", "gap"] },
+    "source_mode_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inverter_output_only_ms", "common_output_ms", "unknown_ms"],
+      "properties": {
+        "inverter_output_only_ms": { "$ref": "#/$defs/uint64" },
+        "common_output_ms": { "$ref": "#/$defs/uint64" },
+        "unknown_ms": { "$ref": "#/$defs/uint64" }
+      }
+    },
+    "inputs": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reported_voltage_mv", "reported_current_ma", "pf_assumed_millis"],
+          "properties": {
+            "reported_voltage_mv": { "$ref": "#/$defs/uint64" },
+            "reported_current_ma": { "$ref": "#/$defs/uint64" },
+            "pf_assumed_millis": { "const": 800 }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "uint64": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "instant": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string" },
+        { "type": "object" }
+      ]
+    }
+  }
+}

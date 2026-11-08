@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acecore.local/contracts/estimate.load_ac_energy.v1.ack.schema.json",
+  "title": "estimate.load_ac_energy.v1 durable acknowledgement",
+  "description": "HTTP body of POST /api/telemetry/energy-estimate after the database transaction commits. This object is also results[0] of POST /api/internal/ws/telemetry. The device websocket does not forward it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "ack",
+    "replay",
+    "contract",
+    "stream",
+    "record_id",
+    "device_id",
+    "meter_epoch",
+    "boot_id",
+    "seq",
+    "clock_correction_version",
+    "simulation"
+  ],
+  "properties": {
+    "status": { "const": "success" },
+    "ack": { "const": true },
+    "replay": {
+      "type": "boolean",
+      "description": "false on the commit that inserted the row. true when the same canonical record was already committed."
+    },
+    "contract": { "const": "estimate.load_ac_energy.v1" },
+    "stream": { "const": "estimate.load_ac_energy" },
+    "record_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "energy_estimate_records.id assigned at insert. Not chosen by firmware. A replay returns the original id."
+    },
+    "device_id": { "type": "string" },
+    "meter_epoch": { "type": "string" },
+    "boot_id": { "type": "string" },
+    "seq": { "type": "string" },
+    "clock_correction_version": { "type": "integer", "minimum": 0 },
+    "simulation": { "type": "boolean" }
+  }
+}

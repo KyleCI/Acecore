@@ -1,0 +1,6 @@
+# SHA256 of files copied from letambari/official-powercell-app ab64d033ad4a0c03bde1bb62670e924d9cc460bf
+
+a4a48ac465701a36d5ef7afc840cf927eb0c0b4a4eb1f2e91eaeb60c8df62f25  server.py
+15a3a880a1b89bbeca3cfd694023c207c347a6050a9ae65b252f5a6f2468efe2  estimate.load_ac_energy.v1.ack.schema.json
+d2437fa584e801beb7cc3fb6625a39ddd47e8f3f10fb69a47e157700447d0c15  estimate.load_ac_energy.v1.socket-error.schema.json
+d692ec4c26ec3d879e17578f60461228a1f0c5ef5a71d39609a750439eb3e9c9  ack_184000_replay.json

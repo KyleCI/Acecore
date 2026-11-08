@@ -1,5 +1,6 @@
 #include <inverter.h>
 #include <pinDefines.h>
+#include "stm32_text_validity.h"
 
 #define MAX_MISSES 3
 
@@ -20,6 +21,9 @@ namespace {
 
   FieldS sys, sw, chr;
   FieldF bat, grid, temp, vout, iout;
+  loadac::Stm32TextAssembler candidateAssembler;
+  loadac::TextCandidate latestCandidate = {};
+  bool candidateMutexFailed = false;
 
   float parseFloatValue(String value) {
     value.trim();
@@ -94,9 +98,18 @@ namespace {
         char c = INVERTER_UART.read();
 
         if (c == '\n') {
+          loadac::TextCandidate published;
+          bool closed = candidateAssembler.feed_line(millis(), lineBuffer.c_str(), &published);
           if (xSemaphoreTake(inverterMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             parseInverterLine(lineBuffer);
+            if (closed) {
+              latestCandidate = published;
+              candidateMutexFailed = false;
+            }
             xSemaphoreGive(inverterMutex);
+          } else if (closed) {
+            candidateAssembler.note_mutex_failure(millis(), &latestCandidate);
+            candidateMutexFailed = true;
           }
           lineBuffer = "";
         } else if (c != '\r') {
@@ -138,4 +151,22 @@ InverterSnapshot getInverterStatus() {
   }
 
   return snap;
+}
+
+loadac::TextCandidate getStm32LoadCandidate() {
+  loadac::TextCandidate out;
+  memset(&out, 0, sizeof(out));
+  out.reason = "absent";
+  if (candidateMutexFailed || xSemaphoreTake(inverterMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+    out.closed = true;
+    out.mutex_failed = true;
+    out.reason = "mutex_failure";
+    out.live_eligible = false;
+    return out;
+  }
+  out = latestCandidate;
+  xSemaphoreGive(inverterMutex);
+  loadac::LineageGate gate = loadac::closed_lineage_gate();
+  out.live_eligible = loadac::live_estimate_allowed(gate, out);
+  return out;
 }

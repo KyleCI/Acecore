@@ -13,7 +13,8 @@ extern "C" {
 float energy_init(void);
 
 /**
- * Accumulate discharge energy from a BMS sample.
+ * Accumulate DC pack discharge from a BMS sample.
+ * This is not AC load consumption and is not an input to estimate.load_ac_energy.v1.
  * Only accumulates when current_a < 0 (discharging).
  * Call from bmsTask after every valid parseDynamic().
  *
