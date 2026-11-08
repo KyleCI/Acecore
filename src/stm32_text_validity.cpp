@@ -46,6 +46,14 @@ TextSwitch switch_of(const char *value) {
   if (!strncmp(value, "GRID", 4)) return TextSwitch::Grid;
   return TextSwitch::Unknown;
 }
+
+bool is_terminator(const char *line) {
+  static const char kDash[] = "--------------";
+  if (strncmp(line, kDash, sizeof(kDash) - 1) != 0) return false;
+  const char *rest = line + (sizeof(kDash) - 1);
+  while (*rest == ' ' || *rest == '\t' || *rest == '\r') ++rest;
+  return *rest == 0;
+}
 }  // namespace
 
 TextValidityConfig default_text_limits() {
@@ -70,13 +78,14 @@ bool live_estimate_allowed(const LineageGate &gate, const TextCandidate &candida
 }
 
 Stm32TextAssembler::Stm32TextAssembler(TextValidityConfig cfg)
-    : cfg_(cfg), open_(false), banner_(false), mutex_failed_(false), mode_(TextMode::Unknown),
-      sw_(TextSwitch::Unknown), v_seen_(false), i_seen_(false), v_ok_(false), i_ok_(false), v_mv_(0), i_ma_(0),
-      opened_ms_(0), v_ms_(0), i_ms_(0), have_v_ms_(false), have_i_ms_(false) {}
+    : cfg_(cfg), open_(false), banner_(false), mutex_failed_(false), txdrop_(false), fault_line_(false),
+      mode_(TextMode::Unknown), sw_(TextSwitch::Unknown), v_seen_(false), i_seen_(false), v_ok_(false), i_ok_(false),
+      v_mv_(0), i_ma_(0), opened_ms_(0), v_ms_(0), i_ms_(0), have_v_ms_(false), have_i_ms_(false) {}
 
 void Stm32TextAssembler::clear_fields() {
   v_seen_ = i_seen_ = v_ok_ = i_ok_ = false;
   have_v_ms_ = have_i_ms_ = false;
+  txdrop_ = fault_line_ = false;
   v_mv_ = i_ma_ = 0;
   v_ms_ = i_ms_ = 0;
   sw_ = TextSwitch::Unknown;
@@ -102,7 +111,7 @@ void Stm32TextAssembler::note_mutex_failure(uint32_t mono_ms, TextCandidate *out
   out->banner_xfer4_seen = banner_;
 }
 
-bool Stm32TextAssembler::take_number(const char *value, int32_t *milli) {
+bool Stm32TextAssembler::take_number(const char *value, int32_t *milli, char unit) {
   value = skip(value);
   if (*value == '+') ++value;
   if (!isdigit((unsigned char)*value)) return false;
@@ -129,19 +138,22 @@ bool Stm32TextAssembler::take_number(const char *value, int32_t *milli) {
     }
   }
   value = skip(value);
-  if (*value == 'V' || *value == 'v' || *value == 'A' || *value == 'a') {
-    ++value;
-    value = skip(value);
-  }
+  char got = *value;
+  if (got >= 'a' && got <= 'z') got = (char)(got - 'a' + 'A');
+  if (got != unit) return false;
+  ++value;
+  value = skip(value);
   if (*value != 0) return false;
   *milli = (int32_t)(whole * 1000 + frac);
   return true;
 }
 
-bool Stm32TextAssembler::publish(uint32_t mono_ms, TextCandidate *out) {
+bool Stm32TextAssembler::publish(uint32_t mono_ms, TextCandidate *out, bool by_terminator) {
   if (!out) return false;
   memset(out, 0, sizeof(*out));
   out->closed = true;
+  out->complete = by_terminator;
+  out->truncated = !by_terminator;
   out->mode = mode_;
   out->sw = sw_;
   out->v_in_record = v_seen_;
@@ -154,26 +166,33 @@ bool Stm32TextAssembler::publish(uint32_t mono_ms, TextCandidate *out) {
   out->closed_ms = mono_ms;
   out->banner_xfer4_seen = banner_;
   out->mutex_failed = mutex_failed_;
+  out->txdrop = txdrop_;
+  out->fault_line = fault_line_;
   bool skew = false;
   if (have_v_ms_ && have_i_ms_) {
     uint32_t span = v_ms_ > i_ms_ ? v_ms_ - i_ms_ : i_ms_ - v_ms_;
     if (span > cfg_.max_same_record_skew_ms) skew = true;
   }
-  if (mono_ms >= opened_ms_ && cfg_.max_same_record_skew_ms && mono_ms - opened_ms_ > cfg_.max_same_record_skew_ms &&
-      (v_seen_ || i_seen_))
-    skew = true;
   out->stale = skew;
+  bool disagree = (mode_ == TextMode::Inverter && sw_ == TextSwitch::Grid) ||
+                  (mode_ == TextMode::Grid && sw_ == TextSwitch::Inverter);
   const char *reason = "absent";
   bool provisional = false;
   if (mutex_failed_) reason = "mutex_failure";
+  else if (fault_line_ || mode_ == TextMode::Fault) reason = "fault";
+  else if (txdrop_) reason = "tx_drop";
+  else if (disagree) reason = "sys_sw_disagreement";
   else if (mode_ != TextMode::Inverter) reason = "not_sys_inverter";
-  else if (sw_ == TextSwitch::Grid) reason = "switch_grid";
-  else if (!v_seen_ || !i_seen_) reason = "split_record";
+  else if (!v_seen_ && !i_seen_) reason = "split_record";
+  else if (!i_seen_) reason = "missing_iout";
+  else if (!v_seen_) reason = "missing_vout";
   else if (!v_ok_ || !i_ok_) reason = "malformed_number";
   else if (skew) reason = "stale_fields";
   else if (v_mv_ <= 0 || v_mv_ > cfg_.max_voltage_mv) reason = "voltage_range";
   else if (i_ma_ <= 0 || i_ma_ < cfg_.clamp_ambiguous_below_ma) reason = "current_clamp_ambiguous";
   else if (i_ma_ > cfg_.max_current_ma) reason = "current_range";
+  else if (sw_ != TextSwitch::Inverter) reason = "missing_switch";
+  else if (!by_terminator) reason = "truncated_report";
   else {
     provisional = true;
     reason = "provisional_inverter_only";
@@ -189,6 +208,14 @@ bool Stm32TextAssembler::feed_line(uint32_t mono_ms, const char *line, TextCandi
   if (!line) return false;
   line = skip(line);
   if (strstr(line, "PC-CALEB-XFER4")) banner_ = true;
+  if (is_terminator(line)) {
+    if (!open_) return false;
+    bool closed = publish(mono_ms, published, true);
+    open_ = false;
+    clear_fields();
+    mutex_failed_ = false;
+    return closed;
+  }
   const char *colon = strchr(line, ':');
   if (!colon) return false;
   char key[12];
@@ -196,7 +223,7 @@ bool Stm32TextAssembler::feed_line(uint32_t mono_ms, const char *line, TextCandi
   const char *value = skip(colon + 1);
   bool closed = false;
   if (key_is(key, "SYS")) {
-    if (open_) closed = publish(mono_ms, published);
+    if (open_) closed = publish(mono_ms, published, false);
     clear_fields();
     mutex_failed_ = false;
     open_ = true;
@@ -209,14 +236,24 @@ bool Stm32TextAssembler::feed_line(uint32_t mono_ms, const char *line, TextCandi
     sw_ = switch_of(value);
     if (sw_ == TextSwitch::Grid) {
       v_seen_ = i_seen_ = v_ok_ = i_ok_ = false;
+      have_v_ms_ = have_i_ms_ = false;
+      v_mv_ = i_ma_ = 0;
     }
+    return false;
+  }
+  if (key_is(key, "TXDROP")) {
+    txdrop_ = true;
+    return false;
+  }
+  if (key_is(key, "FAULT")) {
+    fault_line_ = true;
     return false;
   }
   if (key_is(key, "VOUT")) {
     v_seen_ = true;
     v_ms_ = mono_ms;
     have_v_ms_ = true;
-    v_ok_ = take_number(value, &v_mv_);
+    v_ok_ = take_number(value, &v_mv_, 'V');
     if (!v_ok_) v_mv_ = 0;
     return false;
   }
@@ -224,7 +261,7 @@ bool Stm32TextAssembler::feed_line(uint32_t mono_ms, const char *line, TextCandi
     i_seen_ = true;
     i_ms_ = mono_ms;
     have_i_ms_ = true;
-    i_ok_ = take_number(value, &i_ma_);
+    i_ok_ = take_number(value, &i_ma_, 'A');
     if (!i_ok_) i_ma_ = 0;
     return false;
   }

@@ -1,18 +1,23 @@
 #pragma once
 #include <stdint.h>
 
-// Receiver-side reading of the legacy STM32 text stream.
-// Limits below are the archived PC-CALEB-XFER4 notes (not a calibration of an
-// installed board, and not permission to integrate live energy):
-//   VOUT is SPWM_GetOutputVoltageRMS over a 20 ms PA0 PWM ISR window.
-//   VoutValid is not transmitted. VOUT_SCALE_CALIBRATED is 0.
-//   IOUT is a main-loop 20 ms above-zero PA2 half-wave value, zero 1976,
-//   scale 20.86, and the sender clamps results below 0.18 A.
-//   VOUT/IOUT are emitted only while SYS is INVERTER. SYS GRID emits charging
-//   fields, not load V/I.
-// The 20 ms figures are sender windows. This receiver does not reapply
-// 1976/20.86. The text token is treated as the sender's already scaled
-// number. The printf format itself was not in the notes supplied here.
+// Receiver-side reading of the PC-CALEB-XFER4 text stream.
+// The flashed image contains these format strings. The candidate source
+// prints them on USART1 at 9600 8N1. A report is three 20 ms ticks, and the
+// next report starts TELEM_PERIOD_TICKS (100) later, which is 2 s. Phase 2
+// prints VOUT and IOUT only while SYS is INVERTER:
+//   VOUT: %.1fV    SPWM RMS counts times VOUT_ADC_SCALE. VoutValid is not
+//                  sent. VOUT_SCALE_CALIBRATED is 0, so this is not a
+//                  calibrated RMS claim.
+//   IOUT: %.2fA    20 ms above-zero PA2 half-wave, zero 1976, scale 20.86,
+//                  and values below 0.18 A are printed as 0.00. That is the
+//                  sender noise clamp, not a measured no-load.
+// SYS GRID prints charger fields instead of VOUT/IOUT. Phase 3 may print
+// FAULT and TXDROP, then the exact closer "--------------".
+// Rebuilding that source was not proven (no manifest, DWARF, or build log),
+// so a parsed record is not permission to integrate live energy.
+// max_same_record_skew_ms bounds only the VOUT and IOUT timestamps. It is
+// not the 2 s report period.
 
 namespace loadac {
 
@@ -33,10 +38,14 @@ struct LineageGate {
 
 struct TextCandidate {
   bool closed;
+  bool complete;
+  bool truncated;
   bool provisional_inverter_only;
   bool live_eligible;
   bool mutex_failed;
   bool stale;
+  bool txdrop;
+  bool fault_line;
   bool banner_xfer4_seen;
   bool v_in_record;
   bool i_in_record;
@@ -65,13 +74,15 @@ class Stm32TextAssembler {
 
  private:
   void clear_fields();
-  bool publish(uint32_t mono_ms, TextCandidate *out);
-  bool take_number(const char *value, int32_t *milli);
+  bool publish(uint32_t mono_ms, TextCandidate *out, bool by_terminator);
+  bool take_number(const char *value, int32_t *milli, char unit);
 
   TextValidityConfig cfg_;
   bool open_;
   bool banner_;
   bool mutex_failed_;
+  bool txdrop_;
+  bool fault_line_;
   TextMode mode_;
   TextSwitch sw_;
   bool v_seen_, i_seen_, v_ok_, i_ok_;

@@ -603,27 +603,134 @@ static void test_time_midnight_and_replay_identity() {
   CHECK(broken.status().meter_epoch == 1);
 }
 
+static bool feed_xfer4(Stm32TextAssembler &rx, TextCandidate *out, uint32_t t0, const char *sys, const char *sw,
+                       const char *vout, const char *iout, const char *extra) {
+  const char *phase1[] = {"--- Status ---", "SYS : ", "SW  : ", "BAT : 52.10V  80%", "GRID: 220.0V SCR=0.06661",
+                          "RSV:0", "RAW_INST: 100  RAW_RMS: 3300.0"};
+  bool closed = false;
+  closed = rx.feed_line(t0, "  FW PC-CALEB-XFER4", out) || closed;
+  closed = rx.feed_line(t0, phase1[0], out) || closed;
+  char line[64];
+  snprintf(line, sizeof(line), "SYS : %s", sys);
+  closed = rx.feed_line(t0, line, out) || closed;
+  snprintf(line, sizeof(line), "SW  : %s", sw);
+  closed = rx.feed_line(t0, line, out) || closed;
+  for (int i = 3; i < 7; ++i) closed = rx.feed_line(t0, phase1[i], out) || closed;
+  closed = rx.feed_line(t0 + 20, "TEMP: 35.0C  NTC_RAW: 2000", out) || closed;
+  if (strcmp(sys, "INVERTER") == 0) {
+    closed = rx.feed_line(t0 + 20, "CHR : --", out) || closed;
+    if (vout) {
+      snprintf(line, sizeof(line), "VOUT: %s", vout);
+      closed = rx.feed_line(t0 + 20, line, out) || closed;
+    }
+    if (iout) {
+      snprintf(line, sizeof(line), "IOUT: %s", iout);
+      closed = rx.feed_line(t0 + 20, line, out) || closed;
+    }
+    closed = rx.feed_line(t0 + 20, "IRAW_INST: 10  IRAW_AVG: 26.1", out) || closed;
+    closed = rx.feed_line(t0 + 20, "MOD : 0.7200", out) || closed;
+    closed = rx.feed_line(t0 + 20, "SOFT: DONE", out) || closed;
+  } else if (strcmp(sys, "GRID") == 0) {
+    closed = rx.feed_line(t0 + 20, "CHR : CHARGING", out) || closed;
+    closed = rx.feed_line(t0 + 20, "ICHR: 6.50A", out) || closed;
+    closed = rx.feed_line(t0 + 20, "DUTY: 0.100", out) || closed;
+  }
+  if (extra) closed = rx.feed_line(t0 + 40, extra, out) || closed;
+  closed = rx.feed_line(t0 + 40, "--------------", out) || closed;
+  return closed;
+}
+
 static void test_text_validity_boundary() {
   Stm32TextAssembler rx;
   TextCandidate out;
-  const char *frame[] = {
-      "PC-CALEB-XFER4",
-      "SYS : INVERTER",
-      "VOUT: 230.1V",
-      "IOUT: 1.25A",
-      "SYS : INVERTER",
-  };
-  bool closed = false;
-  for (int i = 0; i < 5; ++i) closed = rx.feed_line(1000 + (uint32_t)i * 10, frame[i], &out) || closed;
+  CHECK(feed_xfer4(rx, &out, 1000, "INVERTER", "INVERTER", "230.1V", "1.25A", 0));
   CHECK(rx.banner_seen());
+  CHECK(out.complete && !out.truncated);
   CHECK(out.provisional_inverter_only);
   CHECK(!out.live_eligible);
+  CHECK(!out.stale);
   CHECK(out.v_mv == 230100 && out.i_ma == 1250);
   CHECK(!live_estimate_allowed(closed_lineage_gate(), out));
   LineageGate open_gate;
   open_gate.installed_lineage_verified = true;
   open_gate.rms_validity_transmitted = true;
   CHECK(live_estimate_allowed(open_gate, out));
+  TextCandidate kept = out;
+  CHECK(!rx.feed_line(1000 + 2000, "SYS : INVERTER", &out));
+  CHECK(!out.closed);
+  CHECK(kept.provisional_inverter_only && kept.v_mv == 230100);
+
+  Stm32TextAssembler grid;
+  CHECK(feed_xfer4(grid, &out, 0, "GRID", "GRID", 0, 0, 0));
+  CHECK(!out.provisional_inverter_only);
+  CHECK(strcmp(out.reason, "not_sys_inverter") == 0);
+  CHECK(!out.v_in_record && !out.i_in_record);
+
+  Stm32TextAssembler disagree;
+  CHECK(feed_xfer4(disagree, &out, 0, "INVERTER", "GRID", "230.1V", "1.25A", 0));
+  CHECK(!out.provisional_inverter_only);
+  CHECK(strcmp(out.reason, "sys_sw_disagreement") == 0);
+
+  Stm32TextAssembler no_i;
+  CHECK(feed_xfer4(no_i, &out, 0, "INVERTER", "INVERTER", "230.1V", 0, 0));
+  CHECK(!out.provisional_inverter_only);
+  CHECK(out.v_in_record && !out.i_in_record);
+  CHECK(strcmp(out.reason, "missing_iout") == 0);
+
+  Stm32TextAssembler dropped;
+  CHECK(feed_xfer4(dropped, &out, 0, "INVERTER", "INVERTER", "230.1V", "1.25A", "TXDROP: 12 bytes"));
+  CHECK(out.txdrop && !out.provisional_inverter_only);
+  CHECK(strcmp(out.reason, "tx_drop") == 0);
+
+  Stm32TextAssembler bad_suffix;
+  CHECK(feed_xfer4(bad_suffix, &out, 0, "INVERTER", "INVERTER", "230.1A", "1.25", 0));
+  CHECK(!out.provisional_inverter_only);
+  CHECK(strcmp(out.reason, "malformed_number") == 0);
+
+  Stm32TextAssembler torn;
+  torn.feed_line(0, "SYS : INVERTER", &out);
+  torn.feed_line(0, "SW  : INVERTER", &out);
+  torn.feed_line(20, "VOUT: 230.1V", &out);
+  torn.feed_line(20, "IOUT: 1.25A", &out);
+  CHECK(torn.feed_line(2000, "SYS : INVERTER", &out));
+  CHECK(out.truncated && !out.complete);
+  CHECK(!out.stale && !out.provisional_inverter_only);
+  CHECK(strcmp(out.reason, "truncated_report") == 0);
+  CHECK(!torn.feed_line(2020, "IOUT: 9.99A", &out));
+  CHECK(torn.feed_line(2040, "--------------", &out));
+  CHECK(out.complete && !out.v_in_record && out.i_in_record);
+  CHECK(strcmp(out.reason, "missing_vout") == 0);
+  CHECK(out.i_ma == 9990);
+
+  Stm32TextAssembler dashed;
+  dashed.feed_line(0, "SYS : INVERTER", &out);
+  dashed.feed_line(0, "SW  : INVERTER", &out);
+  dashed.feed_line(20, "VOUT: 230.1V", &out);
+  dashed.feed_line(20, "IOUT: 1.25A", &out);
+  CHECK(!dashed.feed_line(40, "--- Status ---", &out));
+  CHECK(!dashed.feed_line(40, "---------------", &out));
+  CHECK(dashed.feed_line(40, "--------------", &out));
+  CHECK(out.provisional_inverter_only);
+
+  Stm32TextAssembler clamped;
+  CHECK(feed_xfer4(clamped, &out, 0, "INVERTER", "INVERTER", "230.0V", "0.00A", 0));
+  CHECK(!out.provisional_inverter_only);
+  CHECK(out.i_numeric && out.i_ma == 0);
+  CHECK(strcmp(out.reason, "current_clamp_ambiguous") == 0);
+
+  Stm32TextAssembler faulted;
+  CHECK(feed_xfer4(faulted, &out, 0, "FAULT", "GRID", 0, 0, "FAULT: 0x04 [OC]"));
+  CHECK(out.fault_line && !out.provisional_inverter_only);
+  CHECK(strcmp(out.reason, "fault") == 0);
+
+  Stm32TextAssembler skew;
+  skew.feed_line(0, "SYS : INVERTER", &out);
+  skew.feed_line(0, "SW  : INVERTER", &out);
+  skew.feed_line(20, "VOUT: 230.1V", &out);
+  skew.feed_line(20 + 1001, "IOUT: 1.25A", &out);
+  CHECK(skew.feed_line(20 + 1001, "--------------", &out));
+  CHECK(out.complete && out.stale && !out.provisional_inverter_only);
+  CHECK(strcmp(out.reason, "stale_fields") == 0);
 
   Stm32TextAssembler split;
   split.feed_line(0, "SYS : INVERTER", &out);
