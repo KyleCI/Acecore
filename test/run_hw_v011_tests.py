@@ -42,6 +42,16 @@ with tempfile.TemporaryDirectory(prefix="hw-v011-") as directory:
     ], "host tests")
     subprocess.run([str(binary)], check=True)
 
+    wifi_bin = pathlib.Path(directory) / "wifi-fallback-tests"
+    compile_one([
+        compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+        "-I", str(root / "include"),
+        str(root / "src/wifi_fallback.cpp"),
+        str(root / "test/wifi_fallback_test.cpp"),
+        "-o", str(wifi_bin),
+    ], "wifi fallback tests")
+    subprocess.run([str(wifi_bin)], check=True)
+
     def expect_build(defines, ok, label):
         probe = pathlib.Path(directory) / "probe"
         cmd = [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",

@@ -3,6 +3,7 @@
 #include "metrics.h"
 #include "offline_sync.h"
 #include <pinDefines.h>
+#include "wifi_fallback.h"
 #ifdef POWERCELL_HW_V011
 #include "hw_v011.h"
 #endif
@@ -40,54 +41,100 @@ void clearNVS()
   prefs.end();
 }
 
-// ─── Try Connecting to Saved Network ─────────────────────────────────────────
-bool connectToSaved()
+// ─── Station / local-AP lifecycle ────────────────────────────────────────────
+static powercell::WifiFallback g_wifi;
+static bool g_wifi_ready = false;
+static bool g_sta_started = false;
+static bool g_ap_started = false;
+static String g_ssid;
+static String g_pass;
+static uint32_t g_provision_activity_ms = 0;
+
+static void noteProvisionActivity() { g_provision_activity_ms = millis(); }
+
+static void applyStaticStaConfig()
 {
-  String ssid = getNVS("ssid");
-  String pass = getNVS("pass");
-
-  if (ssid.isEmpty())
-  {
-    Serial.println("[WiFi] No saved network found");
-    return false;
-  }
-
-  Serial.printf("[WiFi] Trying saved network: %s\n", ssid.c_str());
-
   IPAddress local(STATIC_IP);
   IPAddress gateway(GATEWAY);
   IPAddress subnet(SUBNET);
-  // A static STA address does not inherit DNS from DHCP.  Explicit DNS is
-  // required for the cloud HTTP and WebSocket hostnames to resolve.
   IPAddress dnsPrimary(DNS_PRIMARY);
   IPAddress dnsBackup(DNS_BACKUP);
   if (!WiFi.config(local, gateway, subnet, dnsPrimary, dnsBackup))
   {
     Serial.println("[WiFi] Failed to apply static IP/DNS configuration");
   }
-  // Keep the AP interface enabled while connected. ESP-NOW uses the stable AP
-  // MAC in both provisioning and online operation; STA still carries Internet.
+}
+
+void beginWifiService()
+{
+  if (g_wifi_ready) return;
+  g_ssid = getNVS("ssid");
+  g_pass = getNVS("pass");
+  g_wifi.set_credentials(g_ssid.length() > 0);
+  // AP+STA stays selected. Mode is not flipped on later retries.
   WiFi.mode(WIFI_AP_STA);
-  WiFi.begin(ssid.c_str(), pass.c_str());
-
-  unsigned long start = millis();
-  Serial.print("[WiFi] Connecting");
-  while (WiFi.status() != WL_CONNECTED)
+  WiFi.setAutoReconnect(true);
+  if (g_ssid.length() > 0)
   {
-    if (millis() - start >= CONN_TIMEOUT)
-    {
-      Serial.println("\n[WiFi] Connection timed out");
-      WiFi.disconnect(true);
-      return false;
-    }
-    delay(500);
-    Serial.print(".");
+    applyStaticStaConfig();
+    Serial.printf("[WiFi] Trying saved network: %s\n", g_ssid.c_str());
   }
+  else
+  {
+    Serial.println("[WiFi] No saved network found");
+  }
+  g_wifi_ready = true;
+  serviceWifiFallback();
+}
 
-  Serial.println();
-  Serial.print("[WiFi] Connected! IP: ");
-  Serial.println(WiFi.localIP());
-  return true;
+void serviceWifiFallback()
+{
+  if (!g_wifi_ready) return;
+  const bool station_joined = WiFi.softAPgetStationNum() > 0;
+  const bool provision_recent =
+      g_provision_activity_ms != 0 &&
+      static_cast<uint32_t>(millis() - g_provision_activity_ms) < 120000;
+  g_wifi.set_onboarding(station_joined || provision_recent);
+
+  const powercell::WifiSta sta =
+      WiFi.status() == WL_CONNECTED ? powercell::WifiSta::Up : powercell::WifiSta::Down;
+  const powercell::WifiCommand cmd = g_wifi.tick(sta, millis());
+
+  if (cmd.start_ap && !g_ap_started)
+  {
+    WiFi.softAP(AP_SSID, AP_PASS);
+    g_ap_started = true;
+    Serial.printf("[WiFi] Local AP up at %s\n", WiFi.softAPIP().toString().c_str());
+  }
+  if (cmd.stop_ap && g_ap_started)
+  {
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_AP_STA);
+    g_ap_started = false;
+    Serial.println("[WiFi] Local AP stopped after recovery grace");
+  }
+  if (cmd.reconnect_sta && g_ssid.length() > 0)
+  {
+    if (!g_sta_started)
+    {
+      WiFi.begin(g_ssid.c_str(), g_pass.c_str());
+      g_sta_started = true;
+    }
+    else
+    {
+      WiFi.reconnect();
+    }
+  }
+  if (cmd.local_mode) provisioning = true;
+  else if (!station_joined && !provision_recent) provisioning = false;
+
+  if (WiFi.status() == WL_CONNECTED) initWebSocketCommands();
+}
+
+bool connectToSaved()
+{
+  beginWifiService();
+  return WiFi.status() == WL_CONNECTED;
 }
 
 // ─── Provisioning AP + Page ──────────────────────────────────────────────────
@@ -199,6 +246,7 @@ void httpRoutes() {
 
     server.on("/provision", HTTP_GET, [](AsyncWebServerRequest *req)
     {
+        noteProvisionActivity();
         if (req->hasParam("ssid"))
         {
             String ssid =

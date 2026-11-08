@@ -86,38 +86,17 @@ void setup()
 
     httpRoutes();
     loraDiag("after routes");
-
-    if (connectToSaved())
-    {
-        loraDiag("after wifi");
-
-        initWebSocketCommands();
-        loraDiag("after wsCmds");
-
-        server.begin();
-        loraDiag("after server");
-
-        Serial.println("[HTTP] App server started");
-
-        Serial.print("[WIFI] Connected. IP: ");
-        Serial.println(WiFi.localIP());
-
-        Serial.print("[WIFI] MAC: ");
-        Serial.println(WiFi.macAddress());
-    }
-    else
-    {
-        Serial.println("[WIFI] No saved WiFi connection.");
-        Serial.println("[WIFI] Starting provisioning mode...");
-
-        startProvisioning();
-        loraDiag("after provisioning");
-    }
+    server.begin();
+    Serial.println("[HTTP] App server started");
+    // STA association continues in loop(). Local AP comes up 30s after
+    // confirmed loss, or immediately when no router credentials are saved.
+    beginWifiService();
 }
 
 void loop()
 {
   handleSerialProvisioning();
+  serviceWifiFallback();
   serviceOfflineBatteryNotifications();
   serviceWebSocketCommands();
   serviceOfflineSync();

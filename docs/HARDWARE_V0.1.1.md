@@ -131,6 +131,31 @@ collector to keep running.
 No card-detect pin, supply, pull-up, or 3.3 V versus 5 V check is claimed.
 Do not treat this as wiring approval.
 
+## Router loss and local AP
+
+This tree did not contain `AP_FALLBACK_MIN` or a 120-second timer. The old
+setup path blocked for `CONN_TIMEOUT` (10 seconds, polling every 500 ms) and
+then called `WiFi.disconnect(true)`, which turns the radio off before the
+provisioning AP starts. After a successful join, a later router loss never
+started the AP.
+
+Local mode is now decided in `src/wifi_fallback.cpp` and applied from
+`serviceWifiFallback()`:
+
+- No saved network: AP starts on the first service call.
+- Saved network, station never confirms: AP starts 30 seconds after the
+  service starts. Setup does not block on that wait.
+- Station was confirmed, then stays down: AP starts 30 seconds after that
+  drop. A sub-3-second up blip does not restart the 30 seconds.
+- STA retries are `WiFi.begin` once, then `WiFi.reconnect` at 5-second
+  intervals. Mode stays `WIFI_AP_STA`. Credentials are not cleared.
+- After the station is confirmed again, the AP stays for 120 seconds, then
+  stops only if nobody is joined and `/provision` has been idle. It is not
+  stopped while the station is down or while onboarding is active.
+
+The 30-second and 120-second figures are software deadlines. Association,
+DHCP, and AP beacon time on a real radio are not measured here.
+
 ## Bench still required
 
 Host tests do not measure UART timing, SD power loss, flash wear, or watt-hour
