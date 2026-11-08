@@ -6,6 +6,9 @@
 #include "collector_lora.h"
 #include "websocket_ca.h"
 #include "offline_sync.h"
+#ifdef POWERCELL_HW_V011
+#include "hw_v011.h"
+#endif
 
 namespace {
 #ifndef POWERCELL_WS_HOST
@@ -112,6 +115,9 @@ void telemetry() {
     battery["soc"] = bms.SOC;
     battery["temperature"] = bms.tempBat1;
   }
+#ifdef POWERCELL_HW_V011
+  hwV011AppendTelemetry(doc);
+#else
   InverterSnapshot inv = getInverterStatus();
   JsonObject inverter = doc["inverter"].to<JsonObject>();
   inverter["system"] = inv.sys;
@@ -120,6 +126,7 @@ void telemetry() {
   inverter["output_voltage"] = inv.vout;
   inverter["output_current"] = inv.iout;
   inverter["temperature"] = inv.tempC;
+#endif
 
   JsonObject solar = doc["solar"].to<JsonObject>();
   MpptData mppt;
@@ -151,6 +158,9 @@ void incoming(uint8_t *payload, size_t length) {
     acknowledgeOfflineEvents(doc["event_ids"].as<JsonArrayConst>());
     return;
   }
+#ifdef POWERCELL_HW_V011
+  if (hwV011HandleAck(doc)) return;
+#endif
   if (type != "set_state") return;
   String id = doc["command_id"] | "";
   String kind = doc["target_type"] | "";
@@ -174,6 +184,10 @@ void incoming(uint8_t *payload, size_t length) {
     result(id, "gateway", target, desired, "confirmed");
     snapshot();
   } else {
+#ifdef POWERCELL_HW_V011
+    reject(id, kind, target, desired, "lora_not_fitted");
+    return;
+#else
     if (!target.length() || !checkRegistered(target)) {
       reject(id, kind, target, desired, "unknown_target"); return;
     }
@@ -186,6 +200,7 @@ void incoming(uint8_t *payload, size_t length) {
     pending.lastAttempt = millis();
     sendRelayCommand(target, desired);
     snapshot();
+#endif
   }
 }
 

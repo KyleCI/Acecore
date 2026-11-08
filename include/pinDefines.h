@@ -1,6 +1,9 @@
 #pragma once 
 #include <Arduino.h>
 
+// Original collector map. Hardware v0.1.1 does not use this STM32/LoRa
+// assignment; see include/board_pins.h. GPIO33 is UART1 RX only on this profile.
+
 /* JK BMS */
 #define JK_UART Serial2
 #define JK_BAUD 115200

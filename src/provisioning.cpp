@@ -3,6 +3,9 @@
 #include "metrics.h"
 #include "offline_sync.h"
 #include <pinDefines.h>
+#ifdef POWERCELL_HW_V011
+#include "hw_v011.h"
+#endif
 
 bool provisioning = false;
 bool shouldRestart = false;
@@ -144,14 +147,22 @@ void applyDeviceState(bool state)
 {
   if (state && firmwareOTA.busy()) return;
   deviceState = state;
-  // Here you can add code to physically turn the device on or off based on the state
+#ifdef POWERCELL_HW_V011
+  // GPIO15 is the power light. GPIO25 is the PZEM RX pin and is not driven.
+  digitalWrite(15, deviceState ? HIGH : LOW);
+  hwV011NoteState(deviceState);
+#else
   digitalWrite(RELAY, deviceState ? HIGH : LOW);
   digitalWrite(LIGHTS, deviceState ? HIGH : LOW);
+#endif
   Serial.printf("[Device] State changed to: %s\n", deviceState ? "ON" : "OFF");
 }
 
 
 void httpRoutes() {
+#ifdef POWERCELL_HW_V011
+    hwV011Routes(server);
+#endif
     // ─────────────────────────────────────────────────────────────────────────
     // HTTP Routes
     // ─────────────────────────────────────────────────────────────────────────

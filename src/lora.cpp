@@ -1,4 +1,7 @@
 #include "lora.h"
+#ifdef POWERCELL_HW_V011
+#include "hw_v011.h"
+#endif
 #include <SPI.h>
 #include <LoRa.h>
 #include <Preferences.h>
@@ -59,6 +62,10 @@ static std::map<String, loraPacket> deviceCache;
 // LORA_FREQUENCY must be 868E6 or 915E6 for the RFM95W.
 // ---------------------------------------------------------------------------
 void loraInit() {
+#ifdef POWERCELL_HW_V011
+    Serial.println("[LoRa] not fitted on hardware v0.1.1; SPI and GPIO26 are not touched");
+    return;
+#endif
     dataMutex = xSemaphoreCreateMutex();
     loraMutex = xSemaphoreCreateMutex();
 
@@ -144,6 +151,9 @@ void handleSerialProvisioning() {
     String line = Serial.readStringUntil('\n');
     line.trim();
 
+#ifdef POWERCELL_HW_V011
+    if (hwV011ConsumeSerial(line)) return;
+#endif
     if (line.startsWith("REGISTER:")) {
         registerDevice(line.substring(strlen("REGISTER:")));
     } else if (line.startsWith("UNREGISTER:")) {
@@ -254,6 +264,10 @@ static uint8_t diagReadReg(uint8_t addr) {
 }
 
 void loraDiag(const char *tag) {
+#ifdef POWERCELL_HW_V011
+    (void)tag;
+    return;
+#endif
     bool locked = loraMutex && xSemaphoreTake(loraMutex, pdMS_TO_TICKS(100)) == pdTRUE;
     uint8_t  op   = diagReadReg(0x01);
     uint32_t frf  = ((uint32_t)diagReadReg(0x06) << 16) |
@@ -325,6 +339,11 @@ void loraTask(void *parameter) {
 // Smart Socket transmitter's command listener.
 // ---------------------------------------------------------------------------
 void sendRelayCommand(String deviceId, bool turnOn) {
+#ifdef POWERCELL_HW_V011
+    (void)deviceId;
+    (void)turnOn;
+    return;
+#endif
     if (deviceId.length() == 0) {
         Serial.println("[LoRa] sendRelayCommand called with empty deviceId");
         return;
@@ -353,6 +372,9 @@ void sendRelayCommand(String deviceId, bool turnOn) {
 }
 
 void startLoraTask() {
+#ifdef POWERCELL_HW_V011
+    return;
+#endif
     xTaskCreatePinnedToCore(
         loraTask,          // Task function
         "loraTask",        // Name of the task

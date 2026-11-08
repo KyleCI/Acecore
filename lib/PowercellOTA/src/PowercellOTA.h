@@ -8,7 +8,9 @@
 #ifndef POWERCELL_FIRMWARE_KIND
 #define POWERCELL_FIRMWARE_KIND "collector"
 #endif
+#ifndef POWERCELL_HARDWARE_MODEL
 #define POWERCELL_HARDWARE_MODEL "esp32dev"
+#endif
 
 // Provision once over USB: OTA_CONFIG {"base_url":"https://api.acecore.tech",
 // "token":"<per-device OTA token>","ssid":"...","password":"..."}

@@ -2,6 +2,9 @@
 // PowerCell MPPT — PlatformIO / ESP32
 
 #include "housekeeping.h"
+#ifdef POWERCELL_HW_V011
+#include "i2c_bus.h"
+#endif
 
 
 // ─── Module-private state ─────────────────────────────────────────────────────
@@ -77,6 +80,13 @@ static void mppt_sense_task(void *pvParameters) {
     const TickType_t xPeriod = pdMS_TO_TICKS(MPPT_TASK_PERIOD_MS);
 
     for (;;) {
+#ifdef POWERCELL_HW_V011
+        if (!i2c_bus_lock(50)) {
+            vTaskDelayUntil(&xLastWakeTime, xPeriod);
+            continue;
+        }
+        Wire.setClock(100000);
+#endif
         // ── 1. Current — A0/A1 differential ──────────────────────────────
         s_ads.setGain(MPPT_CURRENT_GAIN);
         int32_t raw_i   = read_diff01_avg();
@@ -102,6 +112,9 @@ static void mppt_sense_task(void *pvParameters) {
             s_data_valid     = true;
             xSemaphoreGive(s_mutex);
         }
+#ifdef POWERCELL_HW_V011
+        i2c_bus_unlock();
+#endif
 
         // ── 5. Sleep until next period (no drift) ────────────────────────
         vTaskDelayUntil(&xLastWakeTime, xPeriod);
@@ -120,6 +133,9 @@ bool mppt_init() {
 
     // Initialise I2C with explicit pins (ESP32 requires this)
     Wire.begin(MPPT_I2C_SDA, MPPT_I2C_SCL);
+#ifdef POWERCELL_HW_V011
+    Wire.setClock(100000);
+#endif
 
     if (!s_ads.begin()) {
         Serial.println("[MPPT] ERROR: ADS1115 not found — check I2C wiring.");

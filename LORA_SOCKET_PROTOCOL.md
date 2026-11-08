@@ -1,5 +1,12 @@
 # PowerCell LoRa smart-socket protocol
 
+The pin table at the bottom of this file does not match the collector that
+builds from `include/pinDefines.h`. The compiled original collector uses VSPI
+SCK GPIO18, MISO GPIO19, MOSI GPIO23, LoRa CS GPIO4, and STM32 RX GPIO33.
+Hardware v0.1.1 removes LoRa and the STM32 link; GPIO33 is that profile's SD
+chip select, and UART1 moves to the PZEM pins. Do not wire from the table
+below.
+
 The collector uses an SX1278 at 433 MHz through RadioLib. Both ends must use:
 
 - bandwidth: 125 kHz

@@ -12,11 +12,19 @@ void initLights(){
   pinMode(GREEN, OUTPUT);
   pinMode(YELLOW, OUTPUT);
   pinMode(AMBER, OUTPUT);
+#ifdef POWERCELL_HW_V011
+  pinMode(15, OUTPUT);
+  digitalWrite(15, LOW);
+#else
   pinMode(LIGHTS, OUTPUT);
+#endif
 }
 
 bool inputPresent()
 {
+#ifdef POWERCELL_HW_V011
+  return false;
+#endif
   InverterSnapshot snap = getInverterStatus();
   if (snap.gridVoltage >= 160){
     return true;

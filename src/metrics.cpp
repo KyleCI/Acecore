@@ -1,4 +1,7 @@
 #include <housekeeping.h>
+#ifdef POWERCELL_HW_V011
+#include "hw_v011.h"
+#endif
 
 // ── TODO: wire these to your actual inverter/PZEM reading code ──────────────
 static float getInverterEnergy() { return 0.0f; }      // e.g. from PZEM
@@ -21,7 +24,9 @@ void registerMetricsRoute(AsyncWebServer &server)
 
         // ── Battery section -- sourced from the BMS task ─────────────────────
         JKPacketData bms;
+#ifndef POWERCELL_HW_V011
         InverterSnapshot snap = getInverterStatus();
+#endif
         MpptData mppt;
         mppt_get_data(mppt);
         float outputLoad = 0.0f;
@@ -50,11 +55,15 @@ void registerMetricsRoute(AsyncWebServer &server)
         }
         // ── Device / powercell section ───────────────────────────────────────
         doc["device_state"]          = getDeviceState();
-        doc["inverterLoad"]  = snap.vout * snap.iout;
         doc["inverter_energy"]       = energy_get_wh();
+#ifdef POWERCELL_HW_V011
+        hwV011AppendTelemetry(doc);
+#else
+        doc["inverterLoad"]  = snap.vout * snap.iout;
         doc["inverter_temperature"]  = snap.tempC;
         doc["inverterVoltage"] = snap.vout;
         doc["gridVoltage"] = snap.gridVoltage;
+#endif
 
         // Solar Panel Section
         doc["solarVoltage"] = mppt.v_bus_V;
