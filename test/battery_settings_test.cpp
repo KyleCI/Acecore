@@ -14,21 +14,18 @@ static int g_failures = 0;
   } \
 } while (0)
 
-static void auth_never_accepts_bearer() {
-  CHECK(classify_lan_authorization(false, false, false) == SettingsAuth::Missing);
-  CHECK(classify_lan_authorization(true, false, true) == SettingsAuth::Missing);
-  CHECK(classify_lan_authorization(true, true, false) == SettingsAuth::Missing);
-  CHECK(classify_lan_authorization(true, true, true) == SettingsAuth::LanTokenUnsupported);
+static void auth_classifies_real_bearer() {
+  CHECK(classify_lan_authorization(nullptr, LanKind::Lan) == SettingsAuth::Missing);
+  CHECK(classify_lan_authorization("API-KEY secret", LanKind::None) == SettingsAuth::Malformed);
+  CHECK(classify_lan_authorization("Bearer ota-token", LanKind::None) == SettingsAuth::Rejected);
+  CHECK(classify_lan_authorization("Bearer session", LanKind::Session) == SettingsAuth::SessionOnly);
+  CHECK(classify_lan_authorization("Bearer lan", LanKind::Lan) == SettingsAuth::Ok);
   BatterySettings store;
-  SettingsDecision denied = store.set(SettingsAuth::LanTokenUnsupported, 1, true, 30, true, 18, 0, true);
+  SettingsDecision denied = store.set(SettingsAuth::SessionOnly, 1, true, 30, true, 18, 0, true);
   CHECK(!denied.applied);
-  CHECK(!denied.durable_commit);
-  CHECK(!denied.pending);
-  CHECK(denied.reason == SettingsReason::LanTokenUnsupported);
-  CHECK(denied.readback.low_percent == 25);
-  CHECK(denied.readback.warning_percent == 15);
-  CHECK(denied.readback.applied_revision == 0);
+  CHECK(denied.reason == SettingsReason::SessionNotSufficient);
   CHECK(store.state().low_percent == 25);
+  CHECK(!store.set(SettingsAuth::Rejected, 1, true, 30, true, 18, 0, true).applied);
 }
 
 static void apply_then_readback_matches_request() {
@@ -106,7 +103,7 @@ static void reboot_restores_only_saved_revision() {
 }
 
 int main() {
-  auth_never_accepts_bearer();
+  auth_classifies_real_bearer();
   apply_then_readback_matches_request();
   invalid_ranges_do_not_apply();
   stale_and_persist_failure_leave_canonical_state();

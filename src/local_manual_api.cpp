@@ -264,9 +264,14 @@ int ManualApi::data_auth(const char* authorization, uint32_t now_ms) const {
 
 HttpReply ManualApi::battery_get(const char* authorization, uint32_t now_ms) {
   HttpReply out;
-  if (bearer_kind(authorization, now_ms) != LanKind::Lan) {
-    reply_set(&out, 401, "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"unauthorized\",\"applied\":false,"
-                         "\"durable_commit\":false,\"pending\":false,\"readback_present\":false}");
+  const SettingsAuth auth = classify_lan_authorization(authorization, bearer_kind(authorization, now_ms));
+  if (auth != SettingsAuth::Ok) {
+    const char* reason = auth == SettingsAuth::SessionOnly ? "session_not_sufficient" : "unauthorized";
+    snprintf(out.body, sizeof out.body,
+             "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"%s\",\"applied\":false,"
+             "\"durable_commit\":false,\"pending\":false,\"readback_present\":false}",
+             reason);
+    out.status = 401;
     return out;
   }
   const SettingsState& s = battery_.state();
@@ -284,9 +289,14 @@ HttpReply ManualApi::battery_post(const char* authorization, const char* json, c
                                   uint32_t now_ms) {
   HttpReply out;
   if (!post_headers_ok(headers, &out)) return out;
-  if (bearer_kind(authorization, now_ms) != LanKind::Lan) {
-    reply_set(&out, 401, "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"unauthorized\",\"applied\":false,"
-                         "\"durable_commit\":false,\"pending\":false,\"readback_present\":false}");
+  const SettingsAuth auth = classify_lan_authorization(authorization, bearer_kind(authorization, now_ms));
+  if (auth != SettingsAuth::Ok) {
+    const char* reason = auth == SettingsAuth::SessionOnly ? "session_not_sufficient" : "unauthorized";
+    snprintf(out.body, sizeof out.body,
+             "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"%s\",\"applied\":false,"
+             "\"durable_commit\":false,\"pending\":false,\"readback_present\":false}",
+             reason);
+    out.status = 401;
     return out;
   }
   int schema = 0, low = 0, warning = 0, revision = 0;
@@ -301,7 +311,7 @@ HttpReply ManualApi::battery_post(const char* authorization, const char* json, c
   }
   const bool persist_ok = !fail_persist_;
   const SettingsDecision decision =
-      battery_.set(SettingsAuth::Ok, schema, low_int, low, warning_int, warning,
+      battery_.set(auth, schema, low_int, low, warning_int, warning,
                    static_cast<uint32_t>(revision), persist_ok);
   const int code = decision.applied ? 200 : (decision.reason == SettingsReason::PersistFailed ? 500 : 400);
   snprintf(out.body, sizeof out.body,
@@ -319,7 +329,7 @@ HttpReply ManualApi::battery_post(const char* authorization, const char* json, c
 
 HttpReply ManualApi::ac_get(const char* authorization, uint32_t now_ms) {
   HttpReply out;
-  if (bearer_kind(authorization, now_ms) != LanKind::Lan) {
+  if (classify_lan_authorization(authorization, bearer_kind(authorization, now_ms)) != SettingsAuth::Ok) {
     reply_set(&out, 401, "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"unauthorized\",\"applied\":false,"
                          "\"readback_present\":false,\"shutdown_operational\":false,"
                          "\"total_output_coverage_verified\":false}");
@@ -341,7 +351,7 @@ HttpReply ManualApi::ac_post(const char* authorization, const char* json, const 
                              uint32_t now_ms) {
   HttpReply out;
   if (!post_headers_ok(headers, &out)) return out;
-  if (bearer_kind(authorization, now_ms) != LanKind::Lan) {
+  if (classify_lan_authorization(authorization, bearer_kind(authorization, now_ms)) != SettingsAuth::Ok) {
     reply_set(&out, 401, "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"unauthorized\",\"applied\":false,"
                          "\"shutdown_operational\":false,\"readback_present\":false}");
     return out;
@@ -374,6 +384,96 @@ HttpReply ManualApi::ac_post(const char* authorization, const char* json, const 
            decision.readback.applied_revision);
   out.status = decision.applied ? 200 : (decision.reason == SettingsReason::PersistFailed ? 500 : 400);
   return out;
+}
+
+bool legacy_power_allowed(const char* authorization, uint32_t now_ms, const LanAccess& lan) {
+  const LanKind kind = lan.authorize(authorization, now_ms);
+  const SettingsAuth auth = classify_lan_authorization(authorization, kind);
+  return auth == SettingsAuth::Ok || auth == SettingsAuth::SessionOnly;
+}
+
+RouteEffect ManualApi::gateway_state(const char* authorization, const char* json, const ClientHeaders& headers,
+                                     OutputProfile profile, bool output_on_allowed, bool ota_busy,
+                                     bool payment_locked, uint32_t now_ms) {
+  RouteEffect effect;
+  if (!post_headers_ok(headers, &effect.http)) return effect;
+  if (!legacy_power_allowed(authorization, now_ms, lan_)) {
+    reply_set(&effect.http, 401, "{\"ok\":false,\"error\":\"unauthorized\"}");
+    return effect;
+  }
+  char state[8];
+  if (!json_string(json, "state", state, sizeof state) ||
+      (strcmp(state, "on") != 0 && strcmp(state, "off") != 0)) {
+    reply_set(&effect.http, 400, "{\"ok\":false,\"error\":\"state must be on|off\"}");
+    return effect;
+  }
+  const bool on = strcmp(state, "on") == 0;
+  if (payment_locked) {
+    reply_set(&effect.http, 403, "{\"ok\":false,\"error\":\"payment_locked\"}");
+    return effect;
+  }
+  if (on && ota_busy) {
+    reply_set(&effect.http, 409, "{\"ok\":false,\"error\":\"refused\"}");
+    return effect;
+  }
+  if (on && !output_on_allowed) {
+    reply_set(&effect.http, 409, "{\"ok\":false,\"error\":\"battery_output_inhibited\"}");
+    return effect;
+  }
+  const bool v011 = profile == OutputProfile::V011Dsp;
+  const int level = v011 ? v011_dsp_level(on) : original_relay_level(on);
+  snprintf(effect.http.body, sizeof effect.http.body,
+           "{\"ok\":true,\"state\":\"%s\",\"applied_via\":\"%s\",\"aceplug\":false,\"gpio_level\":%d}",
+           state, v011 ? "dsp_gpio15" : "collector_relay_gpio15", level);
+  effect.http.status = 200;
+  effect.drive_gateway = true;
+  effect.gateway_on = on;
+  return effect;
+}
+
+RouteEffect ManualApi::socket_relay(const char* authorization, const char* json, const ClientHeaders& headers,
+                                    bool lora_fitted, bool socket_registered, bool output_on_allowed,
+                                    bool payment_locked, uint32_t now_ms) {
+  RouteEffect effect;
+  if (!post_headers_ok(headers, &effect.http)) return effect;
+  if (!legacy_power_allowed(authorization, now_ms, lan_)) {
+    reply_set(&effect.http, 401, "{\"ok\":false,\"error\":\"unauthorized\",\"aceplug\":true,\"dsp_gpio15\":false}");
+    return effect;
+  }
+  char id[40], state[8];
+  if (!json_string(json, "socket_id", id, sizeof id) && !json_string(json, "id", id, sizeof id)) id[0] = 0;
+  if (!json_string(json, "state", state, sizeof state) || !id[0] ||
+      (strcmp(state, "on") != 0 && strcmp(state, "off") != 0)) {
+    reply_set(&effect.http, 400,
+              "{\"ok\":false,\"error\":\"socket_id and state=on|off required\",\"aceplug\":true,\"dsp_gpio15\":false}");
+    return effect;
+  }
+  if (!lora_fitted) {
+    reply_set(&effect.http, 409, "{\"ok\":false,\"error\":\"lora_not_fitted\",\"aceplug\":true,\"dsp_gpio15\":false}");
+    return effect;
+  }
+  if (payment_locked) {
+    reply_set(&effect.http, 403, "{\"ok\":false,\"error\":\"payment_locked\",\"aceplug\":true,\"dsp_gpio15\":false}");
+    return effect;
+  }
+  const bool on = strcmp(state, "on") == 0;
+  if (on && !output_on_allowed) {
+    reply_set(&effect.http, 409,
+              "{\"ok\":false,\"error\":\"battery_output_inhibited\",\"aceplug\":true,\"dsp_gpio15\":false}");
+    return effect;
+  }
+  if (!socket_registered) {
+    reply_set(&effect.http, 404, "{\"ok\":false,\"error\":\"unknown socket\",\"aceplug\":true,\"dsp_gpio15\":false}");
+    return effect;
+  }
+  snprintf(effect.http.body, sizeof effect.http.body,
+           "{\"ok\":true,\"message\":\"queued\",\"state\":\"%s\",\"socket_id\":\"%s\",\"aceplug\":true,\"dsp_gpio15\":false}",
+           state, id);
+  effect.http.status = 202;
+  effect.queue_aceplug = true;
+  effect.aceplug_on = on;
+  snprintf(effect.socket_id, sizeof effect.socket_id, "%s", id);
+  return effect;
 }
 
 }  // namespace powercell

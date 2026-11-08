@@ -22,8 +22,9 @@ AcDecision AcOutputSettings::set(SettingsAuth auth, int schema, bool ceiling_is_
                                  bool mode_known, int mode, uint32_t base_revision, bool persist_ok) {
   AcDecision out = readback();
   if (auth != SettingsAuth::Ok) {
-    out.reason = auth == SettingsAuth::LanTokenUnsupported ? SettingsReason::LanTokenUnsupported
-                                                           : SettingsReason::Unauthorized;
+    out.reason = auth == SettingsAuth::SessionOnly ? SettingsReason::SessionNotSufficient
+                 : auth == SettingsAuth::LanTokenUnsupported ? SettingsReason::LanTokenUnsupported
+                                                             : SettingsReason::Unauthorized;
     return out;
   }
   if (schema != kSchema) {

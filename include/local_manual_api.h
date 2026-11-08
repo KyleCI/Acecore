@@ -2,6 +2,7 @@
 
 #include "ac_output_settings.h"
 #include "battery_settings.h"
+#include "board_pins.h"
 #include "lan_access.h"
 
 #include <stddef.h>
@@ -29,6 +30,17 @@ struct UnitFacts {
   bool payment_locked = false;
   const char* model = "esp32dev";
   const char* firmware = "1.0.1";
+};
+
+enum class OutputProfile : uint8_t { OriginalRelay = 0, V011Dsp = 1 };
+
+struct RouteEffect {
+  HttpReply http;
+  bool drive_gateway = false;
+  bool gateway_on = false;
+  bool queue_aceplug = false;
+  bool aceplug_on = false;
+  char socket_id[40];
 };
 
 struct ManualImage {
@@ -69,6 +81,14 @@ class ManualApi {
                     uint32_t now_ms);
   // /data: no header stays open for the on-device page. A presented bearer must be the LAN token.
   int data_auth(const char* authorization, uint32_t now_ms) const;
+  // /state is the collector output. v0.1.1 is GPIO15 active-low. It is not an AcePlug.
+  RouteEffect gateway_state(const char* authorization, const char* json, const ClientHeaders& headers,
+                            OutputProfile profile, bool output_on_allowed, bool ota_busy, bool payment_locked,
+                            uint32_t now_ms);
+  // /relay is an AcePlug socket over LoRa. v0.1.1 has no LoRa and does not touch GPIO15.
+  RouteEffect socket_relay(const char* authorization, const char* json, const ClientHeaders& headers,
+                           bool lora_fitted, bool socket_registered, bool output_on_allowed, bool payment_locked,
+                           uint32_t now_ms);
 
   const BatterySettings& battery() const { return battery_; }
   const AcOutputSettings& ac() const { return ac_; }

@@ -126,6 +126,26 @@ a verified unit rating, and a fresh reading all exist. Saving the ceiling
 does not turn the DSP off. `rated_kva` and `usable_kw` are not copied from
 the example 4.5 kW figure.
 
+A battery-only body does not change the AC ceiling. `ceiling_w: 0` in a battery POST is ignored. `30/18` is one legal sample, not the only accepted pair. Defaults before any save are low 25 and warning 15. Inhibit 10 and restart 15 are read-only.
+
+A response is a successful Save only when HTTP is 200 and the body has `result` `applied`, `applied` true, `durable_commit` true, and a following GET returns the same `applied_revision` and values. HTTP 200 is not used for a rejected save. A timeout or a body without those fields is not success.
+
+## POST /state and POST /relay
+
+`/state` is the collector output. Authorization may be the login session or the saved LAN token. `{"state":"off"}` on v0.1.1 drives GPIO15 high (DSP off) and does not address an AcePlug. `{"state":"on"}` drives GPIO15 low unless the battery latch or a payment lock refuses it. The original profile uses its existing active-high collector relay, not GPIO15-as-DSP.
+
+```json
+{"ok":true,"state":"off","applied_via":"dsp_gpio15","aceplug":false,"gpio_level":1}
+```
+
+`/relay` is an AcePlug socket command. On v0.1.1 there is no LoRa radio, so the response is HTTP 409 and GPIO15 is not written:
+
+```json
+{"ok":false,"error":"lora_not_fitted","aceplug":true,"dsp_gpio15":false}
+```
+
+On the original profile a registered socket is queued as `RELAY_ON` / `RELAY_OFF` and returns HTTP 202. That path does not drive the v0.1.1 DSP pin.
+
 ## Other app paths
 
 `/data` with no `Authorization` header stays open for the on-device page.

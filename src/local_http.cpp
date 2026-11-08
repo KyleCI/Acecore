@@ -4,6 +4,8 @@
 #include "local_manual_api.h"
 #include "offline_battery_notifications.h"
 #include "provisioning.h"
+#include "lora.h"
+#include <PowercellOTA.h>
 
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
@@ -289,5 +291,59 @@ void manualRegister(AsyncWebServer& server) {
     }
     if (reply.status == 200) applySaved();
     sendReply(request, reply);
+  }, nullptr, onBody);
+  server.on("/state", HTTP_POST, [](AsyncWebServerRequest* request) {
+    Body* stored = static_cast<Body*>(request->_tempObject);
+    if (stored && stored->overflow) {
+      request->send(413, "application/json", "{\"ok\":false,\"error\":\"body too large\"}");
+      return;
+    }
+    const char* json = stored ? stored->data : "";
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+#ifdef POWERCELL_HW_V011
+    const powercell::OutputProfile profile = powercell::OutputProfile::V011Dsp;
+#else
+    const powercell::OutputProfile profile = powercell::OutputProfile::OriginalRelay;
+#endif
+    powercell::RouteEffect effect = api.gateway_state(auth.c_str(), json, headersOf(request), profile,
+                                                      batteryOutputOnAllowed(), firmwareOTA.busy(),
+                                                      paymentLockEngaged(), millis());
+    if (effect.drive_gateway) applyDeviceState(effect.gateway_on, "user");
+    sendReply(request, effect.http);
+  }, nullptr, onBody);
+  server.on("/relay", HTTP_POST, [](AsyncWebServerRequest* request) {
+    Body* stored = static_cast<Body*>(request->_tempObject);
+    if (stored && stored->overflow) {
+      request->send(413, "application/json", "{\"ok\":false,\"error\":\"body too large\"}");
+      return;
+    }
+    const char* json = stored ? stored->data : "";
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+#ifdef POWERCELL_HW_V011
+    const bool lora = false;
+    const bool registered = false;
+#else
+    const bool lora = true;
+    String sid;
+    const char* idp = strstr(json, "\"socket_id\":\"");
+    if (!idp) idp = strstr(json, "\"id\":\"");
+    if (idp) {
+      idp = strchr(idp, ':');
+      if (idp) {
+        ++idp;
+        while (*idp == ' ' || *idp == '"') ++idp;
+        char tmp[40];
+        size_t n = 0;
+        while (*idp && *idp != '"' && n + 1 < sizeof tmp) tmp[n++] = *idp++;
+        tmp[n] = 0;
+        sid = tmp;
+      }
+    }
+    const bool registered = sid.length() && checkRegistered(sid);
+#endif
+    powercell::RouteEffect effect = api.socket_relay(auth.c_str(), json, headersOf(request), lora, registered,
+                                                     batteryOutputOnAllowed(), paymentLockEngaged(), millis());
+    if (effect.queue_aceplug) sendRelayCommand(String(effect.socket_id), effect.aceplug_on);
+    sendReply(request, effect.http);
   }, nullptr, onBody);
 }
