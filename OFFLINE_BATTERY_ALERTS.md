@@ -29,8 +29,9 @@ These alerts do not open the BMS charge or discharge FETs, and they do not
 send a DSP or STM32 command. `kPhysicalAutoOffEnabled` is false, so the latch
 does not call `applyDeviceState`. The software ON block remains. Pre-existing
 `/OFF`, websocket OFF, and the OTA shutdown callback still call
-`applyDeviceState` as they did before this latch. On hardware v0.1.1 GPIO15
-is only the power light and the latch does not drive it. Smart-socket ON
+`applyDeviceState` as they did before this latch. On hardware v0.1.1 that
+call drives GPIO15 active-low (on is low, off is high). The latch itself
+does not drive it. Smart-socket ON
 commands are not this path. No payment-lock actuator exists in this firmware.
 
 The BMS reader timestamps accepted frames. An alert reading needs a complete

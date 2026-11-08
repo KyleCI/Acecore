@@ -31,7 +31,7 @@ it before deploying this firmware.
 The default `esp32dev` build is the original collector: STM32 text on UART1,
 LoRa, and the GPIO25 power light. Hardware v0.1.1 is a separate environment,
 `esp32dev_hw_v011`. It has no STM32 and no LoRa. UART1 is the PZEM port on
-GPIO25/GPIO26, the power light is GPIO15, and GPIO33 is the SD card select.
+GPIO25/GPIO26, GPIO15 is the active-low DSP enable, and GPIO33 is the SD card select.
 The SD card stores a copy of the ESP32 console. Details, the serial-tee limits,
 and the bench list are in [docs/HARDWARE_V0.1.1.md](docs/HARDWARE_V0.1.1.md).
 

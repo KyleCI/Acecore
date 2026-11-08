@@ -20,9 +20,10 @@ void setup()
 #ifdef POWERCELL_HW_V011
     // UART1 is free of the STM32 link and becomes the PZEM hardware UART.
     Serial1.begin(9600, SERIAL_8N1, PZEM_RX_GPIO, PZEM_TX_GPIO);
-    // Existing boot level. Order is unchanged so this does not add a new edge.
+    // Active-low DSP: off is HIGH. Set that latch before enabling the output
+    // so setup does not drive low (on). The boot ROM still samples GPIO15.
+    digitalWrite(powercell::kDspEnableV011, powercell::v011_dsp_level(false));
     pinMode(powercell::kDspEnableV011, OUTPUT);
-    digitalWrite(powercell::kDspEnableV011, LOW);
 #else
     INVERTER_UART.begin(INVERTER_BAUD, SERIAL_8N1, INVERTER_RX, INVERTER_TX);
     initInverterParser(INVERTER_RX, INVERTER_TX, INVERTER_BAUD);

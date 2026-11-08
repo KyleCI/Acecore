@@ -202,7 +202,7 @@ still says the output turns off at 10% and stays off until 15%.
 | Profile | What firmware can do at 10% | What it cannot do |
 | --- | --- | --- |
 | Original | Reject its own ON command. The new latch does not drive GPIO15. | Command the STM32, write BMS FETs, or treat the collector relay as a verified discharge output |
-| v0.1.1 | Reject its own ON command. GPIO15 stays the power light and the latch does not drive it. | Command the prebuilt DSP. There is no STM32 or LoRa link. |
+| v0.1.1 | Reject its own ON command. User ON/OFF uses GPIO15 active-low. The latch does not drive it. | Prove that DSP-off leaves charging and essential power intact. |
 
 `physical_shutdown_verified` stays false in every response. No payment-lock
 actuator exists in this firmware. Smart-socket ON is a separate path and is

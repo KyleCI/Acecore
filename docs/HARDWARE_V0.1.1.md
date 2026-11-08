@@ -69,11 +69,17 @@ firmware does not claim a measured accuracy.
 `inverter_energy` remains the existing BMS volt-ampere integration. It is not
 measured AC watt-hours. Measured AC energy is the separate `ac_consumed`
 object. Daily attribution uses Africa/Lagos, UTC+1, with no daylight-saving
-shift. The DS1307 on I2C GPIO21/GPIO22 (address `0x68`, shared with the
-ADS1115 at `0x48`, 100 kHz) is a ticking clock, not proof of absolute time.
-A coherent read with the clock-halt bit clear stays unanchored until NTP
-agrees. Saved NVS time is not promoted to trusted time, and the RTC is not a
-source for command-expiry time. Setting the RTC does not reset energy ids.
+shift. The DS3231 on I2C GPIO21/GPIO22 (address `0x68`, shared with the
+ADS1115 at `0x48`, 100 kHz) is the offline clock. A read is unanchored only
+when the oscillator-stop flag is clear, the calendar registers are valid
+24-hour or decoded 12-hour time, two reads agree within one second, and the
+year is 2000-2099. The DS1307 clock-halt bit and its RAM are not used.
+Register 0x00 bit 7 set is a bad register, not a halted-but-usable time.
+NTP remains the only trusted clock for command expiry. Saved NVS time is not
+promoted. Setting the RTC from NTP records the previous coherent RTC value
+as a correction and does not reset energy ids or counter epochs. An
+oscillator-stop flag, a bad calendar, or a failed I2C read is missing time,
+not an epoch of zero. No accuracy figure is claimed for the crystal.
 
 Closed intervals live in the `acenergy` flash partition (192 KiB, about 1400
 records, then the store stops and raises `store_full`). Unacknowledged energy
@@ -161,15 +167,13 @@ DHCP, and AP beacon time on a real radio are not measured here.
 SOC is the JK-BMS value on UART2, accepted only from a fresh dynamic frame
 (15 seconds). The low threshold is 25%, not 89%. A one-time shutdown warning
 is raised at 15%. At 10% the collector latches discharge inhibit until fresh
-SOC stays at or above 15% for 60 seconds and every sample in that window has
-JK `batStatus == 1`. SOC alone does not release the latch. A full or idle
-pack (`batStatus` standby) stays latched. Recovery does not turn the output
-on by itself. The new latch edge does not drive a pin
-(`kPhysicalAutoOffEnabled` is false). v0.1.1 GPIO15 stays the power light.
-Pre-existing `/OFF` and the OTA callback still use `applyDeviceState`.
-Neither profile writes BMS FETs or a DSP command. Settings save is not
-complete: see `docs/BATTERY_SETTINGS_CONTRACT.md` and
-`docs/AUTH_AND_RECOVERY_EVIDENCE.md`.
+SOC stays at or above 15% for 60 seconds on a fresh JK frame, including an
+idle pack. Recovery does not turn the output on. The latch does not drive a
+pin (`kPhysicalAutoOffEnabled` is false). v0.1.1 GPIO15 is active-low DSP
+enable: on is low, off is high. Boot writes high before `pinMode`. User ON,
+OFF, and the OTA shutdown callback use that same mapping. The original
+profile's GPIO15 relay stays active high. Neither profile writes BMS FETs.
+`physical_shutdown_verified` stays false. Settings save is not complete.
 
 ## Bench still required
 
@@ -184,6 +188,13 @@ accuracy. Before any device is updated:
   on UART1 without pausing the BMS stream for longer than one frame.
 - Compare PZEM watt-hours with a reference meter on inverter and bypass paths,
   including a non-linear load. No accuracy number is claimed until that is done.
-- Confirm GPIO15 can be driven after reset (it is a strapping pin) and that
-  the LED supply is compatible with the ESP32.
-- Confirm the DS1307 coin cell and that the shared I2C bus stays at 100 kHz.
+- GPIO15 is a strapping pin. Firmware requests DSP off (high) before enabling
+  the output. The boot ROM still samples the pin at reset; that window is not
+  claimed to be glitch-free. Whether DSP-off leaves charging and essential
+  power intact is not verified.
+- The DS3231 module part is not identified. Confirm its VCC and whether the
+  SDA/SCL pins are 3.3 V. Do not assume 5 V or 3.3 V from the chip name. The
+  ESP32 pins are not 5 V tolerant. Keep the shared ADS1115 bus at 100 kHz.
+- Confirm the backup cell is a CR2032 and that the module does not charge it.
+  Some DS3231 boards trickle-charge the coin cell; that will damage a CR2032.
+  A photo of an older TinyRTC DS1307 board is not evidence for this module.

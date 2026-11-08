@@ -202,9 +202,7 @@ bool applyDeviceState(bool state)
   }
   deviceState = state;
 #ifdef POWERCELL_HW_V011
-  // Reported DSP enable. HIGH/LOW follows the existing on/off request.
-  // That mapping is not a measured DSP polarity.
-  digitalWrite(powercell::kDspEnableV011, deviceState ? HIGH : LOW);
+  digitalWrite(powercell::kDspEnableV011, powercell::v011_dsp_level(deviceState));
   hwV011NoteState(deviceState);
 #else
   digitalWrite(RELAY, deviceState ? HIGH : LOW);

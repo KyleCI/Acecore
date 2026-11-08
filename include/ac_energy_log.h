@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ds1307_time.h"
+#include "ds3231_time.h"
 #include "slot_log.h"
 
 #include <stdint.h>

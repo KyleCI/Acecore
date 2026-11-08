@@ -11,8 +11,10 @@
 //   No STM32 and no LoRa. The collector reads sensors and reports them.
 //   UART0 console stays. UART2 BMS stays. UART1, freed from the STM32 link,
 //   is the PZEM hardware UART, default RX25/TX26, 9600 8N1, configurable.
-//   GPIO15 is the user-reported DSP on/off pin, not a power light and not an
-//   AcePlug relay. Polarity is not measured. DS1307 shares I2C SDA21/SCL22.
+//   GPIO15 is the DSP enable, active low: Caleb, low is on and high is off.
+//   That polarity is user-confirmed, not a measured proof of what the pin
+//   does to charge current or essential power. It is not a power light and
+//   not an AcePlug relay. DS3231 shares I2C SDA21/SCL22.
 //   SD SPI SCK18/MISO19/MOSI23, chip select GPIO33.
 //   GPIO2 (old STM32 TX) and GPIO4 (old LoRa CS) are released and unassigned.
 //   Nothing here is a DSP-internal protocol.
@@ -34,7 +36,25 @@ constexpr int kPzemTx = 26;
 constexpr int kI2cSda = 21;
 constexpr int kI2cScl = 22;
 constexpr int kDspEnableV011 = 15;
-constexpr bool kDspPolarityVerified = false;
+constexpr bool kDspActiveLow = true;
+constexpr bool kDspPolarityUserConfirmed = true;
+constexpr bool kPhysicalShutdownVerified = false;
+
+// v0.1.1 only. 0 is on, 1 is off. The original relay stays active high.
+inline int v011_dsp_level(bool logical_on) { return logical_on ? 0 : 1; }
+inline int original_relay_level(bool logical_on) { return logical_on ? 1 : 0; }
+
+enum class BootAction : uint8_t { SetOutputLatch = 0, EnableOutput = 1 };
+struct BootStep {
+  BootAction action;
+  int level;
+};
+// Latch the off level before the pin becomes an output. GPIO15 is also a
+// strap sampled by the boot ROM; this does not make that reset window quiet.
+inline void v011_dsp_boot(BootStep out[2]) {
+  out[0] = {BootAction::SetOutputLatch, v011_dsp_level(false)};
+  out[1] = {BootAction::EnableOutput, v011_dsp_level(false)};
+}
 constexpr int kPowerLightOriginal = 25;
 constexpr int kRelayOriginal = 15;
 constexpr int kStatusRed = 13;
@@ -49,7 +69,7 @@ constexpr int kSpiMiso = 19;
 constexpr int kSpiMosi = 23;
 constexpr int kSdCsV011 = 33;
 constexpr int kAds1115Address = 0x48;
-constexpr int kDs1307Address = 0x68;
+constexpr int kDs3231Address = 0x68;
 constexpr int kPzemUartController = 1;
 constexpr int kBmsUartController = 2;
 constexpr int kConsoleUartController = 0;
@@ -187,7 +207,7 @@ inline const char* pin_role_name(PinRole role) {
     case PinRole::Stm32Tx: return "stm32_uart_tx";
     case PinRole::BmsUart: return "bms_uart";
     case PinRole::PzemUart: return "pzem_hardware_uart";
-    case PinRole::I2c: return "i2c_ads_ds1307";
+    case PinRole::I2c: return "i2c_ads_ds3231";
     case PinRole::PowerLight: return "power_light";
     case PinRole::DspEnable: return "dsp_enable_reported";
     case PinRole::Relay: return "collector_relay";

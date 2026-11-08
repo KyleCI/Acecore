@@ -1,7 +1,7 @@
 #include "ac_energy_log.h"
 #include "board_pins.h"
 #include "diag_blackbox.h"
-#include "ds1307_time.h"
+#include "ds3231_time.h"
 #include "lagos_time.h"
 #include "pzem_v3.h"
 #include "sd_log.h"
@@ -51,7 +51,14 @@ static void test_profiles() {
   CHECK(hard_pin_role(15, HardwareProfile::V011) == PinRole::DspEnable);
   CHECK(hard_pin_role(15, HardwareProfile::Original) == PinRole::Relay);
   CHECK(hard_pin_role(25, HardwareProfile::Original) == PinRole::PowerLight);
-  CHECK(!kDspPolarityVerified);
+  CHECK(kDspActiveLow && kDspPolarityUserConfirmed && !kPhysicalShutdownVerified);
+  CHECK(v011_dsp_level(true) == 0 && v011_dsp_level(false) == 1);
+  CHECK(original_relay_level(true) == 1 && original_relay_level(false) == 0);
+  BootStep boot[2];
+  v011_dsp_boot(boot);
+  CHECK(boot[0].action == BootAction::SetOutputLatch && boot[0].level == v011_dsp_level(false));
+  CHECK(boot[1].action == BootAction::EnableOutput && boot[1].level == 1);
+  CHECK(v011_dsp_level(false) != v011_dsp_level(true));
   CHECK(dsp_connection(HardwareProfile::Original) == DspConnection::ExistingTextUart);
   CHECK(!missing_dsp_is_fault(HardwareProfile::V011));
   CHECK(!diag_kind_allowed(HardwareProfile::V011, KindDiagStm32));
@@ -115,15 +122,18 @@ static void test_pzem() {
 
 static uint8_t bcd(int v) { return static_cast<uint8_t>(((v / 10) << 4) | (v % 10)); }
 
-static void put_rtc(uint8_t raw[7], int y, int mo, int d, int h, int mi, int s, uint8_t hours_extra) {
-  memset(raw, 0, 7);
-  raw[0] = bcd(s);
-  raw[1] = bcd(mi);
-  raw[2] = static_cast<uint8_t>(bcd(h) | hours_extra);
-  raw[3] = 1;
-  raw[4] = bcd(d);
-  raw[5] = bcd(mo);
-  raw[6] = bcd(y - 2000);
+static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int s, uint8_t hours_extra,
+                     uint8_t month_extra, uint8_t status) {
+  memset(frame, 0, 16);
+  frame[0] = bcd(s);
+  frame[1] = bcd(mi);
+  frame[2] = static_cast<uint8_t>(bcd(h) | hours_extra);
+  frame[3] = 1;
+  frame[4] = bcd(d);
+  frame[5] = static_cast<uint8_t>(bcd(mo) | month_extra);
+  frame[6] = bcd(y % 100);
+  frame[0x0E] = kDs3231ControlRun;
+  frame[0x0F] = status;
 }
 
 static void test_rtc_and_lagos() {
@@ -134,30 +144,61 @@ static void test_rtc_and_lagos() {
   CHECK(lagos_day_id(unix_from_lagos(2024, 3, 1, 0, 0, 0)) == 20240301);
   CHECK(lagos_interval_crosses_midnight(unix_from_lagos(2024, 2, 29, 23, 50, 0),
                                        unix_from_lagos(2024, 3, 1, 0, 10, 0), 0));
-  uint8_t a[7], b[7];
-  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0);
-  put_rtc(b, 2024, 2, 29, 12, 0, 1, 0);
-  RtcReading ok = ds1307_decode_pair(a, b);
-  CHECK(ok.status == RtcStatus::Unanchored && ok.ch_clear);
+  uint8_t a[16], b[16];
+  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0, 0, 0);
+  put_rtc(b, 2024, 2, 29, 12, 0, 1, 0, 0, 0);
+  RtcReading ok = ds3231_decode_pair(a, b);
+  CHECK(ok.status == RtcStatus::Unanchored && !ok.oscillator_stopped && ok.battery_oscillator_enabled);
   CHECK(ok.unix_utc == unix_from_utc(2024, 2, 29, 12, 0, 1));
+  a[0x0F] = 0x80;
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::OscillatorStopped);
+  CHECK(ds3231_decode_pair(a, b).unix_utc == 0);
+  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0, 0, 0);
   a[0] = static_cast<uint8_t>(a[0] | 0x80);
-  CHECK(ds1307_decode_pair(a, b).status == RtcStatus::Halted);
-  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0);
-  a[2] = static_cast<uint8_t>(a[2] | 0x40);
-  CHECK(ds1307_decode_pair(a, b).status == RtcStatus::Not24Hour);
-  put_rtc(a, 2023, 2, 29, 12, 0, 0, 0);
-  put_rtc(b, 2023, 2, 29, 12, 0, 0, 0);
-  CHECK(ds1307_decode_pair(a, b).status == RtcStatus::BadCalendar);
-  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0);
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::BadRegister);
+  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0, 0, 0);
+  put_rtc(b, 2024, 2, 29, 12, 0, 0, 0, 0, 0);
+  a[2] = 0x52;
+  b[2] = 0x52;
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::Unanchored);
+  CHECK(ds3231_decode_pair(a, b).unix_utc == unix_from_utc(2024, 2, 29, 0, 0, 0));
+  a[2] = 0x72;
+  b[2] = 0x72;
+  CHECK(ds3231_decode_pair(a, b).unix_utc == unix_from_utc(2024, 2, 29, 12, 0, 0));
+  a[2] = static_cast<uint8_t>(0x40 | 0x00);
+  CHECK(ds3231_decode(a).status == RtcStatus::BadCalendar);
+  put_rtc(a, 2023, 2, 29, 12, 0, 0, 0, 0, 0);
+  put_rtc(b, 2023, 2, 29, 12, 0, 0, 0, 0, 0);
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::BadCalendar);
+  put_rtc(a, 2100, 2, 29, 12, 0, 0, 0, 0x80, 0);
+  put_rtc(b, 2100, 2, 29, 12, 0, 0, 0, 0x80, 0);
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::BadCalendar);
+  put_rtc(a, 2000, 2, 29, 0, 0, 0, 0, 0, 0);
+  put_rtc(b, 2000, 2, 29, 0, 0, 1, 0, 0, 0);
+  CHECK(ds3231_decode_pair(a, b).unix_utc == unix_from_utc(2000, 2, 29, 0, 0, 1));
+  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0, 0, 0);
   a[1] = 0x0A;
-  put_rtc(b, 2024, 2, 29, 12, 0, 0, 0);
-  CHECK(ds1307_decode_pair(a, b).status == RtcStatus::BadBcd);
-  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0);
-  put_rtc(b, 2024, 2, 29, 12, 0, 20, 0);
-  CHECK(ds1307_decode_pair(a, b).status == RtcStatus::Incoherent);
-  put_rtc(a, 2026, 1, 2, 3, 4, 59, 0);
-  put_rtc(b, 2026, 1, 2, 3, 5, 0, 0);
-  CHECK(ds1307_decode_pair(a, b).status == RtcStatus::Unanchored);
+  put_rtc(b, 2024, 2, 29, 12, 0, 0, 0, 0, 0);
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::BadBcd);
+  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0, 0, 0);
+  put_rtc(b, 2024, 2, 29, 12, 0, 20, 0, 0, 0);
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::Incoherent);
+  put_rtc(a, 2026, 1, 2, 23, 59, 59, 0, 0, 0);
+  put_rtc(b, 2026, 1, 3, 0, 0, 0, 0, 0, 0);
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::Unanchored);
+  uint8_t encoded[7], control = 0, status = 0;
+  const int64_t stamp = unix_from_utc(2026, 11, 8, 20, 45, 0);
+  CHECK(ds3231_encode(stamp, encoded, &control, &status));
+  CHECK(control == kDs3231ControlRun && status == kDs3231StatusClear && (encoded[2] & 0x40) == 0);
+  uint8_t programmed[16];
+  memset(programmed, 0, sizeof programmed);
+  memcpy(programmed, encoded, 7);
+  programmed[0x0E] = control;
+  programmed[0x0F] = status;
+  CHECK(ds3231_readback_matches(ds3231_decode(programmed), stamp));
+  programmed[0x0F] = 0x80;
+  CHECK(!ds3231_readback_matches(ds3231_decode(programmed), stamp));
+  CHECK(!ds3231_encode(0, encoded, &control, &status));
   CHECK(qualify_boot_clock(true, false, false) == ClockQuality::Invalid);
   CHECK(qualify_boot_clock(false, true, false) == ClockQuality::RtcUnanchored);
   CHECK(qualify_boot_clock(true, true, true) == ClockQuality::Anchored);

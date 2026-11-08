@@ -111,10 +111,9 @@ restore in that archive's `power_guard.cpp` are not copied.
 
 `BatteryAlertPolicy::kPhysicalAutoOffEnabled` is false. The latch still
 blocks collector ON. The new edge that used to call `applyDeviceState(false)`
-at 10% is consumed and does not drive a pin. On the original profile that
-call writes relay GPIO15 and the light. On v0.1.1 it writes only the GPIO15
-power light. Neither write is a verified discharge cutoff, so the new
-automatic write stays off. Pre-existing `/OFF`, websocket OFF, boot relay
-init, and the OTA shutdown callback are unchanged. v0.1.1 GPIO15 remains
-the power light. `physical_shutdown_verified` stays false. No BMS FET write
-and no DSP wiring were added.
+at 10% is consumed and does not drive a pin. On the original profile an
+OFF still drives the GPIO15 relay high-means-on. On v0.1.1 user OFF and the
+OTA callback drive GPIO15 high, which is DSP off. Boot on v0.1.1 writes that
+off level before the pin is an output. The latch and the power ceiling do
+not drive the pin. `physical_shutdown_verified` stays false. No BMS FET write
+was added.

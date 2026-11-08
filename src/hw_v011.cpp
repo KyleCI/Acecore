@@ -6,7 +6,7 @@
 #include "ac_output_policy.h"
 #include "board_pins.h"
 #include "diag_blackbox.h"
-#include "ds1307_time.h"
+#include "ds3231_time.h"
 #include "lagos_time.h"
 #include "i2c_bus.h"
 #include "pzem_v3.h"
@@ -186,60 +186,79 @@ void note_text(uint8_t kind, const char* text) {
   enqueue(rec);
 }
 
-bool read_ds1307(uint8_t raw[7]) {
-  if (!i2c_bus_lock(20)) return false;
+enum class RtcIo { Ok, Nack, Short, Busy };
+
+RtcIo read_ds3231(uint8_t frame[16]) {
+  if (!i2c_bus_lock(20)) return RtcIo::Busy;
   Wire.setClock(100000);
-  Wire.beginTransmission(powercell::kDs1307Address);
-  Wire.write(0);
+  Wire.beginTransmission(powercell::kDs3231Address);
+  Wire.write(0x00);
   if (Wire.endTransmission(false) != 0) {
     i2c_bus_unlock();
-    return false;
+    return RtcIo::Nack;
   }
-  const uint8_t got = Wire.requestFrom(powercell::kDs1307Address, 7);
-  if (got != 7) {
+  const uint8_t got = Wire.requestFrom(powercell::kDs3231Address,
+                                       static_cast<uint8_t>(powercell::kDs3231FrameBytes));
+  if (got != powercell::kDs3231FrameBytes) {
     i2c_bus_unlock();
-    return false;
+    return RtcIo::Short;
   }
-  for (int i = 0; i < 7; ++i) raw[i] = static_cast<uint8_t>(Wire.read());
+  for (size_t i = 0; i < powercell::kDs3231FrameBytes; ++i) frame[i] = static_cast<uint8_t>(Wire.read());
   i2c_bus_unlock();
-  return true;
+  return RtcIo::Ok;
 }
 
-bool write_ds1307(int64_t unix_utc) {
-  int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
-  if (!powercell::utc_civil(unix_utc, &year, &month, &day, &hour, &minute, &second)) return false;
-  if (year < 2000 || year > 2099) return false;
-  auto bcd = [](int v) { return static_cast<uint8_t>(((v / 10) << 4) | (v % 10)); };
-  uint8_t raw[7] = {bcd(second), bcd(minute), bcd(hour), 1, bcd(day), bcd(month),
-                    bcd(year - 2000)};
+bool write_regs(uint8_t reg, const uint8_t* data, size_t len) {
+  Wire.beginTransmission(powercell::kDs3231Address);
+  Wire.write(reg);
+  Wire.write(data, len);
+  return Wire.endTransmission(true) == 0;
+}
+
+bool write_ds3231(int64_t unix_utc) {
+  uint8_t time_bytes[7], control = 0, status = 0;
+  if (!powercell::ds3231_encode(unix_utc, time_bytes, &control, &status)) return false;
   if (!i2c_bus_lock(20)) return false;
   Wire.setClock(100000);
-  Wire.beginTransmission(powercell::kDs1307Address);
-  Wire.write(0);
-  Wire.write(raw, 7);
-  const bool ok = Wire.endTransmission(true) == 0;
+  const bool wrote = write_regs(0x00, time_bytes, 7) && write_regs(0x0E, &control, 1) &&
+                     write_regs(0x0F, &status, 1);
   i2c_bus_unlock();
-  return ok;
+  if (!wrote) return false;
+  uint8_t first[16], second[16];
+  if (read_ds3231(first) != RtcIo::Ok || read_ds3231(second) != RtcIo::Ok) return false;
+  return powercell::ds3231_readback_matches(powercell::ds3231_decode_pair(first, second), unix_utc);
 }
 
 void poll_clock_and_meter() {
-  uint8_t first[7], second[7];
+  uint8_t first[16], second[16];
+  const RtcIo io_a = read_ds3231(first);
+  const RtcIo io_b = io_a == RtcIo::Ok ? read_ds3231(second) : io_a;
   powercell::RtcReading rtc;
   rtc.status = powercell::RtcStatus::Incoherent;
-  if (read_ds1307(first) && read_ds1307(second)) rtc = powercell::ds1307_decode_pair(first, second);
+  if (io_a == RtcIo::Ok && io_b == RtcIo::Ok) rtc = powercell::ds3231_decode_pair(first, second);
+  else if (io_a == RtcIo::Nack || io_b == RtcIo::Nack) rtc.status = powercell::RtcStatus::Incoherent;
+  else if (io_a == RtcIo::Short || io_b == RtcIo::Short) rtc.status = powercell::RtcStatus::ShortRead;
   const time_t wall = time(nullptr);
   const bool ntp = wall >= 1700000000;
-  if (ntp && rtc.status == powercell::RtcStatus::Unanchored &&
-      (rtc.unix_utc > wall + 3 || wall > rtc.unix_utc + 3)) {
-    if (energy) energy->note_anchor(rtc.unix_utc, wall, 180);
-    write_ds1307(wall);
-    note_text(powercell::KindDiagClock, "rtc_set_from_ntp");
+  const bool skew = rtc.status == powercell::RtcStatus::Unanchored &&
+                    (rtc.unix_utc > wall + 3 || wall > rtc.unix_utc + 3);
+  const bool chip_invalid = rtc.status == powercell::RtcStatus::OscillatorStopped ||
+                            rtc.status == powercell::RtcStatus::BadBcd ||
+                            rtc.status == powercell::RtcStatus::BadCalendar ||
+                            rtc.status == powercell::RtcStatus::BadRegister;
+  if (ntp && (skew || chip_invalid)) {
+    if (skew && energy) energy->note_anchor(rtc.unix_utc, wall, 180);
+    note_text(powercell::KindDiagClock, write_ds3231(wall) ? "rtc_set_from_ntp" : "rtc_set_rejected");
   } else if (rtc.status == powercell::RtcStatus::Unanchored) {
     rtc_seen = true;
     rtc_unix = rtc.unix_utc;
   } else if (!rtc_seen) {
     rtc_seen = true;
-    note_text(powercell::KindDiagClock, rtc.status == powercell::RtcStatus::Halted ? "rtc_halted" : "rtc_invalid");
+    const char* reason = "rtc_invalid";
+    if (io_a == RtcIo::Nack || io_b == RtcIo::Nack) reason = "rtc_nack";
+    else if (rtc.status == powercell::RtcStatus::ShortRead) reason = "rtc_short";
+    else if (rtc.status == powercell::RtcStatus::OscillatorStopped) reason = "rtc_oscillator_stopped";
+    note_text(powercell::KindDiagClock, reason);
   }
 
   powercell::PzemConfig cfg;

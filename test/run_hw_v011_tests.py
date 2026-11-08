@@ -17,7 +17,7 @@ sources = [
     root / "src/sd_log.cpp",
     root / "src/pzem_v3.cpp",
     root / "src/lagos_time.cpp",
-    root / "src/ds1307_time.cpp",
+    root / "src/ds3231_time.cpp",
     root / "src/ac_energy_log.cpp",
     root / "src/diag_blackbox.cpp",
     root / "src/serial_spool.cpp",
