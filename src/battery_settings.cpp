@@ -28,6 +28,9 @@ const char* settings_reason_name(SettingsReason reason) {
     case SettingsReason::LowNotAboveWarning: return "low_not_above_warning";
     case SettingsReason::StaleRevision: return "stale_revision";
     case SettingsReason::PersistFailed: return "persist_failed";
+    case SettingsReason::UnknownRating: return "unknown_rating";
+    case SettingsReason::CeilingAboveUsable: return "ceiling_above_usable";
+    case SettingsReason::UsableUnset: return "usable_unset";
   }
   return "unknown";
 }

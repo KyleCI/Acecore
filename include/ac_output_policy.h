@@ -28,33 +28,39 @@ class AcOutputPolicy {
   static constexpr uint32_t RearmHoldMs = 10000;
   static constexpr uint32_t ReleaseHoldMs = 30000;
 
+  void setUsable(int usable_w);
   void setCeiling(int watts, AcMode mode);
-  void setGates(bool rating_verified, bool polarity_verified);
   uint8_t update(const AcWatts& sample, uint32_t now);
   bool coverageUnavailable() const { return unavailable_; }
+  const char* unavailableReason() const { return reason_; }
   bool warning() const { return warning_; }
   bool shutdownLatched() const { return latched_; }
+  bool systemOverloadLatched() const { return system_latched_; }
   bool takeShutdownEdge();
-  bool warnOperational() const;
-  bool shutdownOperational() const;
   bool turnsOutputOn() const { return false; }
+  int usableW() const { return usable_w_; }
+  // This object does not write a pin. physical_shutdown_verified stays false.
   static constexpr bool kDrivesOutput = false;
+  static constexpr bool kCoverageVerified = false;
 
  private:
   static uint32_t elapsed(uint32_t now, uint32_t since) { return now - since; }
+  int usable_w_ = 0;
   int ceiling_w_ = 0;
   AcMode mode_ = AcMode::WarnOnly;
-  bool rating_ = false;
-  bool polarity_ = false;
+  const char* reason_ = "usable_unset";
   bool unavailable_ = true;
   bool warning_ = false;
   bool warn_armed_ = true;
   bool latched_ = false;
+  bool system_latched_ = false;
   bool edge_ = false;
-  bool over_ = false;
+  bool system_over_ = false;
+  bool ceiling_over_ = false;
   bool under_ = false;
   bool seen_ = false;
-  uint32_t over_since_ = 0;
+  uint32_t system_since_ = 0;
+  uint32_t ceiling_since_ = 0;
   uint32_t under_since_ = 0;
   uint32_t first_valid_ = 0;
 };

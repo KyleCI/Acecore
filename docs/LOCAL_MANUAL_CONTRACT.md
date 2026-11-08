@@ -111,7 +111,34 @@ greater than the warning. 10 and 15 are not writable. HTTP 401 has
 After reboot the `lan_token` still reads the same revision. The `session`
 does not survive reboot.
 
-### AC ceiling
+### System rating
+
+`GET` or `POST /v1/system-rating` with the saved `lan_token`. This is rated
+active watts, not kVA. The only accepted values are 5000 and 3500. Usable
+power is 90 percent and is not writable: 4500 W and 3150 W. Any other number,
+including a float, is `unknown_rating` or `not_integer` and is not stored.
+`usable_kw` on setup info stays null. There is no rating for an unknown system.
+
+```json
+{"schema":1,"rated_active_w":5000,"base_revision":0}
+```
+
+```json
+{"schema":1,"result":"applied","reason":"none","applied":true,"durable_commit":true,"pending":false,"physical_shutdown_verified":false,"readback":{"rated_active_w":5000,"usable_active_w":4500,"applied_revision":1}}
+```
+
+`GET /v2/status` then includes `rated_active_w`, `usable_active_w`, and
+`overload_configured`. Before a rating they are null and false.
+`total_output_coverage_verified` stays false.
+
+The system overload compares fresh PZEM active watts with that usable value.
+It is not the old 19 A STM32 rule. A sample at the usable value does not trip.
+One watt above it, after a 3 second startup grace and 8 seconds sustained,
+requests AC output off. A stale or invalid sample does not trip and does not
+clear a latch. Clearing the latch does not turn the output on. This is
+software using the meter. It is not a separate hardware breaker.
+
+## AC ceiling
 
 `GET` or `POST /v1/ac-output-settings`
 
@@ -119,12 +146,11 @@ does not survive reboot.
 {"schema":1,"ceiling_w":500,"mode":"warn_and_shutdown","base_revision":0}
 ```
 
-`mode` is `warn_only` or `warn_and_shutdown`. The selected meter is PZEM
-active watts only. `shutdown_operational` and
-`total_output_coverage_verified` stay false until placement, calibration,
-a verified unit rating, and a fresh reading all exist. Saving the ceiling
-does not turn the DSP off. `rated_kva` and `usable_kw` are not copied from
-the example 4.5 kW figure.
+`mode` is `warn_only` or `warn_and_shutdown`. The ceiling must be an integer
+from 50 to the configured usable watts. A higher ceiling is
+`ceiling_above_usable` and does not change the system limit. `warn_only`
+does not shut down at the ceiling. The usable-power overload still does.
+A battery POST cannot set or clear either value.
 
 A battery-only body does not change the AC ceiling. `ceiling_w: 0` in a battery POST is ignored. `30/18` is one legal sample, not the only accepted pair. Defaults before any save are low 25 and warning 15. Inhibit 10 and restart 15 are read-only.
 
@@ -161,9 +187,9 @@ HTTP 401, `result` `rejected`, `reason` `session_not_sufficient`,
 
 ## Not ported
 
-The 19 A inverter overload in 2.5.11 is an STM32 output-current rule. This
-collector has no STM32 current measurement. PZEM current is not treated as
-that current. The protection is absent here, not widened and not replaced.
+The 19 A inverter overload in 2.5.11 is an STM32 output-current rule. v0.1.1
+does not use it. Its overload is the setup usable watts against fresh PZEM
+active watts. The original profile has no PZEM and does not run that path.
 
 `pc_ident/pay_lock`, when that key is already true, still refuses a user ON
 or OFF. Battery cutoff and OTA off still run. This firmware does not contain

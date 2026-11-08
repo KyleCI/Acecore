@@ -145,6 +145,8 @@ void ManualApi::capture(ManualImage* out) const {
   out->ceiling_w = ac_.state().ceiling_w;
   out->ac_mode = static_cast<int>(ac_.state().mode);
   out->ac_revision = ac_.state().applied_revision;
+  out->rated_active_w = rating_.state().rated_active_w;
+  out->rating_revision = rating_.state().applied_revision;
 }
 
 bool ManualApi::restore(const ManualImage& in) {
@@ -156,6 +158,7 @@ bool ManualApi::restore(const ManualImage& in) {
   if (in.pairs_len && !lan_.load_pairs(in.pairs, in.pairs_len)) return false;
   battery_.load(in.low_percent, in.warning_percent, in.battery_revision);
   ac_.load(in.ceiling_w, in.ac_mode, in.ac_revision);
+  rating_.load(in.rated_active_w, in.rating_revision);
   return true;
 }
 
@@ -246,13 +249,27 @@ HttpReply ManualApi::status(const char* authorization, const DeviceNames& device
   }
   char id[64];
   device_id_of(device, id, sizeof id);
-  snprintf(out.body, sizeof out.body,
-           "{\"device_id\":\"%s\",\"fw\":\"%s\",\"hotspot\":%s,\"sta_connected\":%s,"
-           "\"payment_locked\":%s,\"payment_lock_reason\":\"\",\"cloud_linked\":false,"
-           "\"auth\":\"%s\"}",
-           id, facts.firmware ? facts.firmware : "1.0.1", facts.hotspot ? "true" : "false",
-           facts.sta_connected ? "true" : "false", facts.payment_locked ? "true" : "false",
-           kind == LanKind::Session ? "session" : "lan");
+  const int rated = rating_.state().rated_active_w;
+  const int usable = rating_.state().usable_active_w;
+  if (rated > 0) {
+    snprintf(out.body, sizeof out.body,
+             "{\"device_id\":\"%s\",\"fw\":\"%s\",\"hotspot\":%s,\"sta_connected\":%s,"
+             "\"payment_locked\":%s,\"payment_lock_reason\":\"\",\"cloud_linked\":false,"
+             "\"auth\":\"%s\",\"rated_active_w\":%d,\"usable_active_w\":%d,"
+             "\"overload_configured\":true,\"total_output_coverage_verified\":false}",
+             id, facts.firmware ? facts.firmware : "1.0.1", facts.hotspot ? "true" : "false",
+             facts.sta_connected ? "true" : "false", facts.payment_locked ? "true" : "false",
+             kind == LanKind::Session ? "session" : "lan", rated, usable);
+  } else {
+    snprintf(out.body, sizeof out.body,
+             "{\"device_id\":\"%s\",\"fw\":\"%s\",\"hotspot\":%s,\"sta_connected\":%s,"
+             "\"payment_locked\":%s,\"payment_lock_reason\":\"\",\"cloud_linked\":false,"
+             "\"auth\":\"%s\",\"rated_active_w\":null,\"usable_active_w\":null,"
+             "\"overload_configured\":false,\"total_output_coverage_verified\":false}",
+             id, facts.firmware ? facts.firmware : "1.0.1", facts.hotspot ? "true" : "false",
+             facts.sta_connected ? "true" : "false", facts.payment_locked ? "true" : "false",
+             kind == LanKind::Session ? "session" : "lan");
+  }
   out.status = 200;
   return out;
 }
@@ -390,7 +407,8 @@ HttpReply ManualApi::ac_post(const char* authorization, const char* json, const 
     return out;
   }
   const AcDecision decision = ac_.set(SettingsAuth::Ok, schema, ceiling_int, ceiling, mode >= 0, mode,
-                                      static_cast<uint32_t>(revision), !fail_persist_);
+                                      rating_.state().usable_active_w, static_cast<uint32_t>(revision),
+                                      !fail_persist_);
   snprintf(out.body, sizeof out.body,
            "{\"schema\":1,\"result\":\"%s\",\"reason\":\"%s\",\"applied\":%s,\"durable_commit\":%s,"
            "\"pending\":false,\"shutdown_operational\":false,\"physical_shutdown_verified\":false,"
@@ -401,6 +419,87 @@ HttpReply ManualApi::ac_post(const char* authorization, const char* json, const 
            decision.readback.ceiling_w,
            decision.readback.mode == AcModeSetting::WarnAndShutdown ? "warn_and_shutdown" : "warn_only",
            decision.readback.applied_revision);
+  out.status = decision.applied ? 200 : (decision.reason == SettingsReason::PersistFailed ? 500 : 400);
+  return out;
+}
+
+HttpReply ManualApi::rating_get(const char* authorization, uint32_t now_ms) {
+  HttpReply out;
+  const SettingsAuth auth = classify_lan_authorization(authorization, bearer_kind(authorization, now_ms));
+  if (auth != SettingsAuth::Ok) {
+    const char* reason = settings_reason_name(auth == SettingsAuth::SessionOnly
+                                                  ? SettingsReason::SessionNotSufficient
+                                                  : SettingsReason::Unauthorized);
+    snprintf(out.body, sizeof out.body,
+             "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"%s\",\"applied\":false,"
+             "\"readback_present\":false}",
+             reason);
+    out.status = 401;
+    return out;
+  }
+  const RatingState& s = rating_.state();
+  if (s.rated_active_w <= 0) {
+    snprintf(out.body, sizeof out.body,
+             "{\"schema\":1,\"result\":\"readback\",\"applied\":false,\"pending\":false,"
+             "\"physical_shutdown_verified\":false,\"readback\":{\"rated_active_w\":null,"
+             "\"usable_active_w\":null,\"applied_revision\":%u}}",
+             s.applied_revision);
+  } else {
+    snprintf(out.body, sizeof out.body,
+             "{\"schema\":1,\"result\":\"readback\",\"applied\":false,\"pending\":false,"
+             "\"physical_shutdown_verified\":false,\"readback\":{\"rated_active_w\":%d,"
+             "\"usable_active_w\":%d,\"applied_revision\":%u}}",
+             s.rated_active_w, s.usable_active_w, s.applied_revision);
+  }
+  out.status = 200;
+  return out;
+}
+
+HttpReply ManualApi::rating_post(const char* authorization, const char* json, const ClientHeaders& headers,
+                                 uint32_t now_ms) {
+  HttpReply out;
+  if (!post_headers_ok(headers, &out)) return out;
+  const SettingsAuth auth = classify_lan_authorization(authorization, bearer_kind(authorization, now_ms));
+  if (auth != SettingsAuth::Ok) {
+    const char* reason = settings_reason_name(auth == SettingsAuth::SessionOnly
+                                                  ? SettingsReason::SessionNotSufficient
+                                                  : SettingsReason::Unauthorized);
+    snprintf(out.body, sizeof out.body,
+             "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"%s\",\"applied\":false,"
+             "\"durable_commit\":false,\"readback_present\":false}",
+             reason);
+    out.status = 401;
+    return out;
+  }
+  int schema = 0, rated = 0, revision = 0;
+  const bool schema_int = json_int(json, "schema", &schema);
+  const bool rated_int = json_int(json, "rated_active_w", &rated);
+  const bool revision_int = json_int(json, "base_revision", &revision);
+  if (!schema_int || !revision_int) {
+    reply_set(&out, 400, "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"not_integer\",\"applied\":false}");
+    return out;
+  }
+  const RatingDecision decision =
+      rating_.set(auth, schema, rated_int, rated, ac_.state().ceiling_w, static_cast<uint32_t>(revision),
+                  !fail_persist_);
+  if (decision.readback.rated_active_w <= 0) {
+    snprintf(out.body, sizeof out.body,
+             "{\"schema\":1,\"result\":\"%s\",\"reason\":\"%s\",\"applied\":%s,\"durable_commit\":%s,"
+             "\"pending\":false,\"physical_shutdown_verified\":false,"
+             "\"readback\":{\"rated_active_w\":null,\"usable_active_w\":null,\"applied_revision\":%u}}",
+             decision.applied ? "applied" : "rejected", settings_reason_name(decision.reason),
+             decision.applied ? "true" : "false", decision.durable_commit ? "true" : "false",
+             decision.readback.applied_revision);
+  } else {
+    snprintf(out.body, sizeof out.body,
+             "{\"schema\":1,\"result\":\"%s\",\"reason\":\"%s\",\"applied\":%s,\"durable_commit\":%s,"
+             "\"pending\":false,\"physical_shutdown_verified\":false,"
+             "\"readback\":{\"rated_active_w\":%d,\"usable_active_w\":%d,\"applied_revision\":%u}}",
+             decision.applied ? "applied" : "rejected", settings_reason_name(decision.reason),
+             decision.applied ? "true" : "false", decision.durable_commit ? "true" : "false",
+             decision.readback.rated_active_w, decision.readback.usable_active_w,
+             decision.readback.applied_revision);
+  }
   out.status = decision.applied ? 200 : (decision.reason == SettingsReason::PersistFailed ? 500 : 400);
   return out;
 }

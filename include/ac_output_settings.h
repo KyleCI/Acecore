@@ -34,11 +34,46 @@ class AcOutputSettings {
   AcDecision readback() const;
   void load(int ceiling_w, int mode, uint32_t revision);
   AcDecision set(SettingsAuth auth, int schema, bool ceiling_is_int, int ceiling_w,
-                 bool mode_known, int mode, uint32_t base_revision, bool persist_ok);
+                 bool mode_known, int mode, int usable_w, uint32_t base_revision, bool persist_ok);
   const AcState& state() const { return state_; }
 
  private:
   AcState state_;
+};
+
+struct RatingState {
+  int schema = 1;
+  int rated_active_w = 0;
+  int usable_active_w = 0;
+  uint32_t applied_revision = 0;
+  bool durable = true;
+  bool physical_shutdown_verified = false;
+};
+
+struct RatingDecision {
+  bool applied = false;
+  bool durable_commit = false;
+  bool pending = false;
+  SettingsReason reason = SettingsReason::None;
+  RatingState readback;
+};
+
+class SystemRating {
+ public:
+  static constexpr int kRated5kW = 5000;
+  static constexpr int kRated35kW = 3500;
+  static constexpr int kUsable5kW = 4500;
+  static constexpr int kUsable35kW = 3150;
+  static int usableFor(int rated_active_w);
+
+  RatingDecision readback() const;
+  void load(int rated_active_w, uint32_t revision);
+  RatingDecision set(SettingsAuth auth, int schema, bool rated_is_int, int rated_active_w,
+                     int existing_ceiling_w, uint32_t base_revision, bool persist_ok);
+  const RatingState& state() const { return state_; }
+
+ private:
+  RatingState state_;
 };
 
 }  // namespace powercell

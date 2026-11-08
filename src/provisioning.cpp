@@ -6,6 +6,7 @@
 #include "wifi_fallback.h"
 #include "offline_battery_notifications.h"
 #include "local_http.h"
+#include "ac_output_policy.h"
 #include "output_gate.h"
 #ifdef POWERCELL_HW_V011
 #include "board_pins.h"
@@ -207,8 +208,9 @@ bool applyDeviceState(bool state, const char* origin)
 {
   if (!payment_allows_output(paymentLockEngaged(), state, origin)) return false;
   if (state && firmwareOTA.busy()) return false;
-  if (state && !batteryOutputOnAllowed()) {
-    Serial.println("[Battery] On blocked until the battery is at least 15% and you turn it on");
+  if (state && !user_output_on_allowed(batteryOutputOnAllowed(),
+                                       powercell::acOutputPolicy().shutdownLatched())) {
+    Serial.println("[Output] On blocked by the battery latch or the overload latch");
     return false;
   }
   deviceState = state;

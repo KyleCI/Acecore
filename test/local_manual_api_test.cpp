@@ -133,6 +133,30 @@ int main() {
   CHECK(api.battery_post(bearer_lan, fraction, json_headers(), 6000).status == 400);
   CHECK(strstr(api.battery_get(bearer_lan, 6000).body, "\"low_percent\":30"));
 
+  CHECK(api.rating_post(bearer_session, "{\"schema\":1,\"rated_active_w\":5000,\"base_revision\":0}",
+                        json_headers(), 6800)
+            .status == 401);
+  HttpReply unknown = api.rating_post(bearer_lan, "{\"schema\":1,\"rated_active_w\":4000,\"base_revision\":0}",
+                                      json_headers(), 6800);
+  CHECK(unknown.status == 400 && strstr(unknown.body, "\"reason\":\"unknown_rating\""));
+  CHECK(strstr(unknown.body, "\"applied\":false"));
+  HttpReply rated = api.rating_post(bearer_lan, "{\"schema\":1,\"rated_active_w\":5000,\"base_revision\":0}",
+                                    json_headers(), 6900);
+  CHECK(rated.status == 200 && strstr(rated.body, "\"applied\":true"));
+  CHECK(strstr(rated.body, "\"durable_commit\":true"));
+  CHECK(strstr(rated.body, "\"usable_active_w\":4500"));
+  CHECK(strstr(rated.body, "\"rated_active_w\":5000"));
+  HttpReply small = api.rating_post(bearer_lan, "{\"schema\":1,\"rated_active_w\":3500,\"base_revision\":1}",
+                                    json_headers(), 6950);
+  CHECK(small.status == 200 && strstr(small.body, "\"usable_active_w\":3150"));
+  CHECK(strstr(api.status(bearer_lan, device, facts, 6950).body, "\"usable_active_w\":3150"));
+  HttpReply too_high = api.ac_post(
+      bearer_lan, "{\"schema\":1,\"ceiling_w\":4000,\"mode\":\"warn_only\",\"base_revision\":0}", json_headers(),
+      6960);
+  CHECK(too_high.status == 400 && strstr(too_high.body, "\"reason\":\"ceiling_above_usable\""));
+  HttpReply back = api.rating_post(bearer_lan, "{\"schema\":1,\"rated_active_w\":5000,\"base_revision\":2}",
+                                   json_headers(), 6970);
+  CHECK(back.status == 200 && strstr(back.body, "\"usable_active_w\":4500"));
   const char* ceiling =
       "{\"schema\":1,\"ceiling_w\":500,\"mode\":\"warn_and_shutdown\",\"base_revision\":0}";
   HttpReply ac = api.ac_post(bearer_lan, ceiling, json_headers(), 7000);
@@ -161,6 +185,10 @@ int main() {
   HttpReply restored = rebooted.battery_get(bearer_lan, 8000);
   CHECK(restored.status == 200 && strstr(restored.body, "\"low_percent\":40"));
   CHECK(strstr(rebooted.ac_get(bearer_lan, 8000).body, "\"ceiling_w\":500"));
+  CHECK(strstr(rebooted.rating_get(bearer_lan, 8000).body, "\"usable_active_w\":4500"));
+  CHECK(strstr(rebooted.rating_get(bearer_lan, 8000).body, "\"rated_active_w\":5000"));
+  CHECK(!user_output_on_allowed(true, true));
+  CHECK(user_output_on_allowed(true, false));
 
   HttpReply bad = api.login(
       "{\"device_id\":\"aa:bb:cc:dd:ee:ff\",\"passcode\":\"246801\","
@@ -210,6 +238,7 @@ int main() {
   CHECK(!payment_allows_output(true, false, "user"));
   CHECK(payment_allows_output(true, false, "battery_critical"));
   CHECK(payment_allows_output(true, false, "ota"));
+  CHECK(payment_allows_output(true, false, "ac_overload"));
   CHECK(payment_allows_output(false, true, "user"));
 
   if (g_failures) {

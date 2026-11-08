@@ -119,6 +119,7 @@ void applySaved() {
   batteryApplyThresholds(static_cast<float>(api.battery().state().low_percent),
                          static_cast<float>(api.battery().state().warning_percent));
   const int mode = static_cast<int>(api.ac().state().mode);
+  powercell::acOutputPolicy().setUsable(api.rating().state().usable_active_w);
   powercell::acOutputPolicy().setCeiling(api.ac().state().ceiling_w,
                                          mode == 1 ? powercell::AcMode::WarnAndShutdown
                                                    : powercell::AcMode::WarnOnly);
@@ -155,6 +156,11 @@ void manualApiBegin() {
     image.ac_revision = prefs.getUInt("rev", 0);
     prefs.end();
   }
+  if (prefs.begin("system_cfg", true)) {
+    image.rated_active_w = prefs.getInt("rated", 0);
+    image.rating_revision = prefs.getUInt("rev", 0);
+    prefs.end();
+  }
   api.restore(image);
   api.set_persist_fail(false);
   api.set_random([](uint8_t* out, size_t n, void*) { esp_fill_random(out, n); }, nullptr);
@@ -181,6 +187,11 @@ static bool saveImage() {
   ok = prefs.putInt("ceiling", image.ceiling_w) == sizeof(int) &&
        prefs.putInt("mode", image.ac_mode) == sizeof(int) &&
        prefs.putUInt("rev", image.ac_revision) == sizeof(uint32_t);
+  prefs.end();
+  if (!ok) return false;
+  if (!prefs.begin("system_cfg", false)) return false;
+  ok = prefs.putInt("rated", image.rated_active_w) == sizeof(int) &&
+       prefs.putUInt("rev", image.rating_revision) == sizeof(uint32_t);
   prefs.end();
   return ok;
 }
@@ -287,6 +298,27 @@ void manualRegister(AsyncWebServer& server) {
       request->send(500, "application/json",
                     "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"persist_failed\",\"applied\":false,"
                     "\"shutdown_operational\":false}");
+      return;
+    }
+    if (reply.status == 200) applySaved();
+    sendReply(request, reply);
+  }, nullptr, onBody);
+  server.on("/v1/system-rating", HTTP_GET, [](AsyncWebServerRequest* request) {
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    sendReply(request, api.rating_get(auth.c_str(), millis()));
+  });
+  server.on("/v1/system-rating", HTTP_POST, [](AsyncWebServerRequest* request) {
+    Body* stored = static_cast<Body*>(request->_tempObject);
+    if (stored && stored->overflow) {
+      request->send(413, "application/json", "{\"error\":\"body_too_large\"}");
+      return;
+    }
+    const char* json = stored ? stored->data : "";
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    powercell::HttpReply reply = api.rating_post(auth.c_str(), json, headersOf(request), millis());
+    if (reply.status == 200 && !saveImage()) {
+      request->send(500, "application/json",
+                    "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"persist_failed\",\"applied\":false}");
       return;
     }
     if (reply.status == 200) applySaved();

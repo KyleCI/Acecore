@@ -31,7 +31,10 @@ enum class SettingsReason : uint8_t {
   WarningNotAboveCutoff,
   LowNotAboveWarning,
   StaleRevision,
-  PersistFailed
+  PersistFailed,
+  UnknownRating,
+  CeilingAboveUsable,
+  UsableUnset
 };
 
 struct SettingsState {

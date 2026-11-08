@@ -7,69 +7,90 @@ using namespace powercell;
 static int g_failures = 0;
 #define CHECK(cond) do { if (!(cond)) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #cond); ++g_failures; } } while (0)
 
-static AcWatts sample(float watts, uint32_t at, bool valid = true, bool coverage = false) {
+static AcWatts sample(float watts, uint32_t at, bool valid = true) {
   AcWatts s;
   s.valid = valid;
-  s.coverage_verified = coverage;
+  s.coverage_verified = false;
   s.watts = watts;
   s.receivedAtMs = at;
   return s;
 }
 
-static void selectedPzemWarnsWithoutShutdown() {
+static void holds(AcOutputPolicy* p, int watts, uint32_t at) {
+  p->update(sample(static_cast<float>(watts), at), at);
+}
+
+static void tripsAt(int usable) {
   AcOutputPolicy p;
-  p.setCeiling(500, AcMode::WarnAndShutdown);
-  p.update(sample(800, 0), 0);
-  CHECK(!p.warning());
-  p.update(sample(800, 3000), 3000);
-  CHECK(!p.warning());
-  p.update(sample(800, 6000), 6000);
-  CHECK(p.warning());
+  p.setUsable(usable);
+  holds(&p, usable, 0);
   CHECK(!p.shutdownLatched());
-  CHECK(!p.takeShutdownEdge());
-  CHECK(!p.shutdownOperational());
+  holds(&p, usable + 1, 0);
+  CHECK(!p.shutdownLatched());
+  holds(&p, usable + 1, 3000);
+  CHECK(!p.shutdownLatched());
+  holds(&p, usable + 1, 3000 + AcOutputPolicy::ShutdownHoldMs - 1);
+  CHECK(!p.shutdownLatched());
+  holds(&p, usable + 1, 3000 + AcOutputPolicy::ShutdownHoldMs);
+  CHECK(p.shutdownLatched());
+  CHECK(p.systemOverloadLatched());
+  CHECK(p.takeShutdownEdge());
   CHECK(!p.turnsOutputOn());
   CHECK(!AcOutputPolicy::kDrivesOutput);
-}
-
-static void staleIsNotZeroAndDoesNotShutdown() {
-  AcOutputPolicy p;
-  p.setCeiling(500, AcMode::WarnAndShutdown);
-  p.setGates(true, true);
-  p.update(sample(50, 0, false), 10000);
-  CHECK(p.coverageUnavailable());
-  CHECK(!p.warning());
-  CHECK(!p.shutdownLatched());
-  p.update(sample(9000, 0, true), 5000);
-  CHECK(p.coverageUnavailable());
-  CHECK(!p.shutdownLatched());
-}
-
-static void coverageAndPolarityCanRequestShutdownWithoutTurningOn() {
-  AcOutputPolicy p;
-  p.setCeiling(500, AcMode::WarnAndShutdown);
-  p.setGates(true, true);
-  p.update(sample(800, 0, true, true), 0);
-  p.update(sample(800, 3000, true, true), 3000);
-  p.update(sample(800, 11000, true, true), 11000);
-  CHECK(p.shutdownLatched());
-  CHECK(p.takeShutdownEdge());
-  CHECK(!p.takeShutdownEdge());
-  CHECK(!p.turnsOutputOn());
-  p.update(sample(100, 11000, false, true), 20000);
+  CHECK(!AcOutputPolicy::kCoverageVerified);
+  CHECK(p.unavailableReason() != nullptr);
+  holds(&p, 0, 20000);
   CHECK(p.shutdownLatched());
   const uint32_t under = 21000;
-  p.update(sample(100, under, true, true), under);
-  p.update(sample(100, under + AcOutputPolicy::ReleaseHoldMs, true, true),
-           under + AcOutputPolicy::ReleaseHoldMs);
+  holds(&p, usable, under);
+  holds(&p, usable, under + AcOutputPolicy::ReleaseHoldMs);
   CHECK(!p.shutdownLatched());
+  CHECK(!p.turnsOutputOn());
+}
+
+static void missingRatingDoesNotTrip() {
+  AcOutputPolicy p;
+  p.update(sample(9000, 0), 0);
+  p.update(sample(9000, 20000), 20000);
+  CHECK(!p.shutdownLatched());
+  CHECK(p.coverageUnavailable());
+}
+
+static void staleDoesNotTripOrRelease() {
+  AcOutputPolicy p;
+  p.setUsable(4500);
+  p.update(sample(9000, 0, false), 10000);
+  CHECK(!p.shutdownLatched());
+  holds(&p, 9000, 0);
+  holds(&p, 9000, 3000);
+  holds(&p, 9000, 3000 + AcOutputPolicy::ShutdownHoldMs);
+  CHECK(p.shutdownLatched());
+  p.update(sample(100, 0, false), 40000);
+  CHECK(p.shutdownLatched());
+}
+
+static void lowerCeilingCannotRaiseOverload() {
+  AcOutputPolicy p;
+  p.setUsable(4500);
+  p.setCeiling(500, AcMode::WarnOnly);
+  holds(&p, 800, 0);
+  holds(&p, 800, 3000);
+  holds(&p, 800, 6000);
+  CHECK(p.warning());
+  CHECK(!p.shutdownLatched());
+  p.setCeiling(500, AcMode::WarnAndShutdown);
+  holds(&p, 800, 6000 + AcOutputPolicy::ShutdownHoldMs);
+  CHECK(p.shutdownLatched());
+  CHECK(!p.systemOverloadLatched());
   CHECK(!p.turnsOutputOn());
 }
 
 int main() {
-  selectedPzemWarnsWithoutShutdown();
-  staleIsNotZeroAndDoesNotShutdown();
-  coverageAndPolarityCanRequestShutdownWithoutTurningOn();
+  tripsAt(4500);
+  tripsAt(3150);
+  missingRatingDoesNotTrip();
+  staleDoesNotTripOrRelease();
+  lowerCeilingCannotRaiseOverload();
   if (g_failures) {
     fprintf(stderr, "%d ac output checks failed\n", g_failures);
     return 1;

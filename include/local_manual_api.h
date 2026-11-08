@@ -54,6 +54,8 @@ struct ManualImage {
   int ceiling_w = 0;
   int ac_mode = 0;
   uint32_t ac_revision = 0;
+  int rated_active_w = 0;
+  uint32_t rating_revision = 0;
 };
 
 class ManualApi {
@@ -79,6 +81,9 @@ class ManualApi {
   HttpReply ac_get(const char* authorization, uint32_t now_ms);
   HttpReply ac_post(const char* authorization, const char* json, const ClientHeaders& headers,
                     uint32_t now_ms);
+  HttpReply rating_get(const char* authorization, uint32_t now_ms);
+  HttpReply rating_post(const char* authorization, const char* json, const ClientHeaders& headers,
+                        uint32_t now_ms);
   // /data: no header stays open for the on-device page. A presented bearer must be the LAN token.
   int data_auth(const char* authorization, uint32_t now_ms) const;
   // /state is the collector output. v0.1.1 is GPIO15 active-low. It is not an AcePlug.
@@ -92,11 +97,13 @@ class ManualApi {
 
   const BatterySettings& battery() const { return battery_; }
   const AcOutputSettings& ac() const { return ac_; }
+  const SystemRating& rating() const { return rating_; }
 
  private:
   LanAccess lan_;
   BatterySettings battery_;
   AcOutputSettings ac_;
+  SystemRating rating_;
   char verifier_hex_[97];
   bool fail_persist_ = false;
   bool persist(void* ctx, const void* pairs, size_t len, const char* verifier_hex);

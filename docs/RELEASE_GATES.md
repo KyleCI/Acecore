@@ -6,6 +6,11 @@ listed separately from items that still need a person, a secret, or a bench.
 ## Ready in software, host-tested, not run on a unit
 
 - `POST /v2/login`, `GET /v2/setup/info`, `GET /v2/status`.
+- `POST /v1/system-rating` for rated active watts 5000 or 3500. Usable power
+  is computed, 4500 W or 3150 W, and is the overload bound. A lower Manual
+  ceiling cannot raise it. On v0.1.1 a sustained fresh reading above the bound
+  requests GPIO15 high. That does not turn the output back on, and it is not
+  a separate hardware breaker.
 - Local Manual Save for battery percentages and the AC ceiling, with
   `result: applied`, `applied: true`, `durable_commit: true`, and a later GET
   of the same revision and values. A login session is
@@ -20,11 +25,9 @@ listed separately from items that still need a person, a secret, or a bench.
 
 ## v0.1.1 requirements still blocked
 
-- 19 A overload. In 2.5.11 this is STM32 output current, 19 A for 2 seconds,
-  clear at 17 A, or STM32 status bit 16. v0.1.1 has no STM32 current. PZEM
-  amps are not that measurement and are not on a verified total-output path.
-  The 19 A number must not be copied onto PZEM until a rated current and the
-  meter location are confirmed.
+- PZEM placement and calibration. The software path runs only on a fresh
+  valid configured reading, and `physical_shutdown_verified` stays false
+  because the meter has not been shown to be the total AC output.
 - Payment-lock setter. 2.5.11 sets `pc_ident/pay_lock` from a signed cloud
   command, HMAC of the factory device secret. This tree reads the flag and
   refuses user on and off when it is already true. Battery cutoff and OTA off
@@ -34,9 +37,8 @@ listed separately from items that still need a person, a secret, or a bench.
   replay a timed-out POST. PBKDF2 is intended to finish inside that, but it
   has not been timed on an ESP32. A login that succeeds on the device and is
   then lost still replaces that phone's token.
-- Physical shutdown and PZEM coverage. `physical_shutdown_verified` is false.
-  The ceiling does not drive a pin. Charging-continues and DSP polarity are
-  user statements, not measurements.
+- Physical confirmation. Charging-continues and DSP polarity are user
+  statements, not measurements. GPIO15 high as AC-output off is the same.
 
 ## Original profile
 
@@ -47,8 +49,6 @@ path. v0.1.1 DSP behavior is not applied to that relay.
 
 ## What would close each gate
 
-- A confirmed inverter-current source and its trip rating, if a 19 A style
-  limit is still required on v0.1.1.
 - The signed payment-lock command and its key, held outside this archive, if
   the lock must be set from the cloud again.
 - One timed login on hardware, and one check that a lost response is recovered

@@ -4,6 +4,7 @@
 
 #include "ac_energy_log.h"
 #include "ac_output_policy.h"
+#include "provisioning.h"
 #include "board_pins.h"
 #include "diag_blackbox.h"
 #include "ds3231_time.h"
@@ -324,6 +325,7 @@ void poll_clock_and_meter() {
   ceiling.watts = next.valid ? next.power_dW / 10.0f : 0.f;
   ceiling.receivedAtMs = next.valid ? next.power_at_ms : 0;
   powercell::acOutputObserve(ceiling, millis());
+  if (powercell::acOutputPolicy().shutdownLatched()) applyDeviceState(false, "ac_overload");
   static uint32_t last_bad = 0;
   if (!sample.valid && millis() - last_bad > 10000) {
     last_bad = millis();
