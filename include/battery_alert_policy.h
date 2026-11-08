@@ -11,10 +11,11 @@ struct BatteryReading {
   float percent;
   float voltage;
   uint32_t receivedAtMs;
-  // True only when the same fresh JK-BMS frame reports charging (batStatus == 1).
-  // Positive pack current is not used: this tree treats that as "not discharge",
-  // which includes idle. Latch release requires this flag.
+  // JK f[172]: 0 standby, 1 charging, 2 discharging. Recorded, not required to release.
   bool charging;
+  // True only when this percent is the JK-BMS frame's own SOC. A voltage-derived
+  // or other substitute does not release the latch.
+  bool bms_own;
 };
 
 // SOC is the JK-BMS byte in a fresh dynamic frame (0..100, positive pack
@@ -25,9 +26,10 @@ struct BatteryReading {
 // Warning:      enter <=15%, one notification per episode.
 // Latch-driven physical output is disabled. The software ON block stays.
 // Pre-existing /OFF, websocket OFF, and the OTA shutdown callback are separate.
-// Output latch: enter <=10%. Release only after fresh SOC stays >=15% for
-//               60s AND every sample in that window has charging==true.
-//               SOC alone does not release. Release does not turn the output on.
+// Output latch: enter <=10%. Release after fresh BMS-own SOC stays >=15% for
+//               60s, including a full or idle pack (batStatus standby).
+//               A sample that is not BMS-own does not release. Release does not
+//               turn the output on.
 // The warning rearms only after fresh SOC stays above the configured warning
 // percent for 60s. That rearm does not require charging and does not release the latch.
 class BatteryAlertPolicy {
@@ -67,7 +69,7 @@ class BatteryAlertPolicy {
  private:
   static uint32_t elapsed(uint32_t now, uint32_t since) { return now - since; }
   BatteryAlertLevel levelFor(float percent) const;
-  void considerLatch(float percent, bool charging, uint32_t now);
+  void considerLatch(float percent, bool bms_own, uint32_t now);
   void considerRearm(float percent, uint32_t now);
 
   BatteryAlertLevel level_ = BatteryAlertLevel::None;

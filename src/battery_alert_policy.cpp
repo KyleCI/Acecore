@@ -56,7 +56,7 @@ bool BatteryAlertPolicy::takeOutputOffEdge() {
   return edge;
 }
 
-void BatteryAlertPolicy::considerLatch(float percent, bool charging, uint32_t now) {
+void BatteryAlertPolicy::considerLatch(float percent, bool bms_own, uint32_t now) {
   if (percent <= InhibitPercent) {
     latch_hold_ = false;
     if (!latched_) {
@@ -70,7 +70,7 @@ void BatteryAlertPolicy::considerLatch(float percent, bool charging, uint32_t no
     }
     return;
   }
-  if ((latched_ || boot_unproven_) && percent >= RestartPercent && charging) {
+  if ((latched_ || boot_unproven_) && bms_own && percent >= RestartPercent) {
     if (!latch_hold_) {
       latch_hold_ = true;
       latch_hold_since_ = now;
@@ -122,7 +122,7 @@ uint8_t BatteryAlertPolicy::update(const BatteryReading& reading, uint32_t now) 
     latch_hold_ = false;
     warn_hold_ = false;
   } else {
-    considerLatch(reading.percent, reading.charging, now);
+    considerLatch(reading.percent, reading.bms_own, now);
     considerRearm(reading.percent, now);
   }
 

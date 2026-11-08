@@ -11,17 +11,16 @@ required to generate these local notifications.
 | --- | --- | --- | --- |
 | Low | SOC <= 25% | SOC > 27% | Every 2 hours |
 | Shutdown warning | SOC <= 15% | SOC > 15% | Once per discharge episode |
-| Critically low | SOC <= 10% | Fresh SOC stays >= 15% for 60 seconds, and every sample in that window is a charging BMS frame (`batStatus == 1`) | Once, when the latch closes |
+| Critically low | SOC <= 10% | Fresh BMS-own SOC stays >= 15% for 60 seconds, including standby/full/idle | Once, when the latch closes |
 
 The 15% warning does not repeat until fresh SOC has stayed above the configured
 warning percent for 60 seconds. That rearm does not require charging and does
-not clear the latch. The 10% latch blocks the collector's own ON command until
-the charging recovery above, and it does not turn the output back on. SOC at
-or above 15% without `batStatus == 1` does not release the latch. A pack at
-100% with `batStatus` standby (full or idle) stays latched. Pack-current
-sign is not treated as charging. That charging requirement is narrower than
-"restart at 15%" and is recorded as an open choice in
-`docs/AUTH_AND_RECOVERY_EVIDENCE.md`.
+not clear the latch. The 10% latch blocks the collector's own ON command until fresh BMS-own SOC
+has stayed at or above 15% for 60 seconds, including a full or idle pack.
+That does not turn the output back on. A percent that is not from the JK
+frame does not release the latch. Stale SOC does not. Pack current is not
+the release signal. This matches the 2.5.11 BMS-own SOC hold in
+`soc_guard.h` (audit `4f39c95`).
 Stale or invalid SOC clears the visible level and does not start or release
 the latch. A failed latch read on boot blocks ON until fresh recovery evidence
 arrives. A failed latch write is not treated as saved.

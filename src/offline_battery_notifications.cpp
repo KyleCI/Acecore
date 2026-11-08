@@ -174,9 +174,9 @@ void serviceOfflineBatteryNotifications() {
   lastSampleAt = now;
   JKPacketData bms = {};
   const bool valid = getBmsData(bms);
-  // batStatus 1 is the JK frame's charging state. Positive current is not used.
+  // bms_own is this JK frame. Standby at a high SOC still counts. Current is not SOC.
   const BatteryReading reading = {valid, static_cast<float>(bms.SOC), bms.packVoltage,
-                                  bms.receivedAtMs, valid && bms.batStatus == 1};
+                                  bms.receivedAtMs, valid && bms.batStatus == 1, valid};
   const uint8_t changes = policy.update(reading, now);
   if (changes & BatteryAlertPolicy::BatteryChanged) batterySequence = ++sequence;
   if (changes & BatteryAlertPolicy::AvailabilityChanged) unavailableSequence = ++sequence;

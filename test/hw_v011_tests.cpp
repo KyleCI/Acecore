@@ -47,7 +47,11 @@ static void test_profiles() {
   CHECK(!drives_stm32_reset(HardwareProfile::V011));
   CHECK(!drives_gpio26_as_reset(HardwareProfile::V011));
   CHECK(drives_gpio26_as_reset(HardwareProfile::Original));
-  CHECK(dsp_connection(HardwareProfile::V011) == DspConnection::NotFitted);
+  CHECK(dsp_connection(HardwareProfile::V011) == DspConnection::GpioEnableReported);
+  CHECK(hard_pin_role(15, HardwareProfile::V011) == PinRole::DspEnable);
+  CHECK(hard_pin_role(15, HardwareProfile::Original) == PinRole::Relay);
+  CHECK(hard_pin_role(25, HardwareProfile::Original) == PinRole::PowerLight);
+  CHECK(!kDspPolarityVerified);
   CHECK(dsp_connection(HardwareProfile::Original) == DspConnection::ExistingTextUart);
   CHECK(!missing_dsp_is_fault(HardwareProfile::V011));
   CHECK(!diag_kind_allowed(HardwareProfile::V011, KindDiagStm32));

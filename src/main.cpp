@@ -20,8 +20,9 @@ void setup()
 #ifdef POWERCELL_HW_V011
     // UART1 is free of the STM32 link and becomes the PZEM hardware UART.
     Serial1.begin(9600, SERIAL_8N1, PZEM_RX_GPIO, PZEM_TX_GPIO);
-    pinMode(powercell::kPowerLightV011, OUTPUT);
-    digitalWrite(powercell::kPowerLightV011, LOW);
+    // Existing boot level. Order is unchanged so this does not add a new edge.
+    pinMode(powercell::kDspEnableV011, OUTPUT);
+    digitalWrite(powercell::kDspEnableV011, LOW);
 #else
     INVERTER_UART.begin(INVERTER_BAUD, SERIAL_8N1, INVERTER_RX, INVERTER_TX);
     initInverterParser(INVERTER_RX, INVERTER_TX, INVERTER_BAUD);

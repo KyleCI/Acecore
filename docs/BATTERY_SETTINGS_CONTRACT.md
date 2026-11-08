@@ -157,16 +157,32 @@ A successful body, once auth exists, would be HTTP 200:
 
 Defaults before any applied save: low 25, warning 15, revision 0.
 
+## AC output ceiling
+
+The selected measurement on v0.1.1 is the PZEM-004T V3 active-power register
+`power_dW` (0.1 W per count), published as `ac_consumed.active_power_w`.
+Freshness is 2 seconds. A missing or stale frame is unavailable. It is not
+reported as 0 W and it does not start or clear a shutdown. BMS watts, solar
+watts, V times I, and plug sums are not this input. The original profile has
+no PZEM, so it has no selected source.
+
+`total_output_coverage_verified` is false: placement on the inverter output
+and calibration are not confirmed. Warn-and-shutdown does not drive a pin.
+`physical_shutdown_verified` stays false. A saved ceiling is not applied on
+the device until bearer login exists; the host-tested store accepts an
+integer ceiling from 50 to 20000 W and mode `warn_only` or `warn_and_shutdown`.
+
 ## Latch recovery (not the configurable warning)
 
 The configurable warning does not move the 10% latch or the 15% restart gate.
 
 Release requires every sample in a 60-second window to be a fresh JK-BMS frame
-with SOC >= 15 and `batStatus == 1` (charging). SOC without that charging flag
-does not release. A pack at 100% with `batStatus` standby stays latched for
-as long as it remains idle. That is narrower than the requested restart gate
-of 15% and is an open choice in `docs/AUTH_AND_RECOVERY_EVIDENCE.md`. Stale
-frames reset the window and do not release. Release does not turn the output on.
+whose own SOC stays at or above 15%, including a full or idle pack
+(`batStatus` standby). A percent that is not from that BMS frame does not
+release. Stale frames reset the window and do not release. Release does not
+turn the output on. The 2.5.11 `soc_guard.h` rule this follows is BMS-online
+with its own SOC >= 15 held 60 seconds. Charging current is not required for
+that path.
 
 This tree has no `soc_guard` module. The charging flag is the BMS evidence
 available here. Pack-current sign is not used, because this firmware treats

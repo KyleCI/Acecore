@@ -3,6 +3,7 @@
 #ifdef POWERCELL_HW_V011
 
 #include "ac_energy_log.h"
+#include "ac_output_policy.h"
 #include "board_pins.h"
 #include "diag_blackbox.h"
 #include "ds1307_time.h"
@@ -106,6 +107,7 @@ struct Live {
   char reason[24] = "no_reading";
   uint32_t wh = 0;
   uint32_t power_dW = 0;
+  uint32_t power_at_ms = 0;
   uint32_t voltage_dV = 0;
   uint32_t current_mA = 0;
   uint32_t epoch = 1;
@@ -287,6 +289,7 @@ void poll_clock_and_meter() {
   if (sample.valid) {
     next.wh = wh;
     next.power_dW = reading.power_dW;
+    next.power_at_ms = millis();
     next.voltage_dV = reading.voltage_dV;
     next.current_mA = reading.current_mA;
   }
@@ -296,6 +299,12 @@ void poll_clock_and_meter() {
   next.dropped = queue_drops;
   if (diag_slots) next.diag_retained = diag_slots->stats().retained;
   publish_live(next);
+  powercell::AcWatts ceiling;
+  ceiling.valid = next.valid;
+  ceiling.coverage_verified = false;
+  ceiling.watts = next.valid ? next.power_dW / 10.0f : 0.f;
+  ceiling.receivedAtMs = next.valid ? next.power_at_ms : 0;
+  powercell::acOutputObserve(ceiling, millis());
   static uint32_t last_bad = 0;
   if (!sample.valid && millis() - last_bad > 10000) {
     last_bad = millis();
@@ -504,11 +513,16 @@ void hwV011AppendTelemetry(JsonDocument& doc) {
   ac["ct_a"] = 100;
   ac["uart"] = "uart1_rx25_tx26";
   ac["boundary"] = "intended_common_ac_load_unverified";
+  ac["ceiling_source"] = "pzem004t_v3_active_power";
+  ac["freshness_ms"] = 2000;
+  ac["total_output_coverage_verified"] = false;
+  ac["stale_is_zero"] = false;
   ac["valid"] = snap.valid;
   ac["reason"] = snap.reason;
   if (snap.valid) {
     ac["lifetime_wh"] = snap.wh;
     ac["active_power_w"] = snap.power_dW / 10.0;
+    ac["active_power_age_ms"] = millis() - snap.power_at_ms;
     ac["voltage_v"] = snap.voltage_dV / 10.0;
     ac["current_a"] = snap.current_mA / 1000.0;
   } else {

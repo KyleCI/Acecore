@@ -11,7 +11,8 @@
 //   No STM32 and no LoRa. The collector reads sensors and reports them.
 //   UART0 console stays. UART2 BMS stays. UART1, freed from the STM32 link,
 //   is the PZEM hardware UART, default RX25/TX26, 9600 8N1, configurable.
-//   Power light GPIO15. DS1307 shares I2C SDA21/SCL22 with the ADS1115.
+//   GPIO15 is the user-reported DSP on/off pin, not a power light and not an
+//   AcePlug relay. Polarity is not measured. DS1307 shares I2C SDA21/SCL22.
 //   SD SPI SCK18/MISO19/MOSI23, chip select GPIO33.
 //   GPIO2 (old STM32 TX) and GPIO4 (old LoRa CS) are released and unassigned.
 //   Nothing here is a DSP-internal protocol.
@@ -32,7 +33,8 @@ constexpr int kPzemRx = 25;
 constexpr int kPzemTx = 26;
 constexpr int kI2cSda = 21;
 constexpr int kI2cScl = 22;
-constexpr int kPowerLightV011 = 15;
+constexpr int kDspEnableV011 = 15;
+constexpr bool kDspPolarityVerified = false;
 constexpr int kPowerLightOriginal = 25;
 constexpr int kRelayOriginal = 15;
 constexpr int kStatusRed = 13;
@@ -64,6 +66,7 @@ enum class PinRole : uint8_t {
   PzemUart,
   I2c,
   PowerLight,
+  DspEnable,
   Relay,
   StatusLed,
   Strap,
@@ -74,7 +77,7 @@ enum class PinRole : uint8_t {
   InputOnly,
 };
 
-enum class DspConnection : uint8_t { NotFitted = 0, ExistingTextUart = 1 };
+enum class DspConnection : uint8_t { NotFitted = 0, ExistingTextUart = 1, GpioEnableReported = 2 };
 
 struct UartAssign {
   int controller;
@@ -93,8 +96,8 @@ inline HardwareProfile build_profile() {
 }
 
 inline DspConnection dsp_connection(HardwareProfile profile) {
-  return profile == HardwareProfile::Original ? DspConnection::ExistingTextUart
-                                              : DspConnection::NotFitted;
+  if (profile == HardwareProfile::Original) return DspConnection::ExistingTextUart;
+  return DspConnection::GpioEnableReported;
 }
 
 // A missing DSP connector is not a collector fault. v0.1.1 has no DSP link.
@@ -107,7 +110,7 @@ inline bool diag_kind_records_dsp(uint8_t kind) {
 }
 
 inline bool diag_kind_allowed(HardwareProfile profile, uint8_t kind) {
-  if (dsp_connection(profile) == DspConnection::NotFitted && diag_kind_records_dsp(kind)) {
+  if (dsp_connection(profile) != DspConnection::ExistingTextUart && diag_kind_records_dsp(kind)) {
     return false;
   }
   return true;
@@ -143,7 +146,7 @@ inline PinRole hard_pin_role(int pin, HardwareProfile profile) {
   if (profile == HardwareProfile::V011) {
     if (pin == kSdCsV011) return PinRole::VerifiedSdCs;
     if (pin == kPzemRx || pin == kPzemTx) return PinRole::PzemUart;
-    if (pin == kPowerLightV011) return PinRole::PowerLight;
+    if (pin == kDspEnableV011) return PinRole::DspEnable;
     if (pin == kStm32Tx || pin == kLoraCs) return PinRole::Unverified;
     return PinRole::Unverified;
   }
@@ -186,6 +189,7 @@ inline const char* pin_role_name(PinRole role) {
     case PinRole::PzemUart: return "pzem_hardware_uart";
     case PinRole::I2c: return "i2c_ads_ds1307";
     case PinRole::PowerLight: return "power_light";
+    case PinRole::DspEnable: return "dsp_enable_reported";
     case PinRole::Relay: return "collector_relay";
     case PinRole::StatusLed: return "status_led";
     case PinRole::Strap: return "strap";

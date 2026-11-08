@@ -7,8 +7,8 @@
 
 using namespace powercell;
 
-static BatteryReading reading(float percent, uint32_t now, bool charging = false) {
-  return {true, percent, 51.2f, now, charging};
+static BatteryReading reading(float percent, uint32_t now, bool charging = false, bool bms_own = true) {
+  return {true, percent, 51.2f, now, charging, bms_own};
 }
 
 static void thresholds() {
@@ -145,7 +145,7 @@ static void hysteresis() {
 
 static void startupAndInvalidReadings() {
   BatteryAlertPolicy p(100);
-  BatteryReading empty = {false, 0, 0, 0, false};
+  BatteryReading empty = {false, 0, 0, 0, false, false};
   assert(p.update(empty, 100) == 0);
   assert(p.update(empty, 15099) == 0);
   assert(p.update(empty, 15100) == BatteryAlertPolicy::AvailabilityChanged);
@@ -211,40 +211,34 @@ static void rollover() {
   assert(held.outputOnAllowed());
 }
 
-static void socWithoutChargingDoesNotRelease() {
+static void nonBmsSocDoesNotRelease() {
   BatteryAlertPolicy p;
   p.update(reading(9, 1000), 1000);
   assert(p.outputLatched());
   const uint32_t done = 2000 + BatteryAlertPolicy::RecoveryHoldMs;
-  assert(p.update(reading(40, 2000), 2000) == 0 || p.outputLatched());
-  p.update(reading(40, done), done);
+  p.update(reading(100, 2000, false, false), 2000);
+  p.update(reading(100, done, false, false), done);
   assert(p.outputLatched());
   assert(!p.outputOnAllowed());
-  p.update(reading(40, done + 1, true), done + 1);
-  assert(p.outputLatched());
-  p.update(reading(40, done + 1 + BatteryAlertPolicy::RecoveryHoldMs, true),
-           done + 1 + BatteryAlertPolicy::RecoveryHoldMs);
-  assert(!p.outputLatched());
 }
 
-static void fullIdleAboveFifteenStaysLatched() {
-  // This tree labels JK f[172] as 0 Standby, 1 Charging, 2 Discharging.
-  // charging=false is standby or discharge. A pack that reached 100% and then
-  // sits full or idle is standby, so it is not charging. There is no current
-  // input and no automatic turn-on.
+static void fullIdleAboveFifteenReleasesAfterHold() {
+  // Standby at 100% is BMS-own SOC. It releases after 60s and does not turn on.
   BatteryAlertPolicy p;
   assert(!BatteryAlertPolicy::kPhysicalAutoOffEnabled);
-  p.update(reading(8, 1000, true), 1000);
+  p.update(reading(8, 1000, false), 1000);
   assert(p.outputLatched());
-  assert(!p.outputOnAllowed());
   const uint32_t start = 5000;
   p.update(reading(100, start, false), start);
   assert(p.outputLatched());
   assert(!p.outputOnAllowed());
-  const uint32_t later = start + BatteryAlertPolicy::RecoveryHoldMs * 10;
-  p.update(reading(100, later, false), later);
+  p.update(reading(100, start + BatteryAlertPolicy::RecoveryHoldMs - 1, false),
+           start + BatteryAlertPolicy::RecoveryHoldMs - 1);
   assert(p.outputLatched());
-  assert(!p.outputOnAllowed());
+  p.update(reading(100, start + BatteryAlertPolicy::RecoveryHoldMs, false),
+           start + BatteryAlertPolicy::RecoveryHoldMs);
+  assert(!p.outputLatched());
+  assert(p.outputOnAllowed());
 }
 
 static void configuredWarningDoesNotMoveHardCutoff() {
@@ -276,8 +270,8 @@ int main() {
   startupAndInvalidReadings();
   cooldowns();
   rollover();
-  socWithoutChargingDoesNotRelease();
-  fullIdleAboveFifteenStaysLatched();
+  nonBmsSocDoesNotRelease();
+  fullIdleAboveFifteenReleasesAfterHold();
   configuredWarningDoesNotMoveHardCutoff();
   std::puts("PASS: battery thresholds, latch, warning, stale, persistence, rollover");
 }

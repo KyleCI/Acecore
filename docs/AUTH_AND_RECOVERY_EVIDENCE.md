@@ -97,15 +97,15 @@ closed and `outputOnAllowed()` stays false.
 
 | Option | Evidence | Full or idle pack above 15% | Status |
 | --- | --- | --- | --- |
-| A. Current rule | This branch. Release only if every fresh sample for 60 seconds has SOC >= 15 and `batStatus == 1`. | Stays latched. Standby is not charging. | Implemented. Narrower than "restart at 15%". |
+| A. BMS-own SOC | 2.5.11 `soc_guard.h` at `4f39c95`: BMS online, its own SOC >= 15, held 60 seconds. Idle is enough. | Releases after the hold. | Implemented for JK frames in this branch. No automatic turn-on. |
 | B. 2.5.0 `soc_guard.h` | `origin/embedded/collector-v17-app-ready` `lib/pc_core/src/soc_guard.h`. Release when SOC >= 15 and charging has been held 60 seconds. Charging means BMS online and current > +1 A, or, if the BMS is offline, STM32 BULK/ABSORB/FLOAT. The host test rejects a 0.5 A dip. | Stays latched while current is at or under 1 A. | Not adopted. The STM32 fallback does not exist on v0.1.1. `power_guard.cpp` on that branch also calls `gateway::set(true, "soc_restore")` after release. That automatic turn-on must not be copied. |
 | C. BMS online and SOC >= 15 | Described for deployed 2.5.11 audit `4f39c95`. That commit is not in this repo. The readable 2.5.0 guard does not release on BMS-online plus SOC alone. | Would release a resting full pack if the audit description is exact. | Not implemented. Needs the 2.5.11 source, or an explicit confirmation, before it can replace option A. |
 
-Option A remains in force so this pass does not pretend a resting pack has
-met a charging hold. It does leave a unit that charged past 15% and then
-went full or idle latched until `batStatus` returns to 1 for a full minute.
-Embedded needs to choose among A, B without the STM32 fallback and without
-automatic turn-on, or C once the 2.5.11 source is available.
+The 2.5.11 source is now in the review archive (box SHA-256
+`863fc9cd29c548a65426fa29b804da80d58945da4d79cb69ed92f07b166da3aa`, commit
+`4f39c95c39c9d9699233787c4f5348dc221b7d24`). Its BMS-own SOC path is the rule
+this branch uses. The STM32 charging fallback and the automatic gateway
+restore in that archive's `power_guard.cpp` are not copied.
 
 ## Physical output
 

@@ -62,6 +62,27 @@ with tempfile.TemporaryDirectory(prefix="hw-v011-") as directory:
     ], "battery settings tests")
     subprocess.run([str(settings_bin)], check=True)
 
+    ac_bin = pathlib.Path(directory) / "ac-output-tests"
+    compile_one([
+        compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+        "-I", str(root / "include"),
+        str(root / "src/ac_output_policy.cpp"),
+        str(root / "src/ac_output_settings.cpp"),
+        str(root / "src/battery_settings.cpp"),
+        str(root / "test/ac_output_policy_test.cpp"),
+        "-o", str(ac_bin),
+    ], "ac output tests")
+    subprocess.run([str(ac_bin)], check=True)
+
+    lan_bin = pathlib.Path(directory) / "lan-access-tests"
+    compile_one([
+        compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-c",
+        "-I", str(root / "include"),
+        "-I", str(root / "lib/pc_onb/src"),
+        str(root / "src/lan_access.cpp"),
+        "-o", str(pathlib.Path(directory) / "lan_access.o"),
+    ], "lan access compile")
+
     def expect_build(defines, ok, label):
         probe = pathlib.Path(directory) / "probe"
         cmd = [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",

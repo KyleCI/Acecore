@@ -12,10 +12,7 @@ void initLights(){
   pinMode(GREEN, OUTPUT);
   pinMode(YELLOW, OUTPUT);
   pinMode(AMBER, OUTPUT);
-#ifdef POWERCELL_HW_V011
-  pinMode(15, OUTPUT);
-  digitalWrite(15, LOW);
-#else
+#ifndef POWERCELL_HW_V011
   pinMode(LIGHTS, OUTPUT);
 #endif
 }
