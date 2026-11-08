@@ -49,6 +49,19 @@ for index, record in enumerate(wire):
     if record["simulation"] is not False:
         raise SystemExit("device emission must not be marked simulation")
 print(f"emitted records validated against schema: {len(wire)}")
+reported = [json.loads(line.split(" ", 1)[1]) for line in completed.stdout.splitlines()
+            if line.startswith("REPORTEDJSON ")]
+if len(reported) != 1:
+    raise SystemExit(f"expected one REPORTEDJSON record, found {len(reported)}")
+if reported[0]["simulation"] is not False:
+    raise SystemExit("device reported record must not be marked simulation")
+if mod.validate_reported(reported[0], "reported-hour") != 184000:
+    raise SystemExit("reported 1 h record is not 184000 mWh")
+hour = json.loads((root / "contracts/upstream/c3ac5b340a18ed08b0df9da7fcda4380bb9bd68c/xfer4_reported_hour.json").read_text())
+hour.pop("type", None)
+if mod.validate_reported(hour, "backend-hour-fixture") != 184000:
+    raise SystemExit("backend hour fixture is not 184000 mWh")
+print("reported V/I schema: device 184000 mWh record and backend hour fixture")
 oracle = pathlib.Path(__file__).resolve().parent / "validate_upload_ack.py"
 spec = importlib.util.spec_from_file_location("upload_ack", oracle)
 ack = importlib.util.module_from_spec(spec)

@@ -1,4 +1,6 @@
 #pragma once
+#include "stm32_text_validity.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -25,6 +27,18 @@ constexpr const char *kStream = "estimate.load_ac_energy";
 constexpr int32_t kPfAssumedMillis = 800;
 constexpr const char *kModelWireVersion = "0.1.0";
 constexpr const char *kModelSourcePath = "ac_vrms_mv_x_ac_irms_ma_x_pf_millis";
+// Reported XFER4 profile. It is not the RMS model and it does not set RMS
+// validity flags. The firmware image does not select it. An operator opts in
+// later by building with POWERCELL_REPORTED_VI_OPTIN set to kReportedModelId
+// and setting the server ESTIMATE_REPORTED_VI_OPTIN to that same string.
+constexpr const char *kReportedModelId = "xfer4_reported_vi_pf080_unvalidated_v1";
+constexpr const char *kReportedSourcePath = "reported_voltage_mv_x_reported_current_ma_x_pf_millis";
+constexpr const char *kReportedSourceIdentity = "Powercell_caleb_xfer4_flash.zip";
+constexpr const char *kReportedSourceSha256 =
+    "df46e024a3cfdeafd347ed6dc33e2402d470a546ea085b55b215c50c56cc4462";
+constexpr const char *kReportedProvenance = "user_identified_last_flash";
+constexpr const char *kReportedValidation = "unvalidated";
+constexpr int32_t kReportedClampMa = 180;
 constexpr uint32_t kModelRevision = 2;
 constexpr uint64_t kEnergyDenom = 3600000000000ULL;
 constexpr uint32_t kHeaderBytes = 256;
@@ -251,6 +265,13 @@ class Meter {
   void set_source_blocked(UnavailableReason why);
 
   bool on_sample(const AcSample &sample);
+  // Exact model id only. Empty or any other string leaves the profile off.
+  // A change from stored RMS rows starts a new meter_epoch and does not
+  // rewrite those rows.
+  bool select_reported_vi(const char *model_id);
+  bool reported_vi_selected() const { return reported_vi_enabled_; }
+  bool note_xfer4_candidate(const TextCandidate &candidate);
+  uint64_t reported_remainder() const { return durable_residue_; }
   bool flush(uint64_t mono_ms);
   bool set_pf_assumed(int32_t pf_millis, uint64_t mono_ms);
   bool observe_rtc(const uint8_t first[7], const uint8_t second[7], uint64_t mono_ms);
@@ -312,6 +333,8 @@ class Meter {
   bool persist_image();
   bool commit_segment(uint64_t mono_ms, bool closing_day);
   bool emit(const Segment &seg, int64_t utc_end, bool utc_end_known, CivilDay day);
+  bool commit_reported(uint64_t start, uint64_t end, int32_t voltage_mv, int32_t current_ma, int kind,
+                       const char *gap_reason);
   bool write_slot(uint64_t seq, uint32_t boot, const char *json);
   bool wear_allow(uint64_t mono_ms);
   void note_wear(uint64_t mono_ms);
@@ -330,6 +353,14 @@ class Meter {
   bool overflow_;
   bool source_blocked_;
   bool source_qualified_;
+  bool reported_vi_enabled_;
+  bool have_reported_point_;
+  bool reported_last_gap_;
+  uint64_t reported_mono_;
+  uint32_t last_xfer4_ms_;
+  int32_t last_xfer4_v_;
+  int32_t last_xfer4_i_;
+  const char *last_xfer4_reason_;
   bool tail_open_;
   UnavailableReason blocked_reason_;
   uint64_t epoch_;

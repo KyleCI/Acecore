@@ -142,6 +142,87 @@ def fixture_records():
     return json.loads(raw)
 
 
+def validate_reported(rec, label, remainder_in=0):
+    root = pathlib.Path(__file__).resolve().parents[1]
+    schema_path = root / "contracts/upstream/c3ac5b340a18ed08b0df9da7fcda4380bb9bd68c/estimate.load_ac_energy.v1.xfer4_reported_vi.schema.json"
+    schema = json.loads(schema_path.read_text())
+    props = schema["properties"]
+    extra = set(rec) - set(props)
+    if extra:
+        raise SystemExit(f"{label} extra keys {sorted(extra)}")
+    missing = [key for key in schema["required"] if key not in rec]
+    if missing:
+        raise SystemExit(f"{label} missing {missing}")
+    if rec["contract"] != "estimate.load_ac_energy.v1" or rec["stream"] != "estimate.load_ac_energy":
+        raise SystemExit(label + " envelope")
+    if not isinstance(rec["simulation"], bool):
+        raise SystemExit(label + " simulation")
+    for key in ("meter_epoch", "seq", "monotonic_start_ms", "monotonic_end_ms",
+                "counter_start_mwh", "counter_end_mwh", "interval_estimated_mwh",
+                "covered_ms", "interval_ms"):
+        uint64(rec[key], f"{label}.{key}")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", rec["boot_id"]):
+        raise SystemExit(label + " boot_id")
+    version = rec["clock_correction_version"]
+    if not isinstance(version, int) or isinstance(version, bool) or not 0 <= version <= 1000000:
+        raise SystemExit(label + " clock")
+    model = rec["model"]
+    if set(model) != set(props["model"]["required"]):
+        raise SystemExit(f"{label} model keys {sorted(set(model) ^ set(props['model']['required']))}")
+    for key, prop in props["model"]["properties"].items():
+        if model[key] != prop["const"]:
+            raise SystemExit(f"{label} model.{key}")
+    if model["model_id"] == "ac_vrms_mv_x_ac_irms_ma_x_pf_millis":
+        raise SystemExit(label + " reported record uses the RMS path")
+    start = uint64(rec["monotonic_start_ms"], label)
+    end = uint64(rec["monotonic_end_ms"], label)
+    if end <= start or uint64(rec["interval_ms"], label) != end - start:
+        raise SystemExit(label + " interval")
+    covered = uint64(rec["covered_ms"], label)
+    if covered > end - start:
+        raise SystemExit(label + " covered")
+    modes = rec["source_mode_coverage"]
+    if set(modes) != {"inverter_output_only_ms", "common_output_ms", "unknown_ms"}:
+        raise SystemExit(label + " coverage keys")
+    if uint64(modes["common_output_ms"], label) != 0 or uint64(modes["unknown_ms"], label) != 0:
+        raise SystemExit(label + " non-inverter coverage")
+    if uint64(modes["inverter_output_only_ms"], label) != covered:
+        raise SystemExit(label + " inverter coverage")
+    energy = uint64(rec["interval_estimated_mwh"], label)
+    if uint64(rec["counter_end_mwh"], label) - uint64(rec["counter_start_mwh"], label) != energy:
+        raise SystemExit(label + " counter delta")
+    validity = rec["sample_validity"]
+    if validity not in ("reported", "clamped_or_zero", "gap"):
+        raise SystemExit(label + " sample_validity")
+    inputs = rec["inputs"]
+    gap = rec.get("gap_reason", None)
+    if validity == "gap":
+        if inputs is not None or gap not in ("grid", "transfer", "fault", "stale", "truncated", "txdrop") or covered != 0:
+            raise SystemExit(label + " gap shape")
+        volts = amps = 0
+    else:
+        if gap is not None or not isinstance(inputs, dict):
+            raise SystemExit(label + " inputs")
+        if set(inputs) != {"reported_voltage_mv", "reported_current_ma", "pf_assumed_millis"}:
+            raise SystemExit(label + " input keys")
+        if inputs["pf_assumed_millis"] != 800:
+            raise SystemExit(label + " pf applied in inputs")
+        volts = uint64(inputs["reported_voltage_mv"], label)
+        amps = uint64(inputs["reported_current_ma"], label)
+        if validity == "reported" and (volts <= 0 or amps < 180):
+            raise SystemExit(label + " reported sample")
+        if validity == "clamped_or_zero" and amps != 0:
+            raise SystemExit(label + " clamp")
+    numerator = volts * amps * 800 * covered + remainder_in
+    if energy != numerator // DENOM:
+        raise SystemExit(f"{label} energy {energy} != {numerator // DENOM}")
+    instant_ok(rec["utc_start"], label)
+    instant_ok(rec["utc_end"], label)
+    if (rec["utc_start"] is None) != (rec["utc_end"] is None):
+        raise SystemExit(label + " utc pair")
+    return energy
+
+
 def main():
     sha_ok()
     records = fixture_records()

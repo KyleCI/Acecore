@@ -1527,6 +1527,185 @@ static void test_negative_ack_backoff_across_reconnect() {
   CHECK(!meter.status().transport_enabled);
 }
 
+static TextCandidate reported_mark(uint32_t t, int32_t v, int32_t i, const char *reason) {
+  TextCandidate c;
+  memset(&c, 0, sizeof(c));
+  c.closed = true;
+  c.complete = true;
+  c.mode = TextMode::Inverter;
+  c.sw = TextSwitch::Inverter;
+  c.v_mv = v;
+  c.i_ma = i;
+  c.v_in_record = c.i_in_record = true;
+  c.v_numeric = c.i_numeric = true;
+  c.closed_ms = t;
+  c.reason = reason;
+  if (strcmp(reason, "provisional_inverter_only") == 0) c.provisional_inverter_only = true;
+  return c;
+}
+
+static void test_reported_vi_profile() {
+  MemoryStore idle;
+  Meter off;
+  CHECK(open_meter(off, idle, test_cfg()));
+  CHECK(!off.select_reported_vi(""));
+  CHECK(!off.select_reported_vi("ac_vrms_mv_x_ac_irms_ma_x_pf_millis"));
+  CHECK(!off.reported_vi_selected());
+  CHECK(off.on_sample(sample_at(0, 230000, 1000)));
+  TextCandidate live;
+  memset(&live, 0, sizeof(live));
+  live.closed = true;
+  live.complete = true;
+  live.provisional_inverter_only = true;
+  live.mode = TextMode::Inverter;
+  live.sw = TextSwitch::Inverter;
+  live.reason = "provisional_inverter_only";
+  CHECK(!live_estimate_allowed(closed_lineage_gate(), live));
+
+  MemoryStore store;
+  Meter meter;
+  CHECK(open_meter(meter, store, test_cfg()));
+  CHECK(meter.select_reported_vi(kReportedModelId));
+  CHECK(meter.reported_vi_selected());
+  CHECK(!meter.on_sample(sample_at(0, 230000, 1000)));
+  Stm32TextAssembler hour_a;
+  Stm32TextAssembler hour_b;
+  TextCandidate a, b;
+  CHECK(feed_xfer4(hour_a, &a, 0, "INVERTER", "INVERTER", "230.0V", "1.00A", 0));
+  CHECK(feed_xfer4(hour_b, &b, 3600000, "INVERTER", "INVERTER", "230.0V", "1.00A", 0));
+  CHECK(a.provisional_inverter_only && a.v_mv == 230000 && a.i_ma == 1000);
+  CHECK(b.closed_ms == a.closed_ms + 3600000);
+  CHECK(meter.note_xfer4_candidate(a));
+  char none[32];
+  CHECK(!meter.record_json(0, none, sizeof(none)));
+  CHECK(meter.note_xfer4_candidate(b));
+  char rec[kDefaultSlotBytes];
+  CHECK(meter.record_json(0, rec, sizeof(rec)));
+  uint64_t mwh = 0;
+  CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 184000);
+  char validity[32], model_id[64], path[80];
+  CHECK(json_str(rec, "sample_validity", validity, sizeof(validity)) && strcmp(validity, "reported") == 0);
+  CHECK(json_str(rec, "model_id", model_id, sizeof(model_id)) && strcmp(model_id, kReportedModelId) == 0);
+  CHECK(json_str(rec, "source_path", path, sizeof(path)) &&
+        strcmp(path, "reported_voltage_mv_x_reported_current_ma_x_pf_millis") == 0);
+  CHECK(json_str(rec, "validation", validity, sizeof(validity)) && strcmp(validity, "unvalidated") == 0);
+  CHECK(json_str(rec, "provenance_basis", validity, sizeof(validity)) && strcmp(validity, "user_identified_last_flash") == 0);
+  CHECK(strstr(rec, "ac_vrms_mv") == 0 && strstr(rec, "ac_v_valid") == 0 && strstr(rec, "ac_irms_ma") == 0);
+  CHECK(json_str(rec, "reported_voltage_mv", validity, sizeof(validity)) && strcmp(validity, "230000") == 0);
+  CHECK(json_str(rec, "reported_current_ma", validity, sizeof(validity)) && strcmp(validity, "1000") == 0);
+  int32_t pf = 0;
+  CHECK(json_i32(rec, "pf_assumption_millis", &pf) && pf == 800);
+  CHECK(json_i32(rec, "pf_assumed_millis", &pf) && pf == 800);
+  CHECK(json_str(rec, "time_quality", validity, sizeof(validity)) && strcmp(validity, "uncertain") == 0);
+  CHECK(json_is_null(rec, "utc_start") && json_is_null(rec, "utc_end"));
+  printf("REPORTEDJSON %s\n", rec);
+  char frozen[kDefaultSlotBytes];
+  memcpy(frozen, rec, sizeof(frozen));
+  CHECK(!meter.set_pf_assumed(500, 3600000));
+  CHECK(meter.record_json(0, rec, sizeof(rec)) && strcmp(rec, frozen) == 0);
+
+  UploadSession up;
+  up.on_link(true, 0);
+  char frame[2048];
+  CHECK(take_frame(up, meter, 0, frame, sizeof(frame)));
+  CHECK(frame_wraps(frame, frozen));
+  char ack[1200];
+  CHECK(ack_for(ack, sizeof(ack), frozen, "false", "41", "0", "false", kStream, 0));
+  up.on_text(meter, ack, 10);
+  CHECK(strcmp(up.diagnostic(), "retired") == 0);
+  uint8_t slot[kDefaultSlotBytes];
+  CHECK(store.read(kHeaderBytes, slot, sizeof(slot)));
+  CHECK(slot[0] == 2);
+  uint32_t rlen = (uint32_t)slot[2] | ((uint32_t)slot[3] << 8);
+  CHECK(memcmp(slot + 20, frozen, rlen) == 0);
+
+  MemoryStore frac;
+  Meter part;
+  CHECK(open_meter(part, frac, test_cfg()));
+  CHECK(part.select_reported_vi(kReportedModelId));
+  TextCandidate p0 = reported_mark(0, 230000, 1000, "provisional_inverter_only");
+  TextCandidate p1 = reported_mark(19, 230000, 1000, "provisional_inverter_only");
+  TextCandidate p2 = reported_mark(38, 230000, 1000, "provisional_inverter_only");
+  CHECK(part.note_xfer4_candidate(p0));
+  CHECK(part.note_xfer4_candidate(p1));
+  CHECK(part.record_json(0, rec, sizeof(rec)));
+  CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 0);
+  uint64_t remainder = part.reported_remainder();
+  CHECK(remainder != 0);
+  MemoryStore rebooted;
+  frac.clone_durable(rebooted);
+  Meter again;
+  CHECK(again.begin(rebooted, test_cfg()));
+  CHECK(again.reported_vi_selected());
+  CHECK(again.reported_remainder() == remainder);
+  CHECK(again.status().boot_id == part.status().boot_id);
+  CHECK(again.note_xfer4_candidate(p1));
+  CHECK(again.note_xfer4_candidate(p2));
+  CHECK(again.record_json(1, rec, sizeof(rec)));
+  CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 1);
+  CHECK(again.record_json(0, rec, sizeof(rec)));
+  CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 0);
+
+  TextCandidate clamp = reported_mark(57, 230000, 0, "current_clamp_ambiguous");
+  uint64_t before_clamp = again.reported_remainder();
+  CHECK(again.note_xfer4_candidate(clamp));
+  CHECK(again.record_json(2, rec, sizeof(rec)));
+  CHECK(json_str(rec, "sample_validity", validity, sizeof(validity)) && strcmp(validity, "clamped_or_zero") == 0);
+  CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 0);
+  CHECK(json_str(rec, "reported_current_ma", validity, sizeof(validity)) && strcmp(validity, "0") == 0);
+  CHECK(again.reported_remainder() == before_clamp);
+  uint64_t before_counter = 0;
+  CHECK(json_u64(rec, "counter_end_mwh", &before_counter));
+
+  TextCandidate grid;
+  memset(&grid, 0, sizeof(grid));
+  grid.closed = true;
+  grid.complete = true;
+  grid.mode = TextMode::Grid;
+  grid.sw = TextSwitch::Grid;
+  grid.reason = "not_sys_inverter";
+  grid.closed_ms = 10057;
+  CHECK(again.note_xfer4_candidate(grid));
+  CHECK(again.record_json(3, rec, sizeof(rec)));
+  CHECK(json_str(rec, "sample_validity", validity, sizeof(validity)) && strcmp(validity, "gap") == 0);
+  CHECK(json_str(rec, "gap_reason", validity, sizeof(validity)) && strcmp(validity, "grid") == 0);
+  CHECK(json_is_null(rec, "inputs"));
+  CHECK(json_u64(rec, "covered_ms", &mwh) && mwh == 0);
+  CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 0);
+  CHECK(json_u64(rec, "counter_end_mwh", &mwh) && mwh == before_counter);
+
+  MemoryStore prior;
+  Meter rms;
+  CHECK(open_meter(rms, prior, test_cfg()));
+  CHECK(rms.on_sample(sample_at(0, 1000, 3600000)));
+  CHECK(rms.on_sample(sample_at(1000, 1000, 3600000)));
+  CHECK(rms.flush(1000));
+  char old_body[kDefaultSlotBytes];
+  CHECK(rms.record_json(0, old_body, sizeof(old_body)));
+  uint64_t epoch_before = rms.status().meter_epoch;
+  CHECK(rms.select_reported_vi(kReportedModelId));
+  CHECK(rms.status().meter_epoch == epoch_before + 1);
+  CHECK(rms.record_json(0, rec, sizeof(rec)) && strcmp(rec, old_body) == 0);
+  CHECK(strstr(old_body, "ac_vrms_mv") != 0);
+  CHECK(!rms.on_sample(sample_at(2000, 1000, 3600000)));
+
+  MemoryStore cut;
+  Meter cutting;
+  CHECK(open_meter(cutting, cut, test_cfg()));
+  CHECK(cutting.select_reported_vi(kReportedModelId));
+  TextCandidate c0 = reported_mark(0, 230000, 1000, "provisional_inverter_only");
+  TextCandidate c1 = reported_mark(19, 230000, 1000, "provisional_inverter_only");
+  CHECK(cutting.note_xfer4_candidate(c0));
+  cut.fail_next_persists(1);
+  CHECK(!cutting.note_xfer4_candidate(c1));
+  CHECK(!cutting.record_json(0, rec, sizeof(rec)));
+  CHECK(cutting.reported_remainder() == 0);
+  CHECK(cutting.note_xfer4_candidate(c1));
+  CHECK(cutting.record_json(0, rec, sizeof(rec)));
+  CHECK(json_u64(rec, "interval_estimated_mwh", &mwh) && mwh == 0);
+  CHECK(cutting.reported_remainder() != 0);
+}
+
 int main() {
   test_crc_and_calendar();
   test_ds1307_and_backoff();
@@ -1543,6 +1722,7 @@ int main() {
   test_socket_ack_persist_and_queue();
   test_journal_power_cut_keeps_pending_record();
   test_negative_ack_backoff_across_reconnect();
+  test_reported_vi_profile();
   printf("load_ac_energy tests: pass=%d fail=%d\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

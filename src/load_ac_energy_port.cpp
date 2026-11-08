@@ -1,10 +1,16 @@
 #include "load_ac_energy_port.h"
 
 #include "i2c_bus_lock.h"
+#include "inverter.h"
 #include "journal_files.h"
 #include "load_ac_energy.h"
 #include "load_ac_energy_upload.h"
 #include "original_v01_profile.h"
+
+// Operator opt-in is this exact model id. The shipped image leaves it empty.
+#ifndef POWERCELL_REPORTED_VI_OPTIN
+#define POWERCELL_REPORTED_VI_OPTIN ""
+#endif
 
 #include <ESPAsyncWebServer.h>
 #include <SPIFFS.h>
@@ -192,7 +198,10 @@ void load_ac_energy_begin() {
   loadac::qualify_stm32(observed, &why);
   bool media = SPIFFS.begin(false) && store.load_existing();
   journal_ready = media && meter.begin(store, loadac::default_model());
-  if (journal_ready) meter.set_device_id(device_id);
+  if (journal_ready) {
+    meter.set_device_id(device_id);
+    if (POWERCELL_REPORTED_VI_OPTIN[0]) meter.select_reported_vi(POWERCELL_REPORTED_VI_OPTIN);
+  }
   meter.set_source_blocked(why);
   Serial.printf("[AC] live estimate blocked (%s). PF assumption %ld millis. Journal upload waits for the commit-backed /ws/device ACK.\n",
                 loadac::reason_name(why), (long)loadac::kPfAssumedMillis);
@@ -205,7 +214,10 @@ void load_ac_energy_poll() {
     if (journal_ready && strcmp(device_id, "unknown") != 0) meter.set_device_id(device_id);
   }
   poll_rtc();
-  if (journal_ready) meter.poll_day(millis());
+  if (journal_ready) {
+    meter.poll_day(millis());
+    if (meter.reported_vi_selected()) meter.note_xfer4_candidate(getStm32LoadCandidate());
+  }
 }
 
 void load_ac_energy_fill(JsonObject dst, bool include_missing_path) {

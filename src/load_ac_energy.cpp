@@ -657,7 +657,9 @@ UnavailableReason uncover_reason(const AcSample &s) {
 
 Meter::Meter()
     : store_(0), ready_(false), counter_trusted_(false), journal_untrusted_(false), overflow_(false),
-      source_blocked_(true), source_qualified_(false), tail_open_(false),
+      source_blocked_(true), source_qualified_(false), reported_vi_enabled_(false), have_reported_point_(false),
+      reported_last_gap_(false), reported_mono_(0), last_xfer4_ms_(0), last_xfer4_v_(0), last_xfer4_i_(0),
+      last_xfer4_reason_(0), tail_open_(false),
       blocked_reason_(UnavailableReason::Stm32TextVoutIoutNotRms), epoch_(1), seq_(1), boot_(0), energy_(0),
       residue_(0), persisted_energy_(0), commits_(0), loss_(0), allocated_(0), unallocated_(0), window_start_(0),
       commits_in_window_(0), have_last_(false), last_pf_(kPfAssumedMillis), day_covered_ms_(0),
@@ -679,7 +681,7 @@ bool Meter::save_header(bool persist_now) {
   h.epoch = epoch_;
   h.seq = seq_;
   h.boot = boot_;
-  h.flags = (overflow_ ? 1u : 0u) | (journal_untrusted_ ? 2u : 0u);
+  h.flags = (overflow_ ? 1u : 0u) | (journal_untrusted_ ? 2u : 0u) | (reported_vi_enabled_ ? 4u : 0u);
   h.energy = durable_energy_;
   h.residue = durable_residue_;
   h.pf = cfg_.pf_assumed_millis;
@@ -737,14 +739,17 @@ bool Meter::begin(ByteStore &store, const ModelConfig &cfg) {
       h.counter_trusted = 1;
     }
   } else {
-    h.boot += 1;
+    bool reported_series = (h.flags & 4u) != 0;
     if (h.tail_open) {
       h.loss += 1;
       h.tail_open = 0;
     }
-    h.seq = 1;
-    h.energy = 0;
-    h.residue = 0;
+    if (!reported_series) {
+      h.boot += 1;
+      h.seq = 1;
+      h.energy = 0;
+      h.residue = 0;
+    }
   }
   if (!h.model) h.model = cfg_.model_revision;
   epoch_ = h.epoch ? h.epoch : 1;
@@ -768,6 +773,7 @@ bool Meter::begin(ByteStore &store, const ModelConfig &cfg) {
   overflow_ = (h.flags & 1u) != 0;
   source_blocked_ = true;
   source_qualified_ = false;
+  reported_vi_enabled_ = decoded && (h.flags & 4u) != 0;
   blocked_reason_ = UnavailableReason::Stm32TextVoutIoutNotRms;
   cfg_.model_revision = kModelRevision;
   cfg_.pf_assumed_millis = kPfAssumedMillis;
@@ -1224,6 +1230,7 @@ bool Meter::set_pf_assumed(int32_t pf_millis, uint64_t mono_ms) {
 }
 
 bool Meter::on_sample(const AcSample &sample) {
+  if (reported_vi_enabled_) return false;
   if (!ready_ || !counter_trusted_) return false;
   if (!sample.acquired) return false;
   if (sample.v_rms_mV < 0 || sample.i_rms_mA < 0) return false;
@@ -1585,6 +1592,223 @@ bool Meter::poll_day(uint64_t mono_ms) {
   if (!checkpoint_from_buckets(mono_ms)) return false;
   if (lagos_day(utc, &day_)) day_mono_start_ = mono_ms;
   return save_header(true);
+}
+
+namespace {
+
+bool reported_gap_reason(const char *gap) {
+  return gap && (!strcmp(gap, "grid") || !strcmp(gap, "transfer") || !strcmp(gap, "fault") || !strcmp(gap, "stale") ||
+                 !strcmp(gap, "truncated") || !strcmp(gap, "txdrop"));
+}
+
+}  // namespace
+
+bool Meter::select_reported_vi(const char *model_id) {
+  if (!ready_ || !model_id || strcmp(model_id, kReportedModelId) != 0) return false;
+  if (reported_vi_enabled_) return true;
+  uint64_t old_epoch = epoch_;
+  uint64_t old_seq = seq_;
+  uint64_t old_energy = durable_energy_;
+  uint64_t old_residue = durable_residue_;
+  if (commits_ > 0) {
+    epoch_ += 1;
+    seq_ = 1;
+    durable_energy_ = 0;
+    energy_ = 0;
+    residue_ = 0;
+    durable_residue_ = 0;
+    have_reported_point_ = false;
+    reported_last_gap_ = false;
+  }
+  reported_vi_enabled_ = true;
+  if (save_header(true)) return true;
+  reported_vi_enabled_ = false;
+  epoch_ = old_epoch;
+  seq_ = old_seq;
+  durable_energy_ = old_energy;
+  energy_ = old_energy;
+  residue_ = old_residue;
+  durable_residue_ = old_residue;
+  return false;
+}
+
+bool Meter::commit_reported(uint64_t start, uint64_t end, int32_t voltage_mv, int32_t current_ma, int kind,
+                            const char *gap_reason) {
+  if (!reported_vi_enabled_ || !ready_ || !counter_trusted_ || end <= start) return false;
+  uint64_t interval = end - start;
+  uint64_t covered = 0;
+  int32_t voltage = 0;
+  int32_t current = 0;
+  const char *validity = "gap";
+  if (kind == 1) {
+    if (voltage_mv <= 0 || current_ma < kReportedClampMa) return false;
+    voltage = voltage_mv;
+    current = current_ma;
+    covered = interval;
+    validity = "reported";
+    gap_reason = 0;
+  } else if (kind == 2) {
+    if (current_ma != 0) return false;
+    voltage = voltage_mv < 0 ? 0 : voltage_mv;
+    current = 0;
+    covered = interval;
+    validity = "clamped_or_zero";
+    gap_reason = 0;
+  } else if (!reported_gap_reason(gap_reason)) {
+    return false;
+  }
+  uint64_t residue = durable_residue_;
+  uint64_t added = 0;
+  if (!estimated_mwh(voltage, current, kPfAssumedMillis, covered, &residue, &added)) return false;
+  int64_t utc_start = 0, utc_end = 0;
+  bool utc_ok = utc_at(start, &utc_start) && utc_at(end, &utc_end) && utc_end > utc_start;
+  const char *tq = utc_ok ? "rtc_ds1307" : "uncertain";
+  char json[1200];
+  Buf b = {json, 0, sizeof(json), true};
+  char boot_text[16];
+  snprintf(boot_text, sizeof(boot_text), "%u", boot_);
+  add(&b, "{");
+  add_str(&b, "contract", kContract, false);
+  add_bool(&b, "simulation", false, true);
+  add_str(&b, "device_id", device_id_, true);
+  add_str(&b, "stream", kStream, true);
+  add_u64s(&b, "meter_epoch", epoch_, true);
+  add_str(&b, "boot_id", boot_text, true);
+  add_u64s(&b, "seq", seq_, true);
+  add_key(&b, "clock_correction_version", true);
+  add_u32(&b, 0);
+  if (gap_reason) add_str(&b, "gap_reason", gap_reason, true);
+  add(&b, ",\"model\":{");
+  add_str(&b, "revision", kContract, false);
+  add_str(&b, "model_id", kReportedModelId, true);
+  add_str(&b, "source_path", kReportedSourcePath, true);
+  add_str(&b, "version", kModelWireVersion, true);
+  add_str(&b, "pf_kind", "assumed", true);
+  add_key(&b, "pf_assumption_millis", true);
+  add_u32(&b, (uint32_t)kPfAssumedMillis);
+  add_str(&b, "coverage_scope", "inverter_output_only", true);
+  add_str(&b, "source_identity", kReportedSourceIdentity, true);
+  add_str(&b, "source_sha256", kReportedSourceSha256, true);
+  add_str(&b, "provenance_basis", kReportedProvenance, true);
+  add_str(&b, "validation", kReportedValidation, true);
+  add(&b, "}");
+  add_u64s(&b, "monotonic_start_ms", start, true);
+  add_u64s(&b, "monotonic_end_ms", end, true);
+  char utc_a[40], utc_b[40];
+  add_key(&b, "utc_start", true);
+  if (utc_ok) {
+    format_utc_z(utc_start, utc_a, sizeof(utc_a));
+    add(&b, "\"");
+    add(&b, utc_a);
+    add(&b, "\"");
+  } else add(&b, "null");
+  add_key(&b, "utc_end", true);
+  if (utc_ok) {
+    format_utc_z(utc_end, utc_b, sizeof(utc_b));
+    add(&b, "\"");
+    add(&b, utc_b);
+    add(&b, "\"");
+  } else add(&b, "null");
+  add_str(&b, "time_quality", tq, true);
+  add_u64s(&b, "counter_start_mwh", durable_energy_, true);
+  add_u64s(&b, "counter_end_mwh", durable_energy_ + added, true);
+  add_u64s(&b, "interval_estimated_mwh", added, true);
+  add_u64s(&b, "covered_ms", covered, true);
+  add_u64s(&b, "interval_ms", interval, true);
+  add_str(&b, "sample_validity", validity, true);
+  add(&b, ",\"source_mode_coverage\":{");
+  add_u64s(&b, "inverter_output_only_ms", covered, false);
+  add_u64s(&b, "common_output_ms", 0, true);
+  add_u64s(&b, "unknown_ms", 0, true);
+  add(&b, "}");
+  if (kind == 3) add(&b, ",\"inputs\":null");
+  else {
+    add(&b, ",\"inputs\":{");
+    add_u64s(&b, "reported_voltage_mv", (uint64_t)voltage, false);
+    add_u64s(&b, "reported_current_ma", (uint64_t)current, true);
+    add_key(&b, "pf_assumed_millis", true);
+    add_u32(&b, (uint32_t)kPfAssumedMillis);
+    add(&b, "}");
+  }
+  add(&b, "}");
+  if (!b.ok || json_has_ambiguous_energy_key(json) || strstr(json, "ac_vrms_mv") || strstr(json, "ac_i_valid")) return false;
+  uint64_t old_energy = durable_energy_;
+  uint64_t old_residue = durable_residue_;
+  uint64_t old_seq = seq_;
+  uint32_t old_commits = commits_;
+  durable_energy_ = old_energy + added;
+  durable_residue_ = residue;
+  residue_ = residue;
+  seq_ = old_seq + 1;
+  commits_ = old_commits + 1;
+  note_wear(end);
+  if (!write_slot(old_seq, boot_, json) || !save_header(false) || !persist_image()) {
+    durable_energy_ = old_energy;
+    durable_residue_ = old_residue;
+    residue_ = old_residue;
+    seq_ = old_seq;
+    commits_ = old_commits;
+    return false;
+  }
+  energy_ = durable_energy_;
+  persisted_energy_ = durable_energy_;
+  return true;
+}
+
+bool Meter::note_xfer4_candidate(const TextCandidate &candidate) {
+  if (!reported_vi_enabled_ || !candidate.closed) return false;
+  if (last_xfer4_reason_ && candidate.closed_ms == last_xfer4_ms_ && candidate.v_mv == last_xfer4_v_ &&
+      candidate.i_ma == last_xfer4_i_ && candidate.reason == last_xfer4_reason_)
+    return false;
+  int kind = 0;
+  const char *gap = 0;
+  int32_t voltage = candidate.v_mv;
+  int32_t current = candidate.i_ma;
+  if (candidate.provisional_inverter_only) kind = 1;
+  else if (candidate.complete && candidate.mode == TextMode::Inverter && candidate.sw == TextSwitch::Inverter &&
+           !candidate.stale && !candidate.truncated && !candidate.txdrop && !candidate.fault_line &&
+           candidate.reason && strcmp(candidate.reason, "current_clamp_ambiguous") == 0) {
+    kind = 2;
+    current = 0;
+  } else if (candidate.truncated) {
+    kind = 3;
+    gap = "truncated";
+  } else if (candidate.txdrop) {
+    kind = 3;
+    gap = "txdrop";
+  } else if (candidate.fault_line || candidate.mode == TextMode::Fault) {
+    kind = 3;
+    gap = "fault";
+  } else if (candidate.stale) {
+    kind = 3;
+    gap = "stale";
+  } else if (candidate.mode == TextMode::Grid) {
+    kind = 3;
+    gap = "grid";
+  } else if (candidate.reason && strcmp(candidate.reason, "sys_sw_disagreement") == 0) {
+    kind = 3;
+    gap = "transfer";
+  } else return false;
+  last_xfer4_ms_ = candidate.closed_ms;
+  last_xfer4_v_ = candidate.v_mv;
+  last_xfer4_i_ = candidate.i_ma;
+  last_xfer4_reason_ = candidate.reason;
+  if (!have_reported_point_) {
+    have_reported_point_ = true;
+    reported_last_gap_ = kind == 3;
+    reported_mono_ = candidate.closed_ms;
+    return true;
+  }
+  if (candidate.closed_ms <= reported_mono_) return false;
+  bool ok = true;
+  if (kind == 3 || !reported_last_gap_) ok = commit_reported(reported_mono_, candidate.closed_ms, voltage, current, kind, gap);
+  if (!ok) {
+    last_xfer4_reason_ = 0;
+    return false;
+  }
+  reported_last_gap_ = kind == 3;
+  reported_mono_ = candidate.closed_ms;
+  return true;
 }
 
 MeterStatus Meter::status() const {
