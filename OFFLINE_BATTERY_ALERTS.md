@@ -7,16 +7,28 @@ required to generate these local notifications.
 
 ## Rules
 
-| State | Entry threshold | Exit threshold | Reminder interval |
+| State | Entry threshold | Exit threshold | Reminder |
 | --- | --- | --- | --- |
-| Low | SOC <= 25% | SOC > 27% | 2 hours |
-| Critical | SOC <= 10% | SOC > 12% | 1 hour |
-| Shutdown risk | SOC <= 5% | SOC > 7% | 30 minutes |
+| Low | SOC <= 25% | SOC > 27% | Every 2 hours |
+| Shutdown warning | SOC <= 15% | SOC > 15% | Once per discharge episode |
+| Critically low | SOC <= 10% | Fresh SOC stays >= 15% for 60 seconds, and every sample in that window is a charging BMS frame (`batStatus == 1`) | Once, when the latch closes |
 
-Escalation is immediate; recovery uses a 2 percentage-point margin to avoid
-repeated alerts from fluctuating readings. Only one battery-level alert is
-active. A reminder occurs only when a valid reading remains in that state.
-These alerts do not operate relays, shed loads, or shut down the collector.
+The 15% warning does not repeat until fresh SOC has stayed above the configured
+warning percent for 60 seconds. That rearm does not require charging and does
+not clear the latch. The 10% latch blocks the collector's own ON command until
+the charging recovery above, and it does not turn the output back on. SOC at
+or above 15% without `batStatus == 1` does not release the latch. Pack-current
+sign is not treated as charging.
+Stale or invalid SOC clears the visible level and does not start or release
+the latch. A failed latch read on boot blocks ON until fresh recovery evidence
+arrives. A failed latch write is not treated as saved.
+
+These alerts do not open the BMS charge or discharge FETs, and they do not
+send a DSP or STM32 command. On the original profile the existing collector
+output relay (GPIO15) is turned off with the latch. On hardware v0.1.1 GPIO15
+is only the power light, so the same command is a software lock and a light
+change, not a physical discharge cutoff. Smart-socket ON commands are not this
+path. No payment-lock actuator exists in this firmware.
 
 The BMS reader timestamps accepted frames. An alert reading needs a complete
 dynamic frame with the expected header/type, plausible cell/pack data, SOC in

@@ -180,7 +180,10 @@ void incoming(uint8_t *payload, size_t length) {
     if (target != GATEWAY_NAME && !target.equalsIgnoreCase(WiFi.macAddress())) {
       reject(id, kind, target, desired, "unknown_target"); return;
     }
-    applyDeviceState(desired);
+    if (!applyDeviceState(desired)) {
+      reject(id, kind, target, desired, "battery_output_inhibited");
+      return;
+    }
     result(id, "gateway", target, desired, "confirmed");
     snapshot();
   } else {

@@ -1,6 +1,7 @@
 #include "offline_battery_notifications.h"
 #include "battery_alert_policy.h"
 #include "bms.h"
+#include "provisioning.h"
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
@@ -25,6 +26,7 @@ uint32_t lastSampleAt = 0;
 uint32_t lastHeartbeatAt = 0;
 bool sampled = false;
 bool persistentBootSequence = false;
+volatile bool outputOnAllowed = true;
 
 void reserveBootSequence() {
   // One NVS write per boot, never per sample. Reserve 2^32 sequence numbers
@@ -74,14 +76,23 @@ String alertJson(bool availability, const BatteryReading& reading) {
     doc["severity"] = critical ? "critical" : (active ? "warning" : "info");
     doc["sound"] = active ? (critical ? "critical" : "warning") : "none";
     doc["title"] = !policy.available() ? "Battery reading unavailable"
-        : level == BatteryAlertLevel::ShutdownRisk ? "Battery extremely low"
-        : level == BatteryAlertLevel::Critical ? "Critical battery level"
-        : level == BatteryAlertLevel::Low ? "Low battery warning"
+        : level == BatteryAlertLevel::ShutdownRisk ? "Battery critically low"
+        : level == BatteryAlertLevel::Critical ? "Shutdown warning"
+        : level == BatteryAlertLevel::Low ? "Low battery"
         : "Battery level recovered";
+    doc["output_inhibited"] = policy.outputLatched();
+    doc["output_on_allowed"] = policy.outputOnAllowed();
+    doc["automatic_restart"] = false;
     if (policy.available()) {
       doc["battery_percentage"] = reading.percent;
       String message = "Battery is at " + String(reading.percent, 1) + "%.";
-      if (active) message += " Reduce non-essential loads and recharge.";
+      if (level == BatteryAlertLevel::ShutdownRisk) {
+        message += " Discharge output stays off until the battery is at least 15% and you turn it on.";
+      } else if (level == BatteryAlertLevel::Critical) {
+        message += " Shutdown warning: discharge output turns off at 10%.";
+      } else if (level == BatteryAlertLevel::Low) {
+        message += " Recharge soon.";
+      }
       doc["message"] = message;
     } else {
       doc["battery_percentage"] = nullptr;
@@ -116,6 +127,18 @@ void initOfflineBatteryNotifications(AsyncWebServer& server) {
   collectorId = identity;
   reserveBootSequence();
   policy = BatteryAlertPolicy(millis());
+  {
+    Preferences prefs;
+    bool latched = false;
+    bool read_ok = false;
+    if (prefs.begin("battery_guard", true)) {
+      if (prefs.isKey("latch")) latched = prefs.getUChar("latch", 0) != 0;
+      read_ok = true;
+      prefs.end();
+    }
+    policy.loadLatch(read_ok, latched);
+  }
+  outputOnAllowed = policy.outputOnAllowed();
   serviceOfflineBatteryNotifications();
 
   server.on("/data", HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -151,7 +174,9 @@ void serviceOfflineBatteryNotifications() {
   lastSampleAt = now;
   JKPacketData bms = {};
   const bool valid = getBmsData(bms);
-  const BatteryReading reading = {valid, static_cast<float>(bms.SOC), bms.packVoltage, bms.receivedAtMs};
+  // batStatus 1 is the JK frame's charging state. Positive current is not used.
+  const BatteryReading reading = {valid, static_cast<float>(bms.SOC), bms.packVoltage,
+                                  bms.receivedAtMs, valid && bms.batStatus == 1};
   const uint8_t changes = policy.update(reading, now);
   if (changes & BatteryAlertPolicy::BatteryChanged) batterySequence = ++sequence;
   if (changes & BatteryAlertPolicy::AvailabilityChanged) unavailableSequence = ++sequence;
@@ -197,9 +222,22 @@ void serviceOfflineBatteryNotifications() {
     events.send(unavailable.c_str(), "notification");
     Serial.printf("[Battery alerts] %s\n", unavailable.c_str());
   }
+  outputOnAllowed = policy.outputOnAllowed();
+  if (policy.takeOutputOffEdge()) applyDeviceState(false);
+  if (policy.latchDirty()) {
+    Preferences prefs;
+    bool wrote = false;
+    if (prefs.begin("battery_guard", false)) {
+      wrote = prefs.putUChar("latch", policy.outputLatched() ? 1 : 0) == 1;
+      prefs.end();
+    }
+    policy.ackLatchSave(wrote);
+  }
   if (changes || static_cast<uint32_t>(now - lastHeartbeatAt) >= 10000) {
     lastHeartbeatAt = now;
     events.send(data.c_str(), "state");
     events.send("{}", "heartbeat");
   }
 }
+
+bool batteryOutputOnAllowed() { return outputOnAllowed; }

@@ -16,30 +16,95 @@ bool BatteryAlertPolicy::fresh(const BatteryReading& reading, uint32_t now) {
 uint32_t BatteryAlertPolicy::cooldown(BatteryAlertLevel level) {
   switch (level) {
     case BatteryAlertLevel::Low: return 2UL * 60 * 60 * 1000;
-    case BatteryAlertLevel::Critical: return 60UL * 60 * 1000;
-    case BatteryAlertLevel::ShutdownRisk: return 30UL * 60 * 1000;
+    case BatteryAlertLevel::Critical: return 0;
+    case BatteryAlertLevel::ShutdownRisk: return 0;
     default: return 0;
   }
 }
 
-BatteryAlertLevel BatteryAlertPolicy::nextLevel(float percent) const {
-  if (percent <= 5.0f ||
-      (level_ == BatteryAlertLevel::ShutdownRisk && percent <= 5.0f + RecoveryMargin)) {
-    return BatteryAlertLevel::ShutdownRisk;
-  }
-  if (percent <= 10.0f ||
-      (level_ == BatteryAlertLevel::Critical && percent <= 10.0f + RecoveryMargin)) {
-    return BatteryAlertLevel::Critical;
-  }
-  // if (percent <= 25.0f ||
-  //     (level_ == BatteryAlertLevel::Low && percent <= 25.0f + RecoveryMargin)) {
-  //   return BatteryAlertLevel::Low;
-  // }
-  if (percent <= 89.0f ||
-      (level_ == BatteryAlertLevel::Low && percent <= 89.0f + RecoveryMargin)) {
+BatteryAlertLevel BatteryAlertPolicy::levelFor(float percent) const {
+  if (latched_ || percent <= InhibitPercent) return BatteryAlertLevel::ShutdownRisk;
+  if (percent <= warning_percent_) return BatteryAlertLevel::Critical;
+  if (percent <= low_percent_ ||
+      (level_ == BatteryAlertLevel::Low && percent <= low_percent_ + RecoveryMargin)) {
     return BatteryAlertLevel::Low;
   }
   return BatteryAlertLevel::None;
+}
+
+void BatteryAlertPolicy::loadLatch(bool read_ok, bool latched) {
+  if (!read_ok) {
+    boot_unproven_ = true;
+    latch_durable_ = false;
+    return;
+  }
+  latched_ = latched;
+  boot_unproven_ = false;
+  latch_durable_ = true;
+  latch_dirty_ = false;
+  if (latched_) warn_armed_ = false;
+}
+
+void BatteryAlertPolicy::ackLatchSave(bool write_ok) {
+  latch_durable_ = write_ok;
+  if (write_ok) latch_dirty_ = false;
+}
+
+bool BatteryAlertPolicy::takeOutputOffEdge() {
+  const bool edge = output_off_edge_;
+  output_off_edge_ = false;
+  return edge;
+}
+
+void BatteryAlertPolicy::considerLatch(float percent, bool charging, uint32_t now) {
+  if (percent <= InhibitPercent) {
+    latch_hold_ = false;
+    if (!latched_) {
+      latched_ = true;
+      latch_dirty_ = true;
+      latch_durable_ = false;
+      output_off_edge_ = true;
+      edge_is_new_ = true;
+      boot_unproven_ = false;
+      warn_armed_ = false;
+    }
+    return;
+  }
+  if ((latched_ || boot_unproven_) && percent >= RestartPercent && charging) {
+    if (!latch_hold_) {
+      latch_hold_ = true;
+      latch_hold_since_ = now;
+    } else if (elapsed(now, latch_hold_since_) >= RecoveryHoldMs) {
+      if (latched_) {
+        latched_ = false;
+        latch_dirty_ = true;
+        latch_durable_ = false;
+      }
+      boot_unproven_ = false;
+      latch_hold_ = false;
+    }
+  } else {
+    latch_hold_ = false;
+  }
+}
+
+void BatteryAlertPolicy::setThresholds(float low, float warning) {
+  low_percent_ = low;
+  warning_percent_ = warning;
+}
+
+void BatteryAlertPolicy::considerRearm(float percent, uint32_t now) {
+  if (warn_armed_ || percent <= warning_percent_) {
+    warn_hold_ = false;
+    return;
+  }
+  if (!warn_hold_) {
+    warn_hold_ = true;
+    warn_hold_since_ = now;
+  } else if (elapsed(now, warn_hold_since_) >= RecoveryHoldMs) {
+    warn_armed_ = true;
+    warn_hold_ = false;
+  }
 }
 
 uint8_t BatteryAlertPolicy::update(const BatteryReading& reading, uint32_t now) {
@@ -47,17 +112,41 @@ uint8_t BatteryAlertPolicy::update(const BatteryReading& reading, uint32_t now) 
   available_ = fresh(reading, now);
   if (available_) everAvailable_ = true;
   const bool unavailable = !available_ &&
-      (everAvailable_ || static_cast<uint32_t>(now - startedAtMs_) >= StartupGraceMs);
+      (everAvailable_ || elapsed(now, startedAtMs_) >= StartupGraceMs);
   if (unavailable != unavailableAlert_) {
     unavailableAlert_ = unavailable;
     changes |= AvailabilityChanged;
   }
 
-  const BatteryAlertLevel next = available_ ? nextLevel(reading.percent) : BatteryAlertLevel::None;
-  const bool repeat = next != BatteryAlertLevel::None &&
-      static_cast<uint32_t>(now - lastBatteryEventAt_) >= cooldown(next);
-  if (next != level_ || repeat) {
+  if (!available_) {
+    latch_hold_ = false;
+    warn_hold_ = false;
+  } else {
+    considerLatch(reading.percent, reading.charging, now);
+    considerRearm(reading.percent, now);
+  }
+
+  const BatteryAlertLevel next = available_ ? levelFor(reading.percent) : BatteryAlertLevel::None;
+  bool notify = false;
+  if (next != level_) {
+    if (next == BatteryAlertLevel::Critical || next == BatteryAlertLevel::ShutdownRisk) {
+      if (warn_armed_ || next == BatteryAlertLevel::ShutdownRisk) {
+        notify = true;
+        warn_armed_ = false;
+      }
+    } else {
+      notify = true;
+    }
     level_ = next;
+  } else if (next == BatteryAlertLevel::Low &&
+             elapsed(now, lastBatteryEventAt_) >= cooldown(BatteryAlertLevel::Low)) {
+    notify = true;
+  }
+  if (edge_is_new_) {
+    notify = true;
+    edge_is_new_ = false;
+  }
+  if (notify) {
     lastBatteryEventAt_ = now;
     changes |= BatteryChanged;
   }

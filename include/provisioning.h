@@ -29,5 +29,6 @@ void beginWifiService();
 void serviceWifiFallback();
 void startProvisioning();
 void startAppServer();
-void applyDeviceState(bool state);
+// Returns false when a fresh discharge latch blocks turning the output on.
+bool applyDeviceState(bool state);
 void httpRoutes();
