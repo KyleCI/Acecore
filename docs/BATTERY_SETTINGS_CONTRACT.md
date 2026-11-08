@@ -45,6 +45,15 @@ Authorization: Bearer <lan_token>
 
 There is no other supported scheme. `API-KEY` is not accepted on this path.
 
+## Save status
+
+Manual Save is not complete. The app requires `Authorization: Bearer
+<lan_token>` from `POST /v2/login`. This branch does not implement that
+login. HTTP 401 here is the blocker, not an applied configuration.
+`authenticated_configuration` and `settings_save_complete` are both false.
+Provenance and the later integration boundary are in
+`docs/AUTH_AND_RECOVERY_EVIDENCE.md`.
+
 ## What this firmware does today
 
 `classify_lan_authorization()` never returns success. A missing, empty, or
@@ -61,7 +70,10 @@ thresholds stay at the defaults. Both methods respond **401** with:
   "durable_commit": false,
   "pending": false,
   "physical_shutdown_verified": false,
-  "output_authority": "none or collector_relay_gpio15",
+  "physical_auto_off": false,
+  "authenticated_configuration": false,
+  "settings_save_complete": false,
+  "output_authority": "software_inhibit_only",
   "collector_profile": "hw-v0.1.1 or original",
   "collector_source": "KyleCI/Acecore",
   "lan_token_issued": false,
@@ -70,9 +82,10 @@ thresholds stay at the defaults. Both methods respond **401** with:
 }
 ```
 
-`output_authority` is `none` on v0.1.1 and `collector_relay_gpio15` on the
-original profile. `physical_shutdown_verified` is always false. v0.1.1 has no
-DSP or STM32 command path; turning the GPIO15 light off is not a discharge cutoff.
+`output_authority` is `software_inhibit_only` on both profiles.
+`physical_auto_off` is false: the latch does not drive a pin.
+`physical_shutdown_verified` is always false. v0.1.1 GPIO15 is the power
+light and is not a discharge cutoff.
 
 `pending` is always false. This firmware does not queue a save.
 
@@ -150,8 +163,10 @@ The configurable warning does not move the 10% latch or the 15% restart gate.
 
 Release requires every sample in a 60-second window to be a fresh JK-BMS frame
 with SOC >= 15 and `batStatus == 1` (charging). SOC without that charging flag
-does not release, including a full 60 seconds at a high SOC. Stale frames reset
-the window and do not release. Release does not turn the output on.
+does not release. A pack at 100% with `batStatus` standby stays latched for
+as long as it remains idle. That is narrower than the requested restart gate
+of 15% and is an open choice in `docs/AUTH_AND_RECOVERY_EVIDENCE.md`. Stale
+frames reset the window and do not release. Release does not turn the output on.
 
 This tree has no `soc_guard` module. The charging flag is the BMS evidence
 available here. Pack-current sign is not used, because this firmware treats
@@ -170,8 +185,8 @@ still says the output turns off at 10% and stays off until 15%.
 
 | Profile | What firmware can do at 10% | What it cannot do |
 | --- | --- | --- |
-| Original | Turn off the collector relay on GPIO15 and reject its own ON commands | Command the STM32, write BMS FETs, or prove GPIO15 is the inverter discharge path |
-| v0.1.1 | Reject the collector ON command and turn the GPIO15 power light off | Command the prebuilt DSP. There is no STM32 or LoRa link. The light is not a discharge contactor |
+| Original | Reject its own ON command. The new latch does not drive GPIO15. | Command the STM32, write BMS FETs, or treat the collector relay as a verified discharge output |
+| v0.1.1 | Reject its own ON command. GPIO15 stays the power light and the latch does not drive it. | Command the prebuilt DSP. There is no STM32 or LoRa link. |
 
 `physical_shutdown_verified` stays false in every response. No payment-lock
 actuator exists in this firmware. Smart-socket ON is a separate path and is

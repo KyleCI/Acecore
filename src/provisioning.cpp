@@ -224,11 +224,14 @@ static void sendBatterySettings(AsyncWebServerRequest* req, int code,
   doc["durable_commit"] = decision.durable_commit;
   doc["pending"] = false;
   doc["physical_shutdown_verified"] = false;
+  doc["physical_auto_off"] = false;
+  doc["authenticated_configuration"] = false;
+  doc["settings_save_complete"] = false;
 #ifdef POWERCELL_HW_V011
-  doc["output_authority"] = "none";
+  doc["output_authority"] = "software_inhibit_only";
   doc["collector_profile"] = "hw-v0.1.1";
 #else
-  doc["output_authority"] = "collector_relay_gpio15";
+  doc["output_authority"] = "software_inhibit_only";
   doc["collector_profile"] = "original";
 #endif
   doc["collector_source"] = "KyleCI/Acecore";

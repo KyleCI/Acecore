@@ -162,14 +162,14 @@ SOC is the JK-BMS value on UART2, accepted only from a fresh dynamic frame
 (15 seconds). The low threshold is 25%, not 89%. A one-time shutdown warning
 is raised at 15%. At 10% the collector latches discharge inhibit until fresh
 SOC stays at or above 15% for 60 seconds and every sample in that window has
-JK `batStatus == 1`. SOC alone does not release the latch. Recovery does not
-turn the output on by itself. The settings request and the reason it cannot
-be applied yet are in `docs/BATTERY_SETTINGS_CONTRACT.md`. The original
-profile's established off path is `applyDeviceState(false)`,
-which opens the GPIO15 collector relay. v0.1.1 uses that same call only for
-the power light and the software ON block. Neither profile writes BMS FETs or
-a DSP command. Whether GPIO15 is electrically the inverter discharge path is
-not established in this repo.
+JK `batStatus == 1`. SOC alone does not release the latch. A full or idle
+pack (`batStatus` standby) stays latched. Recovery does not turn the output
+on by itself. The new latch edge does not drive a pin
+(`kPhysicalAutoOffEnabled` is false). v0.1.1 GPIO15 stays the power light.
+Pre-existing `/OFF` and the OTA callback still use `applyDeviceState`.
+Neither profile writes BMS FETs or a DSP command. Settings save is not
+complete: see `docs/BATTERY_SETTINGS_CONTRACT.md` and
+`docs/AUTH_AND_RECOVERY_EVIDENCE.md`.
 
 ## Bench still required
 

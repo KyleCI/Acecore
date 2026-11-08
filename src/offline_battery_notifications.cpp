@@ -223,7 +223,10 @@ void serviceOfflineBatteryNotifications() {
     Serial.printf("[Battery alerts] %s\n", unavailable.c_str());
   }
   outputOnAllowed = policy.outputOnAllowed();
-  if (policy.takeOutputOffEdge()) applyDeviceState(false);
+  // Consume the edge either way. While the gate is off, do not drive GPIO15.
+  if (policy.takeOutputOffEdge() && BatteryAlertPolicy::kPhysicalAutoOffEnabled) {
+    applyDeviceState(false);
+  }
   if (policy.latchDirty()) {
     Preferences prefs;
     bool wrote = false;

@@ -227,6 +227,26 @@ static void socWithoutChargingDoesNotRelease() {
   assert(!p.outputLatched());
 }
 
+static void fullIdleAboveFifteenStaysLatched() {
+  // This tree labels JK f[172] as 0 Standby, 1 Charging, 2 Discharging.
+  // charging=false is standby or discharge. A pack that reached 100% and then
+  // sits full or idle is standby, so it is not charging. There is no current
+  // input and no automatic turn-on.
+  BatteryAlertPolicy p;
+  assert(!BatteryAlertPolicy::kPhysicalAutoOffEnabled);
+  p.update(reading(8, 1000, true), 1000);
+  assert(p.outputLatched());
+  assert(!p.outputOnAllowed());
+  const uint32_t start = 5000;
+  p.update(reading(100, start, false), start);
+  assert(p.outputLatched());
+  assert(!p.outputOnAllowed());
+  const uint32_t later = start + BatteryAlertPolicy::RecoveryHoldMs * 10;
+  p.update(reading(100, later, false), later);
+  assert(p.outputLatched());
+  assert(!p.outputOnAllowed());
+}
+
 static void configuredWarningDoesNotMoveHardCutoff() {
   BatteryAlertPolicy p;
   p.setThresholds(30, 20);
@@ -257,6 +277,7 @@ int main() {
   cooldowns();
   rollover();
   socWithoutChargingDoesNotRelease();
+  fullIdleAboveFifteenStaysLatched();
   configuredWarningDoesNotMoveHardCutoff();
   std::puts("PASS: battery thresholds, latch, warning, stale, persistence, rollover");
 }

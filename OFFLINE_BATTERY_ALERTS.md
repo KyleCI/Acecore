@@ -17,18 +17,22 @@ The 15% warning does not repeat until fresh SOC has stayed above the configured
 warning percent for 60 seconds. That rearm does not require charging and does
 not clear the latch. The 10% latch blocks the collector's own ON command until
 the charging recovery above, and it does not turn the output back on. SOC at
-or above 15% without `batStatus == 1` does not release the latch. Pack-current
-sign is not treated as charging.
+or above 15% without `batStatus == 1` does not release the latch. A pack at
+100% with `batStatus` standby (full or idle) stays latched. Pack-current
+sign is not treated as charging. That charging requirement is narrower than
+"restart at 15%" and is recorded as an open choice in
+`docs/AUTH_AND_RECOVERY_EVIDENCE.md`.
 Stale or invalid SOC clears the visible level and does not start or release
 the latch. A failed latch read on boot blocks ON until fresh recovery evidence
 arrives. A failed latch write is not treated as saved.
 
 These alerts do not open the BMS charge or discharge FETs, and they do not
-send a DSP or STM32 command. On the original profile the existing collector
-output relay (GPIO15) is turned off with the latch. On hardware v0.1.1 GPIO15
-is only the power light, so the same command is a software lock and a light
-change, not a physical discharge cutoff. Smart-socket ON commands are not this
-path. No payment-lock actuator exists in this firmware.
+send a DSP or STM32 command. `kPhysicalAutoOffEnabled` is false, so the latch
+does not call `applyDeviceState`. The software ON block remains. Pre-existing
+`/OFF`, websocket OFF, and the OTA shutdown callback still call
+`applyDeviceState` as they did before this latch. On hardware v0.1.1 GPIO15
+is only the power light and the latch does not drive it. Smart-socket ON
+commands are not this path. No payment-lock actuator exists in this firmware.
 
 The BMS reader timestamps accepted frames. An alert reading needs a complete
 dynamic frame with the expected header/type, plausible cell/pack data, SOC in
