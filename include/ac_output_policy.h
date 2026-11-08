@@ -38,6 +38,7 @@ class AcOutputPolicy {
   bool warnOperational() const;
   bool shutdownOperational() const;
   bool turnsOutputOn() const { return false; }
+  static constexpr bool kDrivesOutput = false;
 
  private:
   static uint32_t elapsed(uint32_t now, uint32_t since) { return now - since; }

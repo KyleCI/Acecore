@@ -26,12 +26,13 @@ the latch. A failed latch read on boot blocks ON until fresh recovery evidence
 arrives. A failed latch write is not treated as saved.
 
 These alerts do not open the BMS charge or discharge FETs, and they do not
-send a DSP or STM32 command. `kPhysicalAutoOffEnabled` is false, so the latch
-does not call `applyDeviceState`. The software ON block remains. Pre-existing
-`/OFF`, websocket OFF, and the OTA shutdown callback still call
-`applyDeviceState` as they did before this latch. On hardware v0.1.1 that
-call drives GPIO15 active-low (on is low, off is high). The latch itself
-does not drive it. Smart-socket ON
+send a DSP protocol or an STM32 command, and they do not write BMS FET
+registers. On v0.1.1, while the latch is held or its saved state could not
+be read, the collector drives GPIO15 high (DSP off, AC output off). That
+write is repeated if the output is still on, including after reboot and
+after the one-shot edge has been consumed. It does not turn the output back
+on when the latch releases. The original profile does not auto-drive GPIO15.
+Manual OFF and the OTA callback still turn the output off. Smart-socket ON
 commands are not this path. No payment-lock actuator exists in this firmware.
 
 The BMS reader timestamps accepted frames. An alert reading needs a complete

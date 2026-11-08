@@ -1,4 +1,5 @@
 #include "battery_alert_policy.h"
+#include "board_pins.h"
 #include <assert.h>
 #include <cmath>
 #include <cstdio>
@@ -222,6 +223,40 @@ static void nonBmsSocDoesNotRelease() {
   assert(!p.outputOnAllowed());
 }
 
+static void v011CutoffIsAcOutputOffOnly() {
+  BatteryAlertPolicy trip;
+  trip.update(reading(10.1f, 1), 1);
+  assert(!trip.outputLatched());
+  assert(battery_cutoff_pin_level(HardwareProfile::V011, false) == -1);
+  assert(trip.update(reading(10, 2), 2) & BatteryAlertPolicy::BatteryChanged);
+  assert(trip.outputLatched());
+  assert(battery_cutoff_pin_level(HardwareProfile::V011, true) == v011_dsp_level(false));
+  assert(battery_cutoff_pin_level(HardwareProfile::V011, true) == 1);
+  assert(battery_cutoff_pin_level(HardwareProfile::Original, true) == -1);
+  assert(!battery_ac_output_auto_off(HardwareProfile::Original));
+  assert(battery_ac_output_auto_off(HardwareProfile::V011));
+  assert(!battery_cutoff_writes_bms_fets());
+  assert(!battery_cutoff_stops_charging());
+  assert(!battery_recovery_drives_on());
+  assert(!payment_lock_actuator_present());
+  assert(trip.takeOutputOffEdge());
+  assert(!trip.takeOutputOffEdge());
+  assert(trip.outputLatched());
+  assert(battery_cutoff_pin_level(HardwareProfile::V011, trip.outputLatched()) == 1);
+
+  BatteryAlertPolicy booted;
+  booted.loadLatch(true, true);
+  assert(booted.takeOutputOffEdge());
+  assert(!booted.outputOnAllowed());
+  assert(battery_cutoff_pin_level(HardwareProfile::V011, !booted.outputOnAllowed()) == 1);
+
+  BatteryAlertPolicy unread;
+  unread.loadLatch(false, false);
+  assert(!unread.outputOnAllowed());
+  assert(unread.takeOutputOffEdge());
+  assert(battery_cutoff_pin_level(HardwareProfile::V011, !unread.outputOnAllowed()) == 1);
+}
+
 static void fullIdleAboveFifteenReleasesAfterHold() {
   // Standby at 100% is BMS-own SOC. It releases after 60s and does not turn on.
   BatteryAlertPolicy p;
@@ -239,6 +274,8 @@ static void fullIdleAboveFifteenReleasesAfterHold() {
            start + BatteryAlertPolicy::RecoveryHoldMs);
   assert(!p.outputLatched());
   assert(p.outputOnAllowed());
+  assert(!battery_recovery_drives_on());
+  assert(battery_cutoff_pin_level(HardwareProfile::V011, false) == -1);
 }
 
 static void configuredWarningDoesNotMoveHardCutoff() {
@@ -271,6 +308,7 @@ int main() {
   cooldowns();
   rollover();
   nonBmsSocDoesNotRelease();
+  v011CutoffIsAcOutputOffOnly();
   fullIdleAboveFifteenReleasesAfterHold();
   configuredWarningDoesNotMoveHardCutoff();
   std::puts("PASS: battery thresholds, latch, warning, stale, persistence, rollover");

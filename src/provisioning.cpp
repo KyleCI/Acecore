@@ -224,16 +224,20 @@ static void sendBatterySettings(AsyncWebServerRequest* req, int code,
   doc["durable_commit"] = decision.durable_commit;
   doc["pending"] = false;
   doc["physical_shutdown_verified"] = false;
-  doc["physical_auto_off"] = false;
-  doc["authenticated_configuration"] = false;
-  doc["settings_save_complete"] = false;
+  doc["actuator_semantics"] = "user_confirmed";
+  doc["cutoff_stops_charging"] = false;
+  doc["payment_lock_actuator"] = false;
 #ifdef POWERCELL_HW_V011
-  doc["output_authority"] = "software_inhibit_only";
+  doc["physical_auto_off"] = "implemented_ac_output_only";
+  doc["output_authority"] = "v011_dsp_active_low_user_confirmed";
   doc["collector_profile"] = "hw-v0.1.1";
 #else
+  doc["physical_auto_off"] = "disabled";
   doc["output_authority"] = "software_inhibit_only";
   doc["collector_profile"] = "original";
 #endif
+  doc["authenticated_configuration"] = false;
+  doc["settings_save_complete"] = false;
   doc["collector_source"] = "KyleCI/Acecore";
   doc["lan_token_issued"] = false;
   doc["deployed_2_5_11_compatible"] = false;

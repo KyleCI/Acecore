@@ -24,8 +24,8 @@ struct BatteryReading {
 //
 // Low:          enter <=25%, leave >27% (2 point margin), remind every 2h.
 // Warning:      enter <=15%, one notification per episode.
-// Latch-driven physical output is disabled. The software ON block stays.
-// Pre-existing /OFF, websocket OFF, and the OTA shutdown callback are separate.
+// v0.1.1 applies AC-output off from outputOnAllowed()==false, not from a one-shot
+// edge. The original profile does not. Recovery does not turn the output on.
 // Output latch: enter <=10%. Release after fresh BMS-own SOC stays >=15% for
 //               60s, including a full or idle pack (batStatus standby).
 //               A sample that is not BMS-own does not release. Release does not
@@ -42,7 +42,8 @@ class BatteryAlertPolicy {
   static constexpr float WarningPercent = 15.0f;
   static constexpr float InhibitPercent = 10.0f;
   static constexpr float RestartPercent = 15.0f;
-  // New latch path must not drive a pin until a discharge actuator is verified.
+  // The policy does not choose a pin. v0.1.1 maps a hold to GPIO15 high.
+  // The original profile does not.
   static constexpr bool kPhysicalAutoOffEnabled = false;
   enum Change : uint8_t { BatteryChanged = 1, AvailabilityChanged = 2 };
 

@@ -36,13 +36,17 @@ void BatteryAlertPolicy::loadLatch(bool read_ok, bool latched) {
   if (!read_ok) {
     boot_unproven_ = true;
     latch_durable_ = false;
+    output_off_edge_ = true;
     return;
   }
   latched_ = latched;
   boot_unproven_ = false;
   latch_durable_ = true;
   latch_dirty_ = false;
-  if (latched_) warn_armed_ = false;
+  if (latched_) {
+    warn_armed_ = false;
+    output_off_edge_ = true;
+  }
 }
 
 void BatteryAlertPolicy::ackLatchSave(bool write_ok) {

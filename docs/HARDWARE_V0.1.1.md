@@ -168,12 +168,13 @@ SOC is the JK-BMS value on UART2, accepted only from a fresh dynamic frame
 (15 seconds). The low threshold is 25%, not 89%. A one-time shutdown warning
 is raised at 15%. At 10% the collector latches discharge inhibit until fresh
 SOC stays at or above 15% for 60 seconds on a fresh JK frame, including an
-idle pack. Recovery does not turn the output on. The latch does not drive a
-pin (`kPhysicalAutoOffEnabled` is false). v0.1.1 GPIO15 is active-low DSP
-enable: on is low, off is high. Boot writes high before `pinMode`. User ON,
-OFF, and the OTA shutdown callback use that same mapping. The original
-profile's GPIO15 relay stays active high. Neither profile writes BMS FETs.
-`physical_shutdown_verified` stays false. Settings save is not complete.
+idle pack. Recovery does not turn the output on. On v0.1.1 a held latch
+drives GPIO15 high, which is AC-output off. Charging is not switched and the
+BMS FETs are not written. The original profile does not auto-drive its relay.
+Boot still writes the off level before `pinMode`. User ON is rejected while
+the latch is held. `physical_shutdown_verified` stays false. The AC-power
+ceiling does not use this output. Settings save is not complete. There is
+no payment-lock actuator in this firmware.
 
 ## Bench still required
 

@@ -29,6 +29,7 @@ static void selectedPzemWarnsWithoutShutdown() {
   CHECK(!p.takeShutdownEdge());
   CHECK(!p.shutdownOperational());
   CHECK(!p.turnsOutputOn());
+  CHECK(!AcOutputPolicy::kDrivesOutput);
 }
 
 static void staleIsNotZeroAndDoesNotShutdown() {

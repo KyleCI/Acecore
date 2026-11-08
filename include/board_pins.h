@@ -55,6 +55,20 @@ inline void v011_dsp_boot(BootStep out[2]) {
   out[0] = {BootAction::SetOutputLatch, v011_dsp_level(false)};
   out[1] = {BootAction::EnableOutput, v011_dsp_level(false)};
 }
+
+// v0.1.1 battery latch drives AC-output off only. Original relay auto-off stays off.
+// Recovery never requests on. Charging and BMS FET registers are not written.
+inline bool battery_ac_output_auto_off(HardwareProfile profile) {
+  return profile == HardwareProfile::V011;
+}
+inline int battery_cutoff_pin_level(HardwareProfile profile, bool hold_off) {
+  if (!hold_off || profile != HardwareProfile::V011) return -1;
+  return v011_dsp_level(false);
+}
+inline bool battery_recovery_drives_on() { return false; }
+inline bool battery_cutoff_writes_bms_fets() { return false; }
+inline bool battery_cutoff_stops_charging() { return false; }
+inline bool payment_lock_actuator_present() { return false; }
 constexpr int kPowerLightOriginal = 25;
 constexpr int kRelayOriginal = 15;
 constexpr int kStatusRed = 13;

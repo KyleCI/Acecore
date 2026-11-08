@@ -1,5 +1,6 @@
 #include "offline_battery_notifications.h"
 #include "battery_alert_policy.h"
+#include "board_pins.h"
 #include "bms.h"
 #include "provisioning.h"
 #include <ArduinoJson.h>
@@ -223,9 +224,14 @@ void serviceOfflineBatteryNotifications() {
     Serial.printf("[Battery alerts] %s\n", unavailable.c_str());
   }
   outputOnAllowed = policy.outputOnAllowed();
-  // Consume the edge either way. While the gate is off, do not drive GPIO15.
-  if (policy.takeOutputOffEdge() && BatteryAlertPolicy::kPhysicalAutoOffEnabled) {
-    applyDeviceState(false);
+  // Level hold, not a one-shot edge: a consumed edge must not leave AC output on.
+  // v0.1.1 writes DSP off (high). The original profile does not drive its relay.
+  const bool hold = !policy.outputOnAllowed();
+  if (powercell::battery_ac_output_auto_off(powercell::build_profile()) && hold) {
+    if (deviceState) applyDeviceState(false);
+    else if (policy.takeOutputOffEdge()) applyDeviceState(false);
+  } else {
+    policy.takeOutputOffEdge();
   }
   if (policy.latchDirty()) {
     Preferences prefs;
