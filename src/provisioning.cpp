@@ -1,6 +1,7 @@
 #include <PowercellOTA.h>
 #include "provisioning.h"
 #include "metrics.h"
+#include "load_ac_energy_port.h"
 #include "offline_sync.h"
 #include <pinDefines.h>
 
@@ -278,6 +279,7 @@ void httpRoutes() {
 
 
     registerMetricsRoute(server);   // BMS + LoRa -> /metrics (see metrics.cpp)
+    load_ac_energy_register(server);
 
 
     // ─────────────────────────────────────────────────────────────────────────

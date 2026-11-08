@@ -2,6 +2,8 @@
 // PowerCell MPPT — PlatformIO / ESP32
 
 #include "housekeeping.h"
+#include "i2c_bus_lock.h"
+#include "original_v01_profile.h"
 
 
 // ─── Module-private state ─────────────────────────────────────────────────────
@@ -22,8 +24,11 @@ static TaskHandle_t      s_task_handle = nullptr;
 static int32_t read_diff01_avg(uint8_t n = MPPT_SAMPLES) {
     int32_t sum = 0;
     for (uint8_t i = 0; i < n; i++) {
-        sum += s_ads.readADC_Differential_0_1();
-        vTaskDelay(pdMS_TO_TICKS(1));   // yield; ~8 ms per sample anyway
+        i2c_bus_lock();
+        int16_t sample = s_ads.readADC_Differential_0_1();
+        i2c_bus_unlock();
+        sum += sample;
+        vTaskDelay(pdMS_TO_TICKS(1));   // yield outside the bus lock
     }
     return sum / n;
 }
@@ -62,7 +67,10 @@ static void print_task(void *pvParameters) {
 static int32_t read_single_avg(uint8_t channel, uint8_t n = MPPT_SAMPLES) {
     int32_t sum = 0;
     for (uint8_t i = 0; i < n; i++) {
-        sum += s_ads.readADC_SingleEnded(channel);
+        i2c_bus_lock();
+        int16_t sample = s_ads.readADC_SingleEnded(channel);
+        i2c_bus_unlock();
+        sum += sample;
         vTaskDelay(pdMS_TO_TICKS(1));
     }
     return sum / n;
@@ -120,8 +128,12 @@ bool mppt_init() {
 
     // Initialise I2C with explicit pins (ESP32 requires this)
     Wire.begin(MPPT_I2C_SDA, MPPT_I2C_SCL);
+    Wire.setClock(ORIGINAL_V01_I2C_HZ);
 
-    if (!s_ads.begin()) {
+    i2c_bus_lock();
+    bool ads_ok = s_ads.begin();
+    i2c_bus_unlock();
+    if (!ads_ok) {
         Serial.println("[MPPT] ERROR: ADS1115 not found — check I2C wiring.");
         return false;
     }

@@ -1,5 +1,6 @@
-#pragma once 
+#pragma once
 #include <Arduino.h>
+#include "original_v01_profile.h"
 
 /* JK BMS */
 #define JK_UART Serial2
@@ -7,30 +8,30 @@
 
 //inverter UART
 #define INVERTER_UART Serial1
-#define INVERTER_BAUD 9600
-#define INVERTER_RX 33
-#define INVERTER_TX 2
+#define INVERTER_BAUD ORIGINAL_V01_INVERTER_BAUD
+#define INVERTER_RX ORIGINAL_V01_INVERTER_RX
+#define INVERTER_TX ORIGINAL_V01_INVERTER_TX
 
 /* MPPT SPI */
 // #define MOSI 23
 // #define MISO 19
 // #define SCK 18
-#define CS 5
+#define CS ORIGINAL_V01_MPPT_CS
 
 /* LoRa */
-#define LORA_RST 26
-#define LORA_CS 4
-#define LORA_DIO0 2
+#define LORA_RST ORIGINAL_V01_LORA_RST
+#define LORA_CS ORIGINAL_V01_LORA_CS
+#define LORA_DIO0 ORIGINAL_V01_LORA_DIO0
 #define LORA_FREQUENCY  433E6
 #define LORA_SYNC_WORD  0xF1   // must match the Smart Socket transmitters
 
 /* GPIO */
-#define RELAY 15
-#define RED 13
-#define YELLOW 12
-#define GREEN 27
-#define AMBER 32
-#define LIGHTS 25
+#define RELAY ORIGINAL_V01_RELAY
+#define RED ORIGINAL_V01_RED
+#define YELLOW ORIGINAL_V01_YELLOW
+#define GREEN ORIGINAL_V01_GREEN
+#define AMBER ORIGINAL_V01_AMBER
+#define LIGHTS ORIGINAL_V01_LIGHTS
 
 /* Smart Socket*/
 #define SOCKET_LED 4

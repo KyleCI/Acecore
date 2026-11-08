@@ -1,4 +1,5 @@
 #include <housekeeping.h>
+#include "load_ac_energy_port.h"
 
 // ── TODO: wire these to your actual inverter/PZEM reading code ──────────────
 static float getInverterEnergy() { return 0.0f; }      // e.g. from PZEM
@@ -51,7 +52,11 @@ void registerMetricsRoute(AsyncWebServer &server)
         // ── Device / powercell section ───────────────────────────────────────
         doc["device_state"]          = getDeviceState();
         doc["inverterLoad"]  = snap.vout * snap.iout;
-        doc["inverter_energy"]       = energy_get_wh();
+        // BMS discharge is DC pack energy. It is not AC load consumption.
+        doc["inverter_energy"]       = nullptr;
+        doc["bms_discharge_wh"]      = energy_get_wh();
+        doc["bms_discharge_kind"]    = "dc_pack_discharge";
+        load_ac_energy_fill(doc["load_ac_estimate"].to<JsonObject>(), true);
         doc["inverter_temperature"]  = snap.tempC;
         doc["inverterVoltage"] = snap.vout;
         doc["gridVoltage"] = snap.gridVoltage;

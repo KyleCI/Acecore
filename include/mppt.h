@@ -18,9 +18,10 @@
 #include <freertos/semphr.h>
 
 // ─── I2C pins ────────────────────────────────────────────────────────────────
-// Default ESP32 I2C pins. Change if your board routes them differently.
-constexpr int MPPT_I2C_SDA = 21;
-constexpr int MPPT_I2C_SCL = 22;
+// Original v0.1 bus, shared with an optional DS1307. Kept at 100 kHz.
+#include "original_v01_profile.h"
+constexpr int MPPT_I2C_SDA = ORIGINAL_V01_I2C_SDA;
+constexpr int MPPT_I2C_SCL = ORIGINAL_V01_I2C_SCL;
 
 // ─── Calibration constants ────────────────────────────────────────────────────
 // Measure your actual resistors with a multimeter before adjusting.

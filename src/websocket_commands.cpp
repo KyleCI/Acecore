@@ -6,6 +6,7 @@
 #include "collector_lora.h"
 #include "websocket_ca.h"
 #include "offline_sync.h"
+#include "load_ac_energy_port.h"
 
 namespace {
 #ifndef POWERCELL_WS_HOST
@@ -120,6 +121,7 @@ void telemetry() {
   inverter["output_voltage"] = inv.vout;
   inverter["output_current"] = inv.iout;
   inverter["temperature"] = inv.tempC;
+  load_ac_energy_fill_brief(doc["load_ac_estimate"].to<JsonObject>());
 
   JsonObject solar = doc["solar"].to<JsonObject>();
   MpptData mppt;

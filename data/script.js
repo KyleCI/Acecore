@@ -1,3 +1,17 @@
+function formatAcLoadEstimate(data) {
+    const estimate = data && data.load_ac_estimate;
+    if (!estimate || estimate.contract !== "estimate.load_ac_energy.v1") return "AC estimate unavailable";
+    if (estimate.synthetic === true) return "AC estimate unavailable";
+    if (estimate.estimate_available !== true) return "AC estimate unavailable";
+    if (estimate.attribution !== "allocated" && estimate.attribution !== "valid_zero") return "AC estimate unavailable";
+    if (estimate.pf_is_assumption !== true) return "AC estimate unavailable";
+    const raw = estimate.interval_estimated_mwh;
+    if (typeof raw !== "string" || !/^(0|[1-9][0-9]*)$/.test(raw)) return "AC estimate unavailable";
+    const milliwattHours = Number(raw);
+    if (!Number.isFinite(milliwattHours)) return "AC estimate unavailable";
+    return `${(milliwattHours / 1000).toFixed(3)} Wh estimated`;
+}
+
 function homeMetricNumber(...values) {
     for (const value of values) {
         if (value === null || value === undefined || value === "") continue;
@@ -18,26 +32,19 @@ async function updateMetrics() {
         // Use the same inverter readings displayed in the Powercell dashboard.
         // Keep the older field names as fallbacks for firmware compatibility.
         const powerWatts = homeMetricNumber(data.inverterLoad, data.inverter_output_load, data.power_drawn);
-        const energyKwh = homeMetricNumber(data.inverter_energy, data.energy_consumed);
 
         document.getElementById("powerOutput").innerText = Number.isFinite(powerWatts)
             ? `${powerWatts.toFixed(2)} W`
             : "-- W";
-        document.getElementById("energy").innerText = Number.isFinite(energyKwh)
-            ? `${energyKwh.toFixed(2)} kWh`
-            : "-- kWh";
+        document.getElementById("energy").innerText = formatAcLoadEstimate(data);
         const energyRangeEl = document.getElementById("energyRange");
-        if (energyRangeEl) {
-            energyRangeEl.innerText = Number.isFinite(energyKwh)
-                ? `${(energyKwh * 0.9).toFixed(1)} kWh - ${(energyKwh * 1.1).toFixed(1)} kWh`
-                : "-- kWh - -- kWh";
-        }
+        if (energyRangeEl) energyRangeEl.innerText = "not a measured Wh";
     } catch (err) {
         console.error("Failed to fetch metrics:", err);
         document.getElementById("powerOutput").innerText = "-- W";
-        document.getElementById("energy").innerText = "-- kWh";
+        document.getElementById("energy").innerText = "AC estimate unavailable";
         const energyRangeEl = document.getElementById("energyRange");
-        if (energyRangeEl) energyRangeEl.innerText = "-- kWh - -- kWh";
+        if (energyRangeEl) energyRangeEl.innerText = "not a measured Wh";
     }
 }
 
