@@ -266,7 +266,9 @@ HttpReply ManualApi::battery_get(const char* authorization, uint32_t now_ms) {
   HttpReply out;
   const SettingsAuth auth = classify_lan_authorization(authorization, bearer_kind(authorization, now_ms));
   if (auth != SettingsAuth::Ok) {
-    const char* reason = auth == SettingsAuth::SessionOnly ? "session_not_sufficient" : "unauthorized";
+    const char* reason = settings_reason_name(auth == SettingsAuth::SessionOnly
+                                                 ? SettingsReason::SessionNotSufficient
+                                                 : SettingsReason::Unauthorized);
     snprintf(out.body, sizeof out.body,
              "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"%s\",\"applied\":false,"
              "\"durable_commit\":false,\"pending\":false,\"readback_present\":false}",
@@ -291,7 +293,9 @@ HttpReply ManualApi::battery_post(const char* authorization, const char* json, c
   if (!post_headers_ok(headers, &out)) return out;
   const SettingsAuth auth = classify_lan_authorization(authorization, bearer_kind(authorization, now_ms));
   if (auth != SettingsAuth::Ok) {
-    const char* reason = auth == SettingsAuth::SessionOnly ? "session_not_sufficient" : "unauthorized";
+    const char* reason = settings_reason_name(auth == SettingsAuth::SessionOnly
+                                                 ? SettingsReason::SessionNotSufficient
+                                                 : SettingsReason::Unauthorized);
     snprintf(out.body, sizeof out.body,
              "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"%s\",\"applied\":false,"
              "\"durable_commit\":false,\"pending\":false,\"readback_present\":false}",
@@ -329,10 +333,17 @@ HttpReply ManualApi::battery_post(const char* authorization, const char* json, c
 
 HttpReply ManualApi::ac_get(const char* authorization, uint32_t now_ms) {
   HttpReply out;
-  if (classify_lan_authorization(authorization, bearer_kind(authorization, now_ms)) != SettingsAuth::Ok) {
-    reply_set(&out, 401, "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"unauthorized\",\"applied\":false,"
-                         "\"readback_present\":false,\"shutdown_operational\":false,"
-                         "\"total_output_coverage_verified\":false}");
+  const SettingsAuth ac_get_auth = classify_lan_authorization(authorization, bearer_kind(authorization, now_ms));
+  if (ac_get_auth != SettingsAuth::Ok) {
+    const char* reason = settings_reason_name(ac_get_auth == SettingsAuth::SessionOnly
+                                                  ? SettingsReason::SessionNotSufficient
+                                                  : SettingsReason::Unauthorized);
+    snprintf(out.body, sizeof out.body,
+             "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"%s\",\"applied\":false,"
+             "\"readback_present\":false,\"shutdown_operational\":false,"
+             "\"total_output_coverage_verified\":false}",
+             reason);
+    out.status = 401;
     return out;
   }
   const AcState& s = ac_.state();
@@ -351,9 +362,17 @@ HttpReply ManualApi::ac_post(const char* authorization, const char* json, const 
                              uint32_t now_ms) {
   HttpReply out;
   if (!post_headers_ok(headers, &out)) return out;
-  if (classify_lan_authorization(authorization, bearer_kind(authorization, now_ms)) != SettingsAuth::Ok) {
-    reply_set(&out, 401, "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"unauthorized\",\"applied\":false,"
-                         "\"shutdown_operational\":false,\"readback_present\":false}");
+  const SettingsAuth ac_post_auth = classify_lan_authorization(authorization, bearer_kind(authorization, now_ms));
+  if (ac_post_auth != SettingsAuth::Ok) {
+    const char* reason = settings_reason_name(ac_post_auth == SettingsAuth::SessionOnly
+                                                  ? SettingsReason::SessionNotSufficient
+                                                  : SettingsReason::Unauthorized);
+    snprintf(out.body, sizeof out.body,
+             "{\"schema\":1,\"result\":\"rejected\",\"reason\":\"%s\",\"applied\":false,"
+             "\"durable_commit\":false,\"pending\":false,\"shutdown_operational\":false,"
+             "\"readback_present\":false}",
+             reason);
+    out.status = 401;
     return out;
   }
   int schema = 0, ceiling = 0, revision = 0;

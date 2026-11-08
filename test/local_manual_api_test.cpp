@@ -92,8 +92,12 @@ int main() {
 
   const char* save =
       "{\"schema\":1,\"low_percent\":30,\"warning_percent\":18,\"base_revision\":0}";
-  CHECK(api.battery_post(bearer_session, save, json_headers(), 5000).status == 401);
-  CHECK(api.battery_post("API-KEY secret", save, json_headers(), 5000).status == 401);
+  HttpReply session_save = api.battery_post(bearer_session, save, json_headers(), 5000);
+  CHECK(session_save.status == 401);
+  CHECK(strstr(session_save.body, "\"reason\":\"session_not_sufficient\""));
+  CHECK(strstr(session_save.body, "\"applied\":false"));
+  HttpReply api_key = api.battery_post("API-KEY secret", save, json_headers(), 5000);
+  CHECK(api_key.status == 401 && strstr(api_key.body, "\"reason\":\"unauthorized\""));
   HttpReply defaults = api.battery_get(bearer_lan, 4000);
   CHECK(strcmp(defaults.body,
                "{\"schema\":1,\"result\":\"readback\",\"reason\":\"none\",\"applied\":false,"
@@ -136,6 +140,11 @@ int main() {
   CHECK(strstr(ac.body, "\"shutdown_operational\":false"));
   CHECK(strstr(ac.body, "\"ceiling_w\":500"));
   CHECK(strstr(ac.body, "\"total_output_coverage_verified\":false"));
+  HttpReply ac_session = api.ac_post(bearer_session, ceiling, json_headers(), 7000);
+  CHECK(ac_session.status == 401);
+  CHECK(strstr(ac_session.body, "\"reason\":\"session_not_sufficient\""));
+  CHECK(strstr(ac_session.body, "\"applied\":false"));
+  CHECK(strstr(api.ac_get(bearer_session, 7000).body, "\"reason\":\"session_not_sufficient\""));
   HttpReply battery_only = api.battery_post(
       bearer_lan,
       "{\"schema\":1,\"low_percent\":40,\"warning_percent\":20,\"base_revision\":1,\"ceiling_w\":0}",

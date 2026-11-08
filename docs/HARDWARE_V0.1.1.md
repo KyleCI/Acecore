@@ -194,9 +194,7 @@ accuracy. Before any device is updated:
   the output. The boot ROM still samples the pin at reset; that window is not
   claimed to be glitch-free. Whether DSP-off leaves charging and essential
   power intact is not verified.
-- The DS3231 module part is not identified. Confirm its VCC and whether the
-  SDA/SCL pins are 3.3 V. Do not assume 5 V or 3.3 V from the chip name. The
-  ESP32 pins are not 5 V tolerant. Keep the shared ADS1115 bus at 100 kHz.
-- Confirm the backup cell is a CR2032 and that the module does not charge it.
-  Some DS3231 boards trickle-charge the coin cell; that will damage a CR2032.
-  A photo of an older TinyRTC DS1307 board is not evidence for this module.
+- Caleb identified the RTC as a Microscale DS3231 module at 3.3 V, with a
+  non-rechargeable CR2032 and no charging circuit. That is user-confirmed,
+  not a bench measurement, and it does not depend on the old TinyRTC photo.
+  The shared ADS1115 bus stays at 100 kHz. No crystal-accuracy figure is claimed.

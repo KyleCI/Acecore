@@ -151,8 +151,13 @@ On the original profile a registered socket is queued as `RELAY_ON` / `RELAY_OFF
 `/data` with no `Authorization` header stays open for the on-device page.
 A presented bearer must be the saved `lan_token`. A session, `API-KEY`, or
 OTA bearer is HTTP 401. `/events` stays open because a browser EventSource
-cannot send that header. This firmware does not implement `/state` or
-`/relay`.
+cannot send that header. `POST /state` and `POST /relay` are implemented
+and described above. They are not missing.
+
+Battery and AC settings use the same rejection for a login session:
+HTTP 401, `result` `rejected`, `reason` `session_not_sufficient`,
+`applied` false. Missing credentials, `API-KEY`, and an OTA bearer use
+`reason` `unauthorized`. Neither case is a successful Save.
 
 ## Not ported
 
