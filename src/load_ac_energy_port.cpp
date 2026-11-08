@@ -2,29 +2,29 @@
 
 #include "i2c_bus_lock.h"
 #include "load_ac_energy.h"
+#include "load_ac_energy_upload.h"
 #include "original_v01_profile.h"
 
 #include <ESPAsyncWebServer.h>
 #include <SPIFFS.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <string.h>
 #include <time.h>
 
 namespace {
 constexpr const char *kJournalPath = "/load_ac_energy.jrnl";
 constexpr const char *kJournalTmp = "/load_ac_energy.jrnl.tmp";
+constexpr const char *kJournalBak = "/load_ac_energy.jrnl.bak";
 
 class SpiffsStore : public loadac::ByteStore {
  public:
   SpiffsStore() { memset(live_, 0, sizeof(live_)); }
 
   bool load_existing() {
-    if (!SPIFFS.exists(kJournalPath)) return true;
-    File in = SPIFFS.open(kJournalPath, "r");
-    if (!in) return false;
-    size_t n = in.read(live_, sizeof(live_));
-    in.close();
-    return n == sizeof(live_);
+    if (load_file(kJournalPath)) return true;
+    if (load_file(kJournalBak)) return true;
+    return !SPIFFS.exists(kJournalPath) && !SPIFFS.exists(kJournalBak);
   }
 
   bool read(uint32_t offset, uint8_t *dst, uint32_t n) override {
@@ -46,8 +46,16 @@ class SpiffsStore : public loadac::ByteStore {
       reload();
       return false;
     }
-    SPIFFS.remove(kJournalPath);
+    if (SPIFFS.exists(kJournalPath)) {
+      SPIFFS.remove(kJournalBak);
+      if (!SPIFFS.rename(kJournalPath, kJournalBak)) {
+        reload();
+        return false;
+      }
+    }
     if (!SPIFFS.rename(kJournalTmp, kJournalPath) || !matches_file(kJournalPath)) {
+      SPIFFS.remove(kJournalPath);
+      if (SPIFFS.exists(kJournalBak)) SPIFFS.rename(kJournalBak, kJournalPath);
       reload();
       return false;
     }
@@ -59,6 +67,7 @@ class SpiffsStore : public loadac::ByteStore {
     File out = SPIFFS.open(path, "w");
     if (!out) return false;
     size_t n = out.write(live_, sizeof(live_));
+    out.flush();
     out.close();
     return n == sizeof(live_) && matches_file(path);
   }
@@ -82,13 +91,20 @@ class SpiffsStore : public loadac::ByteStore {
     return ok;
   }
 
+  bool load_file(const char *path) {
+    if (!SPIFFS.exists(path)) return false;
+    File in = SPIFFS.open(path, "r");
+    if (!in) return false;
+    size_t n = in.read(live_, sizeof(live_));
+    in.close();
+    return n == sizeof(live_);
+  }
+
   void reload() {
     memset(live_, 0, sizeof(live_));
-    if (!SPIFFS.exists(kJournalPath)) return;
-    File in = SPIFFS.open(kJournalPath, "r");
-    if (!in) return;
-    in.read(live_, sizeof(live_));
-    in.close();
+    if (load_file(kJournalPath)) return;
+    memset(live_, 0, sizeof(live_));
+    load_file(kJournalBak);
   }
 
   uint8_t live_[loadac::kStoreBytes];
@@ -96,6 +112,9 @@ class SpiffsStore : public loadac::ByteStore {
 
 SpiffsStore store;
 loadac::Meter meter;
+loadac::UploadSession upload;
+char upload_frame[loadac::kUploadFrameMax];
+char upload_diag[48];
 loadac::I2cBackoff rtc_backoff;
 bool rtc_wire_ready = false;
 bool rtc_absent_logged = false;
@@ -165,8 +184,18 @@ void poll_rtc() {
 }
 }  // namespace
 
+void note_upload_diag() {
+  const char *diag = upload.diagnostic();
+  if (!diag || strcmp(diag, upload_diag) == 0) return;
+  strncpy(upload_diag, diag, sizeof(upload_diag) - 1);
+  upload_diag[sizeof(upload_diag) - 1] = 0;
+  Serial.printf("[AC] upload %s\n", upload_diag);
+}
+
 void load_ac_energy_begin() {
   memset(&rtc_backoff, 0, sizeof(rtc_backoff));
+  memset(upload_diag, 0, sizeof(upload_diag));
+  upload.reset(millis());
   copy_id(WiFi.macAddress());
   loadac::Stm32Observation observed = loadac::pinned_main_stm32_observation(millis());
   loadac::UnavailableReason why = loadac::UnavailableReason::SourceUnavailable;
@@ -175,8 +204,8 @@ void load_ac_energy_begin() {
   journal_ready = media && meter.begin(store, loadac::default_model());
   if (journal_ready) meter.set_device_id(device_id);
   meter.set_source_blocked(why);
-  Serial.printf("[AC] estimate unavailable (%s). PF assumption %ld millis, model %lu. Transport pending contract.\n",
-                loadac::reason_name(why), (long)loadac::kPfAssumedMillis, (unsigned long)loadac::kModelRevision);
+  Serial.printf("[AC] live estimate blocked (%s). PF assumption %ld millis. Journal upload waits for the commit-backed /ws/device ACK.\n",
+                loadac::reason_name(why), (long)loadac::kPfAssumedMillis);
   if (!journal_ready) Serial.println("[AC] journal was not committed to SPIFFS.");
 }
 
@@ -208,6 +237,40 @@ void load_ac_energy_fill(JsonObject dst, bool include_missing_path) {
 }
 
 void load_ac_energy_fill_brief(JsonObject dst) { load_ac_energy_fill(dst, false); }
+
+void load_ac_energy_socket_link(bool up) {
+  upload.on_link(up, millis());
+  note_upload_diag();
+}
+
+const char *load_ac_energy_socket_arm() {
+  if (!journal_ready) return 0;
+  if (!upload.arm(meter, millis(), upload_frame, sizeof(upload_frame))) {
+    note_upload_diag();
+    return 0;
+  }
+  note_upload_diag();
+  return upload_frame;
+}
+
+void load_ac_energy_socket_sent() {
+  upload.sent(millis());
+  note_upload_diag();
+}
+
+void load_ac_energy_socket_send_failed() {
+  upload.send_failed(millis());
+  note_upload_diag();
+}
+
+void load_ac_energy_socket_text(const uint8_t *payload, size_t length) {
+  static char text[loadac::kUploadFrameMax];
+  if (!journal_ready || !payload || !length || length >= sizeof(text)) return;
+  memcpy(text, payload, length);
+  text[length] = 0;
+  upload.on_text(meter, text, millis());
+  note_upload_diag();
+}
 
 void load_ac_energy_register(AsyncWebServer &server) {
   server.on("/load_ac_energy", HTTP_GET, [](AsyncWebServerRequest *request) {

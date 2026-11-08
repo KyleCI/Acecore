@@ -8,9 +8,25 @@ SHA256 is in that directory's `SHA256SUMS`. The backend applies power factor 0.8
 
 `simulation` is false on collector records. The PHP fixture is synthetic (`simulation` true) and is not written into the journal or `/metrics`.
 
-Identity for acknowledgement is `device_id + stream + meter_epoch + boot_id + seq + clock_correction_version`. The same stored body is a replay and is acknowledged again. A different body for that identity is a conflict and is not stored. HTTP success is not an acknowledgement. The attached files describe that commit-before-ack behavior; they do not include a separate response JSON schema.
+Identity for acknowledgement is `device_id + stream + meter_epoch + boot_id + seq + clock_correction_version`, plus the stored `simulation` flag. The same stored body is a replay and is acknowledged again with the same `record_id`. A different body for that identity is a conflict and is not stored. The journal bytes, power-factor assumption, and identity are not rewritten to get past a conflict.
 
 A new `boot_id` restarts the counter for new records. Bytes already stored in the journal are not rewritten and are not rescaled.
+
+## Device-socket ACK
+
+Backend commit `ab64d033ad4a0c03bde1bb62670e924d9cc460bf` forwards the commit-backed ACK on the existing `/ws/device` socket. The vendored schema, fixture, and socket forwarder are in:
+
+`contracts/upstream/ab64d033ad4a0c03bde1bb62670e924d9cc460bf/`
+
+Pending journal records are sent one at a time as `{"type":"energy_estimate","record":<exact stored object>}`. The wrapper is not written back into the slot. The frame carries no API key and no device secret. The socket keeps the existing `API-KEY` header and `device_id` query; this firmware does not add an authentication policy.
+
+The record is retired only when the text frame is exactly the durable ACK: `status` `success`, `ack` boolean true, `replay` boolean, `contract` `estimate.load_ac_energy.v1`, `stream` `estimate.load_ac_energy`, `record_id` an integer greater than or equal to 1, and the same device, epoch, boot, sequence, clock-correction version, and simulation as the stored body. Retirement flips the slot only after the journal image persists. A failed persist leaves the original slot pending and the same bytes are sent again.
+
+`{"status":"success"}`, an HTTP 200, a negative `ack: false`, `unavailable`, a model or identity conflict, a wrong stream, a non-integer `record_id`, or a malformed frame does not retire the slot. The diagnostic is a short token. The stored object is not dropped, relabeled, or resent under a new identity.
+
+The journal device id remains the 12-hex form already stored in the 16-byte header field. It is not rewritten into the colon-separated MAC used on the socket query. If the backend's authenticated id differs, the expected result is `device_mismatch` and the slot stays pending.
+
+Host tests drive the session with in-memory frames. They do not open a socket and do not call `api.acecore.tech`. The vendored Python forwarder is executed locally against the firmware-emitted 184000 mWh body. This tree does not contain the backend database, so the commit-to-row step of `EnergyEstimateRepository::commitNew` was not run here.
 
 ## Live AC source
 
@@ -18,4 +34,6 @@ Pinned main still has no verified RMS source. `VOUT`/`IOUT` text is only a provi
 
 The receiver no longer pairs an old `VOUT` with a later `IOUT`, does not treat three missed fields or a mutex failure as a real zero, and drops eligibility on boot, mode change, and grid switch. Further source that would still help: the exact `printf` of `VOUT`/`IOUT`, and confirmation that the installed image is banner `PC-CALEB-XFER4`.
 
-Ingest described by the backend notes is `POST /api/telemetry/energy-estimate` or a device message `type` `energy_estimate`, and daily read `GET /api/energy/estimate/daily`. This firmware does not call those routes and does not claim they are deployed.
+The live estimator stays off. `load_ac_energy_poll` does not call `on_sample`, and `MeterStatus.transport_enabled` stays false so a connected socket is not reported as a verified AC source. `SYS GRID` and bypass are not load coverage.
+
+Ingest on the device socket is the `energy_estimate` frame above. This firmware does not call `POST /api/telemetry/energy-estimate` or `GET /api/energy/estimate/daily`, and it does not treat either HTTP status as a durable ACK. The installed STM32 image is still unidentified; the exact `printf` of `VOUT`/`IOUT` and proof that the installed banner is `PC-CALEB-XFER4` are still the missing source.

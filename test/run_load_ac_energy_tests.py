@@ -18,6 +18,7 @@ with tempfile.TemporaryDirectory(prefix="powercell-load-ac-") as directory:
             compiler, "-std=c++11", "-Wall", "-Wextra", "-Werror",
             "-I", str(root / "include"),
             str(root / "src/load_ac_energy.cpp"),
+            str(root / "src/load_ac_energy_upload.cpp"),
             str(root / "src/stm32_text_validity.cpp"),
             str(root / "test/load_ac_energy_test.cpp"),
             "-o", str(binary),
@@ -47,3 +48,8 @@ for index, record in enumerate(wire):
     if record["simulation"] is not False:
         raise SystemExit("device emission must not be marked simulation")
 print(f"emitted records validated against schema: {len(wire)}")
+oracle = pathlib.Path(__file__).resolve().parent / "validate_upload_ack.py"
+spec = importlib.util.spec_from_file_location("upload_ack", oracle)
+ack = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ack)
+ack.check(completed.stdout)

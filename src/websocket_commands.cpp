@@ -143,6 +143,7 @@ void reject(const String &id, const String &kind, const String &target,
 
 void incoming(uint8_t *payload, size_t length) {
   if (!payload || !length || length > MAX_MESSAGE) return;
+  load_ac_energy_socket_text(payload, length);
   JsonDocument doc;
   if (deserializeJson(doc, payload, length) || !doc.is<JsonObject>()) return;
   String type = doc["type"] | "";
@@ -194,14 +195,17 @@ void incoming(uint8_t *payload, size_t length) {
 void event(WStype_t type, uint8_t *payload, size_t length) {
   if (type == WStype_CONNECTED) {
     connected = true;
+    load_ac_energy_socket_link(true);
     Serial.println("[WS] Secure WebSocket connected");
     snapshot(); telemetry();
   } else if (type == WStype_DISCONNECTED) {
     connected = false;
+    load_ac_energy_socket_link(false);
     Serial.println("[WS] Disconnected; reconnect scheduled");
   } else if (type == WStype_TEXT) incoming(payload, length);
   else if (type == WStype_ERROR) {
     connected = false;
+    load_ac_energy_socket_link(false);
     Serial.printf("[WS] Transport/TLS error: %.*s\n", int(length), payload ? reinterpret_cast<char *>(payload) : "");
   }
 }
@@ -226,7 +230,11 @@ void initWebSocketCommands() {
 }
 
 void serviceWebSocketCommands() {
-  if (!initialized || WiFi.status() != WL_CONNECTED) { connected = false; return; }
+  if (!initialized || WiFi.status() != WL_CONNECTED) {
+    if (connected) load_ac_energy_socket_link(false);
+    connected = false;
+    return;
+  }
   if (!started) {
     if (!unixNow()) return;
     String path = String(PATH) + "?device_id=" + urlEncode(WiFi.macAddress());
@@ -245,6 +253,10 @@ void serviceWebSocketCommands() {
   }
   ws.loop();
   if (!connected) return;
+  if (const char *estimate = load_ac_energy_socket_arm()) {
+    if (estimate[0] && strlen(estimate) < MAX_MESSAGE && ws.sendTXT(estimate)) load_ac_energy_socket_sent();
+    else load_ac_energy_socket_send_failed();
+  }
   unsigned long now = millis();
   if (now - lastTelemetry >= 5000) telemetry();
   if (now - lastSnapshot >= 30000) snapshot();

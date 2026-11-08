@@ -953,7 +953,10 @@ bool Meter::note_server_commit_replay(uint32_t boot_id, uint64_t seq, uint32_t c
     char payload[kDefaultSlotBytes];
     memcpy(payload, slot + 20, len);
     payload[len] = 0;
-    if (strcmp(payload, body) != 0 || !strstr(payload, marker)) return false;
+    const char *marked = strstr(payload, marker);
+    if (strcmp(payload, body) != 0 || !marked) return false;
+    char marker_tail = marked[strlen(marker)];
+    if (marker_tail >= '0' && marker_tail <= '9') return false;
     if (slot[0] == 2) return true;
     if (slot[0] != 1) return false;
     slot[0] = 2;

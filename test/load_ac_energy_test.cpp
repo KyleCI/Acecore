@@ -1,4 +1,5 @@
 #include "load_ac_energy.h"
+#include "load_ac_energy_upload.h"
 #include "original_v01_profile.h"
 #include "stm32_text_validity.h"
 
@@ -702,6 +703,399 @@ static void test_retained_pf_is_not_rewritten() {
   CHECK(strstr(after, "184000") == 0);
 }
 
+static bool emit_hour(Meter &meter, MemoryStore &store, char *rec, size_t n) {
+  if (!open_meter(meter, store, test_cfg())) return false;
+  if (!meter.on_sample(sample_at(0, 230000, 1000))) return false;
+  if (!meter.on_sample(sample_at(3600000, 230000, 1000))) return false;
+  if (!meter.flush(3600000)) return false;
+  return meter.record_json(0, rec, (uint32_t)n);
+}
+
+static void plant_slot(MemoryStore &store, uint32_t index, uint64_t seq, uint32_t boot, const char *json) {
+  uint8_t slot[kDefaultSlotBytes];
+  memset(slot, 0, sizeof(slot));
+  uint32_t len = (uint32_t)strlen(json);
+  slot[0] = 1;
+  slot[2] = (uint8_t)len;
+  slot[3] = (uint8_t)(len >> 8);
+  for (int i = 0; i < 8; ++i) slot[8 + i] = (uint8_t)(seq >> (8 * i));
+  for (int i = 0; i < 4; ++i) slot[16 + i] = (uint8_t)(boot >> (8 * i));
+  memcpy(slot + 20, json, len);
+  uint32_t crc = crc32_ieee_bytes(slot + 8, 12 + len);
+  slot[4] = (uint8_t)crc;
+  slot[5] = (uint8_t)(crc >> 8);
+  slot[6] = (uint8_t)(crc >> 16);
+  slot[7] = (uint8_t)(crc >> 24);
+  store.write(kHeaderBytes + index * kDefaultSlotBytes, slot, kDefaultSlotBytes);
+  store.persist();
+}
+
+static bool ack_for(char *dst, size_t cap, const char *body, const char *replay, const char *record_id, const char *clock,
+                    const char *simulation, const char *stream, const char *device) {
+  char dev[40], epoch[24], boot[24], seq[24];
+  if (!json_str(body, "device_id", dev, sizeof(dev))) return false;
+  if (!json_str(body, "meter_epoch", epoch, sizeof(epoch))) return false;
+  if (!json_str(body, "boot_id", boot, sizeof(boot))) return false;
+  if (!json_str(body, "seq", seq, sizeof(seq))) return false;
+  int wrote = snprintf(dst, cap,
+                       "{\"status\":\"success\",\"ack\":true,\"replay\":%s,\"contract\":\"estimate.load_ac_energy.v1\","
+                       "\"stream\":\"%s\",\"record_id\":%s,\"device_id\":\"%s\",\"meter_epoch\":\"%s\",\"boot_id\":\"%s\","
+                       "\"seq\":\"%s\",\"clock_correction_version\":%s,\"simulation\":%s}",
+                       replay, stream, record_id, device ? device : dev, epoch, boot, seq, clock, simulation);
+  return wrote > 0 && (size_t)wrote < cap;
+}
+
+static bool take_frame(UploadSession &up, Meter &meter, uint32_t now, char *frame, size_t cap) {
+  if (!up.arm(meter, now, frame, (uint32_t)cap)) return false;
+  up.sent(now);
+  return true;
+}
+
+static bool frame_wraps(const char *frame, const char *body) {
+  const char *prefix = "{\"type\":\"energy_estimate\",\"record\":";
+  size_t plen = strlen(prefix);
+  size_t blen = strlen(body);
+  if (strncmp(frame, prefix, plen) != 0) return false;
+  if (memcmp(frame + plen, body, blen) != 0) return false;
+  return frame[plen + blen] == '}' && frame[plen + blen + 1] == 0;
+}
+
+static void test_socket_ack_184000() {
+  MemoryStore store;
+  Meter meter;
+  char body[kDefaultSlotBytes];
+  CHECK(emit_hour(meter, store, body, sizeof(body)));
+  uint64_t mwh = 0;
+  int32_t pf = 0;
+  bool simulation = true;
+  CHECK(json_u64(body, "interval_estimated_mwh", &mwh) && mwh == 184000);
+  CHECK(json_i32(body, "pf_assumed_millis", &pf) && pf == 800);
+  CHECK(json_bool(body, "simulation", &simulation) && !simulation);
+  CHECK(!meter.note_http_success(meter.status().boot_id, 1));
+  CHECK(!meter.note_server_commit(meter.status().boot_id, 1));
+  CHECK(meter.http_success_kept(meter.status().boot_id, 1));
+
+  const char *legacy = "{\"interval_estimated_mwh\":\"230000\",\"pf_assumed_millis\":1000,\"model_revision\":\"1\"}";
+  plant_slot(store, 1, 0, 1, legacy);
+  char legacy_now[200];
+  CHECK(meter.record_json(0, legacy_now, sizeof(legacy_now)));
+  CHECK(strcmp(legacy_now, legacy) == 0);
+
+  UploadSession up;
+  up.on_link(true, 1000);
+  char frame[2048];
+  CHECK(take_frame(up, meter, 1000, frame, sizeof(frame)));
+  CHECK(frame_wraps(frame, body));
+  CHECK(strstr(frame, "\"api_key\"") == 0);
+  CHECK(strstr(frame, "device_secret") == 0);
+  printf("UPLOADFRAME %s\n", frame);
+  char saved_frame[2048];
+  memcpy(saved_frame, frame, sizeof(saved_frame));
+
+  char ack[1024];
+  char dev[40], epoch[24], boot[24], seq[24];
+  CHECK(json_str(body, "device_id", dev, sizeof(dev)));
+  CHECK(json_str(body, "meter_epoch", epoch, sizeof(epoch)));
+  CHECK(json_str(body, "boot_id", boot, sizeof(boot)));
+  CHECK(json_str(body, "seq", seq, sizeof(seq)));
+  int spaced = snprintf(ack, sizeof(ack),
+                        "{ \"status\" : \"success\" , \"ack\" : true , \"replay\" : false , "
+                        "\"contract\" : \"estimate.load_ac_energy.v1\" , \"stream\" : \"estimate.load_ac_energy\" , "
+                        "\"record_id\" : 29 , \"device_id\" : \"%s\" , \"meter_epoch\" : \"%s\" , "
+                        "\"boot_id\" : \"%s\" , \"seq\" : \"%s\" , \"clock_correction_version\" : 0 , "
+                        "\"simulation\" : false }",
+                        dev, epoch, boot, seq);
+  CHECK(spaced > 0);
+  up.on_text(meter, "{\"status\":\"success\"}", 1000);
+  CHECK(up.inflight());
+  CHECK(meter.http_success_kept(meter.status().boot_id, 1));
+  up.on_text(meter, "{", 1100);
+  CHECK(up.inflight());
+  CHECK(strcmp(up.diagnostic(), "malformed") == 0);
+  up.on_text(meter, ack, 1200);
+  CHECK(!up.inflight());
+  CHECK(strcmp(up.diagnostic(), "retired") == 0);
+  CHECK(up.last_record_id() == 29);
+  CHECK(!meter.http_success_kept(meter.status().boot_id, 1));
+  CHECK(meter.status().persisted_mwh == 184000);
+  CHECK(meter.status().pf_assumed_millis == 800);
+  char still_legacy[200];
+  CHECK(meter.record_json(0, still_legacy, sizeof(still_legacy)));
+  CHECK(strcmp(still_legacy, legacy) == 0);
+  CHECK(!meter.record_json(1, still_legacy, sizeof(still_legacy)));
+  uint8_t retired[kDefaultSlotBytes];
+  CHECK(store.read(kHeaderBytes, retired, sizeof(retired)));
+  CHECK(retired[0] == 2);
+  uint32_t rlen = (uint32_t)retired[2] | ((uint32_t)retired[3] << 8);
+  CHECK(rlen == strlen(body));
+  CHECK(memcmp(retired + 20, body, rlen) == 0);
+  up.on_text(meter, ack, 1300);
+  CHECK(strcmp(up.diagnostic(), "retired") == 0);
+  uint8_t retired_again[kDefaultSlotBytes];
+  CHECK(store.read(kHeaderBytes, retired_again, sizeof(retired_again)));
+  CHECK(memcmp(retired_again, retired, sizeof(retired)) == 0);
+
+  MemoryStore replay_store;
+  Meter replay_meter;
+  char replay_body[kDefaultSlotBytes];
+  CHECK(emit_hour(replay_meter, replay_store, replay_body, sizeof(replay_body)));
+  UploadSession replay;
+  replay.on_link(true, 0);
+  CHECK(take_frame(replay, replay_meter, 0, frame, sizeof(frame)));
+  CHECK(frame_wraps(frame, replay_body));
+  replay.on_link(false, 50);
+  CHECK(strcmp(replay.diagnostic(), "disconnected") == 0);
+  CHECK(!replay.inflight());
+  CHECK(replay_meter.http_success_kept(replay_meter.status().boot_id, 1));
+  replay.on_link(true, 50);
+  char retry[2048];
+  CHECK(take_frame(replay, replay_meter, 50, retry, sizeof(retry)));
+  CHECK(strcmp(retry, frame) == 0);
+  CHECK(ack_for(ack, sizeof(ack), replay_body, "true", "29", "0", "false", kStream, 0));
+  replay.on_text(replay_meter, ack, 60);
+  CHECK(strcmp(replay.diagnostic(), "retired") == 0);
+  CHECK(replay.last_record_id() == 29);
+  CHECK(!replay_meter.http_success_kept(replay_meter.status().boot_id, 1));
+  CHECK(replay_meter.status().persisted_mwh == 184000);
+}
+
+static void relink(UploadSession &up, uint32_t now) {
+  up.reset(now);
+  up.on_link(true, now);
+}
+
+static void test_socket_ack_rejections_keep_bytes() {
+  MemoryStore store;
+  Meter meter;
+  char body[kDefaultSlotBytes];
+  CHECK(emit_hour(meter, store, body, sizeof(body)));
+  char frozen[kDefaultSlotBytes];
+  memcpy(frozen, body, sizeof(frozen));
+  UploadSession up;
+  up.on_link(true, 0);
+  char frame[2048];
+  char first_frame[2048];
+  CHECK(take_frame(up, meter, 0, frame, sizeof(frame)));
+  memcpy(first_frame, frame, sizeof(first_frame));
+  char dev[40], epoch[24], boot[24], seq[24];
+  CHECK(json_str(body, "device_id", dev, sizeof(dev)));
+  CHECK(json_str(body, "meter_epoch", epoch, sizeof(epoch)));
+  CHECK(json_str(body, "boot_id", boot, sizeof(boot)));
+  CHECK(json_str(body, "seq", seq, sizeof(seq)));
+
+  char bad[1400];
+  const char *cases[] = {
+      "{\"status\":\"success\",\"ack\":true,\"replay\":false,\"contract\":\"estimate.load_ac_energy.v1\","
+      "\"stream\":\"estimate.load_ac_energy\",\"record_id\":\"29\",\"device_id\":\"%s\",\"meter_epoch\":\"%s\","
+      "\"boot_id\":\"%s\",\"seq\":\"%s\",\"clock_correction_version\":0,\"simulation\":false}",
+      "{\"status\":\"success\",\"ack\":true,\"replay\":false,\"contract\":\"estimate.load_ac_energy.v1\","
+      "\"stream\":\"estimate.load_ac_energy\",\"record_id\":0,\"device_id\":\"%s\",\"meter_epoch\":\"%s\","
+      "\"boot_id\":\"%s\",\"seq\":\"%s\",\"clock_correction_version\":0,\"simulation\":false}",
+      "{\"status\":\"success\",\"ack\":true,\"replay\":false,\"contract\":\"estimate.load_ac_energy.v1\","
+      "\"stream\":\"measured.load_ac_energy\",\"record_id\":29,\"device_id\":\"%s\",\"meter_epoch\":\"%s\","
+      "\"boot_id\":\"%s\",\"seq\":\"%s\",\"clock_correction_version\":0,\"simulation\":false}",
+      "{\"status\":\"success\",\"ack\":true,\"replay\":false,\"contract\":\"estimate.load_ac_energy.v1\","
+      "\"stream\":\"estimate.load_ac_energy\",\"record_id\":true,\"device_id\":\"%s\",\"meter_epoch\":\"%s\","
+      "\"boot_id\":\"%s\",\"seq\":\"%s\",\"clock_correction_version\":0,\"simulation\":false}",
+      "{\"status\":\"success\",\"ack\":true,\"replay\":false,\"contract\":\"estimate.load_ac_energy.v1\","
+      "\"stream\":\"estimate.load_ac_energy\",\"record_id\":29,\"device_id\":\"%s\",\"meter_epoch\":\"%s\","
+      "\"boot_id\":\"%s\",\"seq\":\"%s\",\"clock_correction_version\":true,\"simulation\":false}",
+      "{\"status\":\"success\",\"ack\":true,\"replay\":false,\"contract\":\"estimate.load_ac_energy.v1\","
+      "\"stream\":\"estimate.load_ac_energy\",\"record_id\":29,\"device_id\":\"%s\",\"meter_epoch\":\"%s\","
+      "\"boot_id\":\"%s\",\"seq\":\"%s\",\"clock_correction_version\":0,\"simulation\":false,\"api_key\":\"no\"}",
+  };
+  for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    relink(up, 1000u * (i + 1));
+    CHECK(take_frame(up, meter, 1000u * (i + 1), frame, sizeof(frame)));
+    CHECK(strcmp(frame, first_frame) == 0);
+    snprintf(bad, sizeof(bad), cases[i], dev, epoch, boot, seq);
+    up.on_text(meter, bad, 1000u * (i + 1) + 1);
+    CHECK(strcmp(up.diagnostic(), "not_durable") == 0);
+    CHECK(meter.http_success_kept(1, 1));
+    CHECK(meter.record_json(0, body, sizeof(body)));
+    CHECK(strcmp(body, frozen) == 0);
+  }
+
+  relink(up, 20000);
+  CHECK(take_frame(up, meter, 20000, frame, sizeof(frame)));
+  CHECK(ack_for(bad, sizeof(bad), frozen, "false", "29", "1", "false", kStream, 0));
+  up.on_text(meter, bad, 20001);
+  CHECK(strcmp(up.diagnostic(), "identity_mismatch") == 0);
+  CHECK(meter.http_success_kept(1, 1));
+  relink(up, 21000);
+  CHECK(take_frame(up, meter, 21000, frame, sizeof(frame)));
+  CHECK(ack_for(bad, sizeof(bad), frozen, "false", "29", "0", "true", kStream, 0));
+  up.on_text(meter, bad, 21001);
+  CHECK(strcmp(up.diagnostic(), "identity_mismatch") == 0);
+  CHECK(meter.record_json(0, body, sizeof(body)) && strcmp(body, frozen) == 0);
+
+  relink(up, 22000);
+  CHECK(take_frame(up, meter, 22000, frame, sizeof(frame)));
+  up.on_text(meter, "{\"status\":\"success\"}", 22001);
+  CHECK(up.inflight());
+  CHECK(meter.http_success_kept(1, 1));
+  snprintf(bad, sizeof(bad),
+           "{\"status\":\"error\",\"ack\":false,\"error\":\"conflicting_duplicate\","
+           "\"message\":\"The same identity was already stored with a different record.\","
+           "\"contract\":\"estimate.load_ac_energy.v1\",\"stream\":\"estimate.load_ac_energy\","
+           "\"device_id\":\"%s\",\"meter_epoch\":\"%s\",\"boot_id\":\"%s\",\"seq\":\"%s\",\"clock_correction_version\":0}",
+           dev, epoch, boot, seq);
+  up.on_text(meter, bad, 22002);
+  CHECK(strcmp(up.diagnostic(), "conflicting_duplicate") == 0);
+  CHECK(!up.inflight());
+  CHECK(!take_frame(up, meter, 22002 + kUploadRetryMinMs - 1, frame, sizeof(frame)));
+  CHECK(take_frame(up, meter, 22002 + kUploadRetryMinMs, frame, sizeof(frame)));
+  CHECK(strcmp(frame, first_frame) == 0);
+  int32_t pf = 0;
+  uint64_t mwh = 0;
+  CHECK(meter.record_json(0, body, sizeof(body)) && strcmp(body, frozen) == 0);
+  CHECK(json_u64(body, "interval_estimated_mwh", &mwh) && mwh == 184000);
+  CHECK(json_i32(body, "pf_assumed_millis", &pf) && pf == 800);
+  CHECK(!meter.set_pf_assumed(500, 3600000));
+
+  snprintf(bad, sizeof(bad),
+           "{\"status\":\"error\",\"ack\":false,\"error\":\"model_pf\",\"message\":\"estimate.load_ac_energy.v1 assumes PF 0.800.\","
+           "\"contract\":\"estimate.load_ac_energy.v1\",\"stream\":\"estimate.load_ac_energy\"}");
+  up.on_text(meter, bad, 23000 + kUploadRetryMinMs);
+  CHECK(strcmp(up.diagnostic(), "model_pf") == 0);
+  CHECK(meter.record_json(0, body, sizeof(body)) && strcmp(body, frozen) == 0);
+
+  relink(up, 40000);
+  CHECK(take_frame(up, meter, 40000, frame, sizeof(frame)));
+  snprintf(bad, sizeof(bad),
+           "{\"status\":\"error\",\"ack\":false,\"error\":\"unavailable\",\"message\":\"Estimate was not saved.\","
+           "\"contract\":\"estimate.load_ac_energy.v1\",\"stream\":\"estimate.load_ac_energy\"}");
+  up.on_text(meter, bad, 40001);
+  CHECK(strcmp(up.diagnostic(), "unavailable") == 0);
+  CHECK(meter.http_success_kept(1, 1));
+  CHECK(strcmp(frame, first_frame) == 0);
+
+  relink(up, 41000);
+  CHECK(take_frame(up, meter, 41000, frame, sizeof(frame)));
+  snprintf(bad, sizeof(bad),
+           "{\"status\":\"error\",\"ack\":false,\"error\":\"device_mismatch\","
+           "\"message\":\"device_id does not match the authenticated device.\","
+           "\"contract\":\"estimate.load_ac_energy.v1\",\"stream\":\"estimate.load_ac_energy\","
+           "\"device_id\":\"%s\",\"seq\":\"9\"}",
+           dev);
+  up.on_text(meter, bad, 41001);
+  CHECK(up.inflight());
+  CHECK(meter.http_success_kept(1, 1));
+  up.on_text(meter, "{\"status\":\"success\",\"ack\":1}", 41002);
+  CHECK(meter.http_success_kept(1, 1));
+  CHECK(!up.arm(meter, 41000 + kAckWaitMs - 1, frame, sizeof(frame)));
+  CHECK(up.inflight());
+  CHECK(!up.arm(meter, 41000 + kAckWaitMs, frame, sizeof(frame)));
+  CHECK(!up.inflight());
+  CHECK(strcmp(up.diagnostic(), "ack_timeout") == 0);
+  CHECK(meter.record_json(0, body, sizeof(body)) && strcmp(body, frozen) == 0);
+
+  up.reset(42000);
+  CHECK(strcmp(up.diagnostic(), "reset") == 0);
+  CHECK(!up.inflight());
+  CHECK(meter.record_json(0, body, sizeof(body)) && strcmp(body, frozen) == 0);
+  CHECK(meter.status().persisted_mwh == 184000);
+  CHECK(!meter.status().transport_enabled);
+}
+
+static void test_socket_ack_persist_and_queue() {
+  MemoryStore store;
+  Meter meter;
+  char first[kDefaultSlotBytes];
+  CHECK(emit_hour(meter, store, first, sizeof(first)));
+  uint8_t torn = 2;
+  CHECK(store.write(kHeaderBytes, &torn, 1));
+  MemoryStore durable;
+  store.clone_durable(durable);
+  Meter rebooted;
+  CHECK(rebooted.begin(durable, test_cfg()));
+  char after_power[kDefaultSlotBytes];
+  CHECK(rebooted.record_json(0, after_power, sizeof(after_power)));
+  CHECK(strcmp(after_power, first) == 0);
+  CHECK(rebooted.status().pf_assumed_millis == 800);
+
+  MemoryStore cut;
+  Meter cutting;
+  char body[kDefaultSlotBytes];
+  CHECK(emit_hour(cutting, cut, body, sizeof(body)));
+  UploadSession up;
+  up.on_link(true, 0);
+  char frame[2048];
+  CHECK(take_frame(up, cutting, 0, frame, sizeof(frame)));
+  char ack[1024];
+  CHECK(ack_for(ack, sizeof(ack), body, "false", "41", "0", "false", kStream, 0));
+  cut.fail_next_persists(1);
+  up.on_text(cutting, ack, 5);
+  CHECK(strcmp(up.diagnostic(), "retire_not_durable") == 0);
+  CHECK(cutting.http_success_kept(1, 1));
+  char kept[kDefaultSlotBytes];
+  CHECK(cutting.record_json(0, kept, sizeof(kept)));
+  CHECK(strcmp(kept, body) == 0);
+  CHECK(take_frame(up, cutting, 5 + kUploadRetryMinMs, frame, sizeof(frame)));
+  CHECK(frame_wraps(frame, body));
+  up.on_text(cutting, ack, 6 + kUploadRetryMinMs);
+  CHECK(strcmp(up.diagnostic(), "retired") == 0);
+  CHECK(up.last_record_id() == 41);
+  CHECK(!cutting.http_success_kept(1, 1));
+
+  MemoryStore queued;
+  Meter queue;
+  CHECK(open_meter(queue, queued, test_cfg()));
+  CHECK(queue.on_sample(sample_at(0, 230000, 1000)));
+  CHECK(queue.on_sample(sample_at(3600000, 230000, 1000)));
+  CHECK(queue.flush(3600000));
+  CHECK(queue.on_sample(sample_at(3600000, 230000, 1000)));
+  CHECK(queue.on_sample(sample_at(7200000, 230000, 1000)));
+  CHECK(queue.flush(7200000));
+  char a[kDefaultSlotBytes], b[kDefaultSlotBytes], b_frozen[kDefaultSlotBytes];
+  CHECK(queue.record_json(0, a, sizeof(a)));
+  CHECK(queue.record_json(1, b, sizeof(b)));
+  memcpy(b_frozen, b, sizeof(b_frozen));
+  uint64_t seq = 0;
+  CHECK(json_u64(a, "seq", &seq) && seq == 1);
+  CHECK(json_u64(b, "seq", &seq) && seq == 2);
+  UploadSession qu;
+  qu.on_link(true, 0);
+  CHECK(take_frame(qu, queue, 0, frame, sizeof(frame)));
+  CHECK(frame_wraps(frame, a));
+  CHECK(ack_for(ack, sizeof(ack), b, "false", "8", "0", "false", kStream, 0));
+  qu.on_text(queue, ack, 1);
+  CHECK(strcmp(qu.diagnostic(), "identity_mismatch") == 0);
+  CHECK(queue.record_json(0, a, sizeof(a)));
+  CHECK(queue.record_json(1, b, sizeof(b)));
+  CHECK(strcmp(b, b_frozen) == 0);
+  CHECK(ack_for(ack, sizeof(ack), a, "false", "7", "0", "false", kStream, 0));
+  CHECK(take_frame(qu, queue, 1 + kUploadRetryMinMs, frame, sizeof(frame)));
+  qu.on_text(queue, ack, 2 + kUploadRetryMinMs);
+  CHECK(strcmp(qu.diagnostic(), "retired") == 0);
+  CHECK(queue.record_json(0, b, sizeof(b)));
+  CHECK(strcmp(b, b_frozen) == 0);
+  CHECK(!queue.record_json(1, b, sizeof(b)));
+
+  UploadSession idle;
+  CHECK(idle.arm(queue, 0, frame, sizeof(frame)) == false);
+  idle.on_link(true, 3 + kUploadRetryMinMs);
+  CHECK(take_frame(idle, queue, 3 + kUploadRetryMinMs, frame, sizeof(frame)));
+  idle.send_failed(4 + kUploadRetryMinMs);
+  CHECK(strcmp(idle.diagnostic(), "send_failed") == 0);
+  CHECK(queue.record_json(0, b, sizeof(b)));
+  CHECK(strcmp(b, b_frozen) == 0);
+
+  const char *versioned = "{\"clock_correction_version\":10,\"kept\":1}";
+  MemoryStore versions;
+  Meter version_meter;
+  CHECK(open_meter(version_meter, versions, test_cfg()));
+  plant_slot(versions, 0, 9, 3, versioned);
+  CHECK(!version_meter.note_server_commit_replay(3, 9, 1, versioned));
+  CHECK(version_meter.http_success_kept(3, 9));
+  CHECK(version_meter.note_server_commit_replay(3, 9, 10, versioned));
+  CHECK(!version_meter.http_success_kept(3, 9));
+  uint8_t slot[kDefaultSlotBytes];
+  CHECK(versions.read(kHeaderBytes, slot, sizeof(slot)));
+  CHECK(slot[0] == 2);
+  CHECK(memcmp(slot + 20, versioned, strlen(versioned)) == 0);
+}
+
 int main() {
   test_crc_and_calendar();
   test_ds1307_and_backoff();
@@ -713,6 +1107,9 @@ int main() {
   test_time_midnight_and_replay_identity();
   test_text_validity_boundary();
   test_retained_pf_is_not_rewritten();
+  test_socket_ack_184000();
+  test_socket_ack_rejections_keep_bytes();
+  test_socket_ack_persist_and_queue();
   printf("load_ac_energy tests: pass=%d fail=%d\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

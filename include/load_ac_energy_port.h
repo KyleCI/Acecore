@@ -11,3 +11,10 @@ void load_ac_energy_poll();
 void load_ac_energy_register(AsyncWebServer &server);
 void load_ac_energy_fill(JsonObject dst, bool include_missing_path);
 void load_ac_energy_fill_brief(JsonObject dst);
+
+// Existing /ws/device session. These do not open a socket and do not add credentials.
+void load_ac_energy_socket_link(bool up);
+const char *load_ac_energy_socket_arm();
+void load_ac_energy_socket_sent();
+void load_ac_energy_socket_send_failed();
+void load_ac_energy_socket_text(const uint8_t *payload, size_t length);
