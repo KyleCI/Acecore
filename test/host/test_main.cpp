@@ -753,8 +753,66 @@ static void test_time_policy() {
   CHECK(judge(T, T - 3600, Source::Ntp, false) == Verdict::Accept);  // NTP stale (offline > 2 h)
   CHECK(judge(T, T - 10, Source::Ntp, false) == Verdict::InSync);
   CHECK(judge(1600000000, 0, Source::None, false) == Verdict::Invalid);
+  CHECK(judge(T, T - 30, Source::Rtc, false) == Verdict::InSync);   // coherent RTC is a clock, not a signing source
+  CHECK(judge(T, T + 61, Source::Rtc, false) == Verdict::Accept);
   CHECK(validTz(60) && validTz(-720) && validTz(840) && !validTz(841) && kTzDefault == 60);
   CHECK(!strcmp(verdictName(Verdict::NtpAuthoritative), "ntp_authoritative"));
+  CHECK(!strcmp(sourceName(Source::Rtc), "rtc"));
+}
+
+#include "ds3231_time.h"
+#include "lagos_time.h"
+#include <string.h>
+static uint8_t rtc_bcd(int v) { return static_cast<uint8_t>(((v / 10) << 4) | (v % 10)); }
+static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int s, uint8_t hours_extra,
+                     uint8_t month_extra, uint8_t status) {
+  memset(frame, 0, 16);
+  frame[0] = rtc_bcd(s);
+  frame[1] = rtc_bcd(mi);
+  frame[2] = static_cast<uint8_t>(rtc_bcd(h) | hours_extra);
+  frame[3] = 1;
+  frame[4] = rtc_bcd(d);
+  frame[5] = static_cast<uint8_t>(rtc_bcd(mo) | month_extra);
+  frame[6] = rtc_bcd(y % 100);
+  frame[0x0E] = powercell::kDs3231ControlRun;
+  frame[0x0F] = status;
+}
+static void test_ds3231() {
+  using namespace powercell;
+  uint8_t a[16], b[16];
+  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0, 0, 0);
+  put_rtc(b, 2024, 2, 29, 12, 0, 1, 0, 0, 0);
+  RtcReading ok = ds3231_decode_pair(a, b);
+  CHECK(ok.status == RtcStatus::Unanchored && !ok.oscillator_stopped && ok.battery_oscillator_enabled);
+  CHECK(ok.unix_utc == unix_from_utc(2024, 2, 29, 12, 0, 1));
+  a[0x0F] = 0x80;
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::OscillatorStopped);
+  CHECK(ds3231_decode_pair(a, b).unix_utc == 0);
+  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0, 0, 0);
+  a[0] = static_cast<uint8_t>(a[0] | 0x80);
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::BadRegister);
+  put_rtc(a, 2023, 2, 29, 12, 0, 0, 0, 0, 0);
+  put_rtc(b, 2023, 2, 29, 12, 0, 0, 0, 0, 0);
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::BadCalendar);
+  put_rtc(a, 2024, 2, 29, 12, 0, 0, 0, 0, 0);
+  put_rtc(b, 2024, 2, 29, 12, 0, 20, 0, 0, 0);
+  CHECK(ds3231_decode_pair(a, b).status == RtcStatus::Incoherent);
+  uint8_t encoded[7], control = 0, status = 0;
+  const int64_t stamp = unix_from_utc(2026, 11, 8, 20, 45, 0);
+  CHECK(ds3231_encode(stamp, encoded, &control, &status));
+  CHECK(control == kDs3231ControlRun && status == kDs3231StatusClear && (encoded[2] & 0x40) == 0);
+  uint8_t programmed[16];
+  memset(programmed, 0, sizeof programmed);
+  memcpy(programmed, encoded, 7);
+  programmed[0x0E] = control;
+  programmed[0x0F] = status;
+  CHECK(ds3231_readback_matches(ds3231_decode(programmed), stamp));
+  programmed[0x0F] = 0x80;
+  CHECK(!ds3231_readback_matches(ds3231_decode(programmed), stamp));
+  CHECK(!ds3231_encode(0, encoded, &control, &status));
+  CHECK(qualify_boot_clock(true, false, false) == ClockQuality::Invalid);
+  CHECK(qualify_boot_clock(false, true, false) == ClockQuality::RtcUnanchored);
+  CHECK(qualify_boot_clock(true, true, true) == ClockQuality::Anchored);
 }
 
 #include "socket_rules.h"
@@ -1071,7 +1129,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy();
+  test_time_policy(); test_ds3231();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();

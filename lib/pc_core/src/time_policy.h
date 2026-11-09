@@ -6,7 +6,7 @@
 // came from NTP and NTP synced within the last 2 h, phone time is refused.
 namespace pc {
 namespace clk {
-enum class Source : uint8_t { None, Nvs, Phone, Ntp };
+enum class Source : uint8_t { None, Nvs, Phone, Ntp, Rtc };
 enum class Verdict : uint8_t { Accept, InSync, NtpAuthoritative, Invalid };
 constexpr int64_t kMinEpoch = 1700000000, kMaxEpoch = 4102444800LL;  // 2023-11 .. 2100
 constexpr int kTzMin = -720, kTzMax = 840, kTzDefault = 60;          // minutes; default WAT +60
@@ -26,7 +26,7 @@ inline const char *verdictName(Verdict v) {
     case Verdict::NtpAuthoritative: return "ntp_authoritative"; default: return "invalid_epoch"; }
 }
 inline const char *sourceName(Source s) {
-  switch (s) { case Source::Nvs: return "nvs"; case Source::Phone: return "phone"; case Source::Ntp: return "ntp"; default: return "none"; }
+  switch (s) { case Source::Nvs: return "nvs"; case Source::Phone: return "phone"; case Source::Ntp: return "ntp"; case Source::Rtc: return "rtc"; default: return "none"; }
 }
 }  // namespace clk
 }  // namespace pc

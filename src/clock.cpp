@@ -1,5 +1,6 @@
 #include "prefs_safe.h"
 #include "clock.h"
+#include "hw_rtc.h"
 #include <Arduino.h>
 #include <Preferences.h>
 #include <esp_sntp.h>
@@ -15,14 +16,27 @@ volatile Source g_src = Source::None;
 volatile uint32_t g_ntpAt = 0; volatile bool g_ntpEver = false;
 int g_tz = kTzDefault;
 uint32_t g_lastSave = 0;
+const char *g_rtc = "not_fitted";
+bool g_nvsPersisted = false;
 int64_t nowS() { return (int64_t)time(nullptr); }
 void setNow(int64_t e) { timeval tv{(time_t)e, 0}; settimeofday(&tv, nullptr); }
-void save() {
+bool save() {
   int64_t n = nowS();
-  if (n < kMinEpoch || (g_src != Source::Ntp && g_src != Source::Phone)) return;  // only good time
-  Preferences p; if (p.begin(NS, false)) { p.putLong64("last", n); p.end(); }
+  if (n < kMinEpoch || (g_src != Source::Ntp && g_src != Source::Phone)) return false;  // only good time
+  Preferences p;
+  if (!p.begin(NS, false)) return false;
+  p.putLong64("last", n);
+  p.end();
+  return true;
 }
-void onNtp(struct timeval *) { g_src = Source::Ntp; g_ntpAt = millis(); g_ntpEver = true; }
+void onNtp(struct timeval *tv) {
+  g_src = Source::Ntp; g_ntpAt = millis(); g_ntpEver = true;
+#if POWERCELL_HW_V011
+  if (tv && (int64_t)tv->tv_sec >= kMinEpoch && (int64_t)tv->tv_sec <= kMaxEpoch) hwRtcWrite((int64_t)tv->tv_sec);
+#else
+  (void)tv;
+#endif
+}
 bool ntpFresh() { return g_ntpEver && millis() - g_ntpAt < kNtpFreshMs; }
 }  // namespace
 
@@ -36,6 +50,12 @@ void begin() {
     setNow(last); g_src = Source::Nvs;
     LOGI("CLOCK", "NVS_RESTORE", "last good time %lld (stale by the downtime)", (long long)last);
   }
+#if POWERCELL_HW_V011
+  int64_t rtc = 0;
+  if (hwRtcBegin(&rtc) && rtc >= kMinEpoch && rtc <= kMaxEpoch) {
+    setNow(rtc); g_src = Source::Rtc;  // coherent, unanchored: not a signing clock
+  }
+#endif
 }
 
 void service() {
@@ -46,13 +66,22 @@ void service() {
 }
 
 Verdict setFromPhone(int64_t epoch, bool hasTz, long tz) {
+  g_rtc = "not_written";
+  g_nvsPersisted = false;
   if (hasTz && validTz(tz) && tz != g_tz) {
-    g_tz = (int)tz; Preferences p; if (p.begin(NS, false)) { p.putInt("tz", g_tz); p.end(); }
+    g_tz = (int)tz;
+    Preferences p;
+    if (p.begin(NS, false)) { p.putInt("tz", g_tz); p.end(); g_nvsPersisted = true; }
   }
   Verdict v = judge(epoch, nowS(), g_src, ntpFresh());
   if (v == Verdict::Accept) {
     LOGI("CLOCK", "PHONE_SET", "epoch=%lld was=%lld src=%s", (long long)epoch, (long long)nowS(), sourceName(g_src));
-    setNow(epoch); g_src = Source::Phone; save(); g_lastSave = millis();
+    setNow(epoch); g_src = Source::Phone; g_nvsPersisted = save(); g_lastSave = millis();
+#if POWERCELL_HW_V011
+    g_rtc = hwRtcWrite(epoch) ? "persisted" : "failed";
+#else
+    g_rtc = "not_fitted";
+#endif
   }
   return v;
 }
@@ -66,5 +95,7 @@ void toJson(JsonObject o) {
   o["tz_offset_min"] = g_tz;
   o["source"] = sourceName(g_src);
   o["ntp_fresh"] = ntpFresh();
+  o["rtc"] = g_rtc;
+  o["nvs_persisted"] = g_nvsPersisted;
 }
 }  // namespace clock_

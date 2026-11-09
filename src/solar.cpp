@@ -1,4 +1,5 @@
 #include "solar.h"
+#include "i2c_bus.h"
 #include <Wire.h>
 #include <time.h>
 #include <esp_log.h>
@@ -59,16 +60,39 @@ void energyStep(bool ok, float powerW) {
 }
 
 bool writeReg(uint8_t reg, uint16_t v) {
+#if POWERCELL_HW_V011
+  if (!i2c_bus_lock(I2C_TIMEOUT_MS)) return false;
+#endif
   Wire.beginTransmission(ADDR);
   Wire.write(reg); Wire.write(uint8_t(v >> 8)); Wire.write(uint8_t(v));
-  return Wire.endTransmission() == 0;
+  bool ok = Wire.endTransmission() == 0;
+#if POWERCELL_HW_V011
+  i2c_bus_unlock();
+#endif
+  return ok;
 }
 bool readReg(uint8_t reg, uint16_t &v) {
+#if POWERCELL_HW_V011
+  if (!i2c_bus_lock(I2C_TIMEOUT_MS)) return false;
+#endif
   Wire.beginTransmission(ADDR);
   Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom(ADDR, (uint8_t)2) != 2) return false;
+  if (Wire.endTransmission(false) != 0) {
+#if POWERCELL_HW_V011
+    i2c_bus_unlock();
+#endif
+    return false;
+  }
+  if (Wire.requestFrom(ADDR, (uint8_t)2) != 2) {
+#if POWERCELL_HW_V011
+    i2c_bus_unlock();
+#endif
+    return false;
+  }
   v = uint16_t(Wire.read()) << 8; v |= uint8_t(Wire.read());
+#if POWERCELL_HW_V011
+  i2c_bus_unlock();
+#endif
   return true;
 }
 // One conversion: start, wait (128 SPS = 7.8 ms), poll OS bit at most 3 times.
@@ -140,6 +164,7 @@ void begin() {
   esp_log_level_set("Wire", ESP_LOG_NONE);
   esp_log_level_set("i2c", ESP_LOG_NONE);
   esp_log_level_set("i2c.master", ESP_LOG_NONE);
+  i2c_bus_init();
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   Wire.setTimeOut(I2C_TIMEOUT_MS);
   Wire.beginTransmission(ADDR);
