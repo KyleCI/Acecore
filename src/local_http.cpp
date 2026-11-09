@@ -321,6 +321,55 @@ void manualRegister(AsyncWebServer& server) {
     powercell::HttpReply reply = api.rating_post(auth.c_str(), json, headersOf(request), millis());
     sendReply(request, reply);
   }, nullptr, onBody);
+  server.on("/v2/wifi/scan", HTTP_POST, [](AsyncWebServerRequest* request) {
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    sendReply(request, api.wifi_scan(auth.c_str(), millis()));
+  });
+  server.on("/v2/wifi/test", HTTP_POST, [](AsyncWebServerRequest* request) {
+    Body* stored = static_cast<Body*>(request->_tempObject);
+    const char* json = stored ? stored->data : "";
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    sendReply(request, api.wifi_test(auth.c_str(), json, headersOf(request), millis()));
+  }, nullptr, onBody);
+  server.on("/v2/wifi/status", HTTP_GET, [](AsyncWebServerRequest* request) {
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    sendReply(request, api.wifi_status(auth.c_str(), millis()));
+  });
+  server.on("/v2/wifi/save", HTTP_POST, [](AsyncWebServerRequest* request) {
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    powercell::HttpReply reply = api.wifi_save(auth.c_str(), headersOf(request), millis());
+    if (reply.status == 200) {
+      Preferences prefs;
+      if (prefs.begin("wifi", false)) {
+        prefs.putString("ssid", api.wifi().saved_ssid);
+        prefs.putString("pass", api.wifi().saved_pass);
+        prefs.end();
+      }
+    }
+    sendReply(request, reply);
+  }, nullptr, onBody);
+  server.on("/v2/network_mode", HTTP_POST, [](AsyncWebServerRequest* request) {
+    Body* stored = static_cast<Body*>(request->_tempObject);
+    const char* json = stored ? stored->data : "";
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    sendReply(request, api.network_mode(auth.c_str(), json, headersOf(request), millis()));
+  }, nullptr, onBody);
+  server.on("/v2/ap_password", HTTP_POST, [](AsyncWebServerRequest* request) {
+    Body* stored = static_cast<Body*>(request->_tempObject);
+    const char* json = stored ? stored->data : "";
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    sendReply(request, api.ap_password(auth.c_str(), json, headersOf(request), millis()));
+  }, nullptr, onBody);
+  server.on("/v2/claim_code", HTTP_POST, [](AsyncWebServerRequest* request) {
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    sendReply(request, api.claim_code(auth.c_str(), headersOf(request), millis()));
+  }, nullptr, onBody);
+  server.on("/v2/time", HTTP_POST, [](AsyncWebServerRequest* request) {
+    Body* stored = static_cast<Body*>(request->_tempObject);
+    const char* json = stored ? stored->data : "";
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    sendReply(request, api.set_time(auth.c_str(), json, headersOf(request), millis()));
+  }, nullptr, onBody);
   server.on("/state", HTTP_POST, [](AsyncWebServerRequest* request) {
     Body* stored = static_cast<Body*>(request->_tempObject);
     if (stored && stored->overflow) {

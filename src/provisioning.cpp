@@ -8,6 +8,9 @@
 #include "local_http.h"
 #include "ac_output_policy.h"
 #include "output_gate.h"
+#include "display_identity.h"
+#include "onb_core.h"
+#include <esp_system.h>
 #ifdef POWERCELL_HW_V011
 #include "board_pins.h"
 #include "hw_v011.h"
@@ -56,6 +59,35 @@ static String g_pass;
 static uint32_t g_provision_activity_ms = 0;
 
 static void noteProvisionActivity() { g_provision_activity_ms = millis(); }
+
+static void labelAp(char ssid[24], char pass[16]) {
+  char serial[16];
+  serial[0] = pass[0] = 0;
+  Preferences ident;
+  if (ident.begin("pc_ident", true)) {
+    String stored = ident.getString("serial", "");
+    String ap = ident.getString("ap_pass", "");
+    snprintf(serial, sizeof serial, "%s", stored.c_str());
+    snprintf(pass, 16, "%s", ap.c_str());
+    ident.end();
+  }
+  if (factory_serial_valid(serial)) label_hotspot(serial, ssid);
+  else {
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(ssid, 24, "Powercell-%02X%02X%02X", mac[3], mac[4], mac[5]);
+  }
+  if (strlen(pass) < 8) {
+    uint8_t random_pass[12];
+    esp_fill_random(random_pass, sizeof random_pass);
+    pc::onb::apPasswordFromRandom(random_pass, pass);
+    Preferences save;
+    if (save.begin("pc_ident", false)) {
+      save.putString("ap_pass", pass);
+      save.end();
+    }
+  }
+}
 
 static void applyStaticStaConfig()
 {
@@ -107,7 +139,9 @@ void serviceWifiFallback()
 
   if (cmd.start_ap && !g_ap_started)
   {
-    WiFi.softAP(AP_SSID, AP_PASS);
+    char ssid[24], pass[16];
+    labelAp(ssid, pass);
+    WiFi.softAP(ssid, pass);
     g_ap_started = true;
     Serial.printf("[WiFi] Local AP up at %s\n", WiFi.softAPIP().toString().c_str());
   }
@@ -151,7 +185,9 @@ void startProvisioning()
   // Keep both interfaces enabled so the ESP-NOW AP identity remains available
   // before and after router provisioning.
   WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(AP_SSID, AP_PASS);
+  char ssid[24], pass[16];
+  labelAp(ssid, pass);
+  WiFi.softAP(ssid, pass);
   Serial.print("[WiFi] Provisioning IP: ");
   Serial.println(WiFi.softAPIP());  // 192.168.4.1
 

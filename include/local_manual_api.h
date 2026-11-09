@@ -3,6 +3,7 @@
 #include "ac_output_settings.h"
 #include "battery_settings.h"
 #include "board_pins.h"
+#include "factory_station.h"
 #include "lan_access.h"
 
 #include <stddef.h>
@@ -28,6 +29,7 @@ struct UnitFacts {
   bool hotspot = false;
   bool sta_connected = false;
   bool payment_locked = false;
+  bool claimed = false;
   const char* model = "esp32dev";
   const char* firmware = "1.0.1";
 };
@@ -84,6 +86,19 @@ class ManualApi {
   HttpReply rating_get(const char* authorization, uint32_t now_ms);
   HttpReply rating_post(const char* authorization, const char* json, const ClientHeaders& headers,
                         uint32_t now_ms);
+  HttpReply wifi_scan(const char* authorization, uint32_t now_ms);
+  HttpReply wifi_test(const char* authorization, const char* json, const ClientHeaders& headers,
+                      uint32_t now_ms);
+  HttpReply wifi_status(const char* authorization, uint32_t now_ms);
+  HttpReply wifi_save(const char* authorization, const ClientHeaders& headers, uint32_t now_ms);
+  HttpReply network_mode(const char* authorization, const char* json, const ClientHeaders& headers,
+                         uint32_t now_ms);
+  HttpReply ap_password(const char* authorization, const char* json, const ClientHeaders& headers,
+                        uint32_t now_ms);
+  HttpReply claim_code(const char* authorization, const ClientHeaders& headers, uint32_t now_ms);
+  HttpReply set_time(const char* authorization, const char* json, const ClientHeaders& headers,
+                     uint32_t now_ms);
+  void wifi_test_succeeded(const char* ip);
   // /data: no header stays open for the on-device page. A presented bearer must be the LAN token.
   int data_auth(const char* authorization, uint32_t now_ms) const;
   // /state is the collector output. v0.1.1 is GPIO15 active-low. It is not an AcePlug.
@@ -98,12 +113,16 @@ class ManualApi {
   const BatterySettings& battery() const { return battery_; }
   const AcOutputSettings& ac() const { return ac_; }
   const SystemRating& rating() const { return rating_; }
+  const WifiSession& wifi() const { return wifi_; }
 
  private:
   LanAccess lan_;
   BatterySettings battery_;
   AcOutputSettings ac_;
   SystemRating rating_;
+  WifiSession wifi_;
+  char claim_code_[9];
+  char ap_pass_[64];
   char verifier_hex_[97];
   bool fail_persist_ = false;
   bool persist(void* ctx, const void* pairs, size_t len, const char* verifier_hex);

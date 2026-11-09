@@ -19,7 +19,8 @@ struct DeviceNames {
   const char* stored_serial;   // 2.5.11 pc_ident/serial, may be null
 };
 
-// Same accepts as 2.5.11 matchesDeviceId, plus this collector's own AP SSID.
+// Installed app: credentials are sent only when this matches the factory display serial.
+// A MAC, hotspot name, or MAC-derived ACE- suffix is not that serial.
 bool login_device_matches(const DeviceNames& names);
 
 enum class LoginStatus : uint8_t { Ok = 0, BadRequest, BadCredentials, Locked, StorageFailed };

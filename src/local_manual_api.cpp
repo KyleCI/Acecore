@@ -1,4 +1,5 @@
 #include "local_manual_api.h"
+#include "display_identity.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -88,28 +89,11 @@ void token_body(HttpReply* out, const char* session, const char* lan, bool passc
 }
 
 const char* device_id_of(const DeviceNames& device, char* buf, size_t cap) {
-  if (device.stored_serial && device.stored_serial[0]) {
+  if (factory_serial_valid(device.stored_serial)) {
     snprintf(buf, cap, "%s", device.stored_serial);
     return buf;
   }
-  char mac[13];
-  const char* colon = device.mac_colon;
-  size_t n = colon ? strlen(colon) : 0;
-  if (n == 17) {
-    size_t o = 0;
-    for (size_t i = 0; i < n && o + 1 < sizeof mac; ++i) {
-      if (colon[i] == ':' || colon[i] == '-') continue;
-      char c = colon[i];
-      if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
-      mac[o++] = c;
-    }
-    mac[o] = 0;
-    if (o == 12) {
-      snprintf(buf, cap, "ACE-%c%c%c%c%c%c", mac[6], mac[7], mac[8], mac[9], mac[10], mac[11]);
-      return buf;
-    }
-  }
-  snprintf(buf, cap, "%s", device.collector_ap ? device.collector_ap : "");
+  if (cap) buf[0] = 0;
   return buf;
 }
 }  // namespace
@@ -127,6 +111,8 @@ bool ManualApi::persist(void*, const void*, size_t, const char* verifier_hex) {
 ManualApi::ManualApi(int factory_rated_w, const char* factory_variant)
     : rating_(factory_rated_w, factory_variant) {
   verifier_hex_[0] = 0;
+  claim_code_[0] = 0;
+  ap_pass_[0] = 0;
   lan_.set_persist(&ManualApi::persist_thunk, this);
 }
 
@@ -171,14 +157,26 @@ HttpReply ManualApi::setup_info(const DeviceNames& device, const UnitFacts& fact
   HttpReply out;
   char id[64];
   device_id_of(device, id, sizeof id);
+  char id_json[80];
+  if (id[0]) snprintf(id_json, sizeof id_json, "\"%s\"", id);
+  else snprintf(id_json, sizeof id_json, "null");
+  const int usable = rating_.usableW();
+  const char* powercell = "null";
+  const char* usable_kw = "null";
+  if (usable == 4500) {
+    powercell = "\"PC5K\"";
+    usable_kw = "4.5";
+  } else if (usable == 3150) {
+    usable_kw = "3.15";
+  }
   snprintf(out.body, sizeof out.body,
-           "{\"device_id\":\"%s\",\"model\":\"%s\",\"fw\":\"%s\",\"state\":\"%s\","
-           "\"claimed\":false,\"passcode_default\":%s,\"passcode_set\":%s,\"hotspot\":%s,"
-           "\"onboarding_version\":2,\"powercell_model\":null,\"rated_kva\":null,\"usable_kw\":null}",
-           id, facts.model ? facts.model : "esp32dev", facts.firmware ? facts.firmware : "1.0.1",
-           facts.wifi_configured ? "configured" : "unconfigured",
+           "{\"device_id\":%s,\"model\":\"esp32dev\",\"fw\":\"%s\",\"state\":\"%s\","
+           "\"claimed\":%s,\"passcode_default\":%s,\"passcode_set\":%s,\"hotspot\":%s,"
+           "\"onboarding_version\":2,\"powercell_model\":%s,\"rated_kva\":null,\"usable_kw\":%s}",
+           id_json, facts.firmware ? facts.firmware : "1.0.1",
+           facts.wifi_configured ? "configured" : "unconfigured", facts.claimed ? "true" : "false",
            lan_.passcode_default() ? "true" : "false", lan_.has_passcode() ? "true" : "false",
-           facts.hotspot ? "true" : "false");
+           facts.hotspot ? "true" : "false", powercell, usable_kw);
   out.status = 200;
   return out;
 }
@@ -248,30 +246,33 @@ HttpReply ManualApi::status(const char* authorization, const DeviceNames& device
     login_error(&out, 401, "unauthorized", 0);
     return out;
   }
-  char id[64];
+  char id[64], id_json[80];
   device_id_of(device, id, sizeof id);
+  if (id[0]) snprintf(id_json, sizeof id_json, "\"%s\"", id);
+  else snprintf(id_json, sizeof id_json, "null");
   const RatingState& rating = rating_.state();
   if (rating.overload_configured) {
     snprintf(out.body, sizeof out.body,
-             "{\"device_id\":\"%s\",\"fw\":\"%s\",\"hotspot\":%s,\"sta_connected\":%s,"
-             "\"payment_locked\":%s,\"payment_lock_reason\":\"\",\"cloud_linked\":false,"
+             "{\"device_id\":%s,\"fw\":\"%s\",\"hotspot\":%s,\"sta_connected\":%s,"
+             "\"payment_locked\":%s,\"payment_lock_reason\":\"\",\"cloud_linked\":%s,"
              "\"auth\":\"%s\",\"factory_variant\":\"%s\",\"rated_active_w\":%d,"
              "\"usable_active_w\":%d,\"overload_configured\":true,\"rating_writable\":false,"
              "\"rating_reason\":\"none\",\"total_output_coverage_verified\":false}",
-             id, facts.firmware ? facts.firmware : "1.0.1", facts.hotspot ? "true" : "false",
+             id_json, facts.firmware ? facts.firmware : "1.0.1", facts.hotspot ? "true" : "false",
              facts.sta_connected ? "true" : "false", facts.payment_locked ? "true" : "false",
-             kind == LanKind::Session ? "session" : "lan", rating.variant, rating.factory_rated_w,
-             rating.usable_active_w);
+             facts.claimed ? "true" : "false", kind == LanKind::Session ? "session" : "lan",
+             rating.variant, rating.factory_rated_w, rating.usable_active_w);
   } else {
     snprintf(out.body, sizeof out.body,
-             "{\"device_id\":\"%s\",\"fw\":\"%s\",\"hotspot\":%s,\"sta_connected\":%s,"
-             "\"payment_locked\":%s,\"payment_lock_reason\":\"\",\"cloud_linked\":false,"
+             "{\"device_id\":%s,\"fw\":\"%s\",\"hotspot\":%s,\"sta_connected\":%s,"
+             "\"payment_locked\":%s,\"payment_lock_reason\":\"\",\"cloud_linked\":%s,"
              "\"auth\":\"%s\",\"factory_variant\":\"%s\",\"rated_active_w\":null,"
              "\"usable_active_w\":null,\"overload_configured\":false,\"rating_writable\":false,"
              "\"rating_reason\":\"%s\",\"total_output_coverage_verified\":false}",
-             id, facts.firmware ? facts.firmware : "1.0.1", facts.hotspot ? "true" : "false",
+             id_json, facts.firmware ? facts.firmware : "1.0.1", facts.hotspot ? "true" : "false",
              facts.sta_connected ? "true" : "false", facts.payment_locked ? "true" : "false",
-             kind == LanKind::Session ? "session" : "lan", rating.variant, rating_.reason());
+             facts.claimed ? "true" : "false", kind == LanKind::Session ? "session" : "lan",
+             rating.variant, rating_.reason());
   }
   out.status = 200;
   return out;
@@ -530,7 +531,8 @@ RouteEffect ManualApi::gateway_state(const char* authorization, const char* json
   const bool v011 = profile == OutputProfile::V011Dsp;
   const int level = v011 ? v011_dsp_level(on) : original_relay_level(on);
   snprintf(effect.http.body, sizeof effect.http.body,
-           "{\"ok\":true,\"state\":\"%s\",\"applied_via\":\"%s\",\"aceplug\":false,\"gpio_level\":%d}",
+           "{\"ok\":true,\"state\":\"%s\",\"applied_via\":\"%s\",\"measured_shutdown\":false,"
+           "\"aceplug\":false,\"gpio_level\":%d}",
            state, v011 ? "dsp_gpio15" : "collector_relay_gpio15", level);
   effect.http.status = 200;
   effect.drive_gateway = true;
@@ -581,6 +583,133 @@ RouteEffect ManualApi::socket_relay(const char* authorization, const char* json,
   effect.aceplug_on = on;
   snprintf(effect.socket_id, sizeof effect.socket_id, "%s", id);
   return effect;
+}
+
+namespace {
+bool bearer_ok(LanKind kind, bool session_only, HttpReply* out) {
+  if (session_only) {
+    if (kind == LanKind::Session) return true;
+    login_error(out, kind == LanKind::Lan ? 403 : 401, kind == LanKind::Lan ? "session_required" : "unauthorized", 0);
+    return false;
+  }
+  if (kind == LanKind::Session || kind == LanKind::Lan) return true;
+  login_error(out, 401, "unauthorized", 0);
+  return false;
+}
+}  // namespace
+
+HttpReply ManualApi::wifi_scan(const char* authorization, uint32_t now_ms) {
+  HttpReply out;
+  if (!bearer_ok(bearer_kind(authorization, now_ms), false, &out)) return out;
+  reply_set(&out, 200, "{\"scanning\":true,\"networks\":[]}");
+  return out;
+}
+
+HttpReply ManualApi::wifi_test(const char* authorization, const char* json, const ClientHeaders& headers,
+                               uint32_t now_ms) {
+  HttpReply out;
+  if (!post_headers_ok(headers, &out)) return out;
+  if (!bearer_ok(bearer_kind(authorization, now_ms), false, &out)) return out;
+  char ssid[33], pass[64];
+  if (!json_string(json, "ssid", ssid, sizeof ssid)) {
+    login_error(&out, 400, "invalid_request", 0);
+    return out;
+  }
+  if (!json_string(json, "password", pass, sizeof pass)) pass[0] = 0;
+  if (!wifi_.start(ssid, pass, "ab12cd34")) {
+    login_error(&out, 409, "test_busy_or_invalid", 0);
+    return out;
+  }
+  snprintf(out.body, sizeof out.body, "{\"test_id\":\"%s\"}", wifi_.test_id);
+  out.status = 202;
+  return out;
+}
+
+HttpReply ManualApi::wifi_status(const char* authorization, uint32_t now_ms) {
+  HttpReply out;
+  if (!bearer_ok(bearer_kind(authorization, now_ms), false, &out)) return out;
+  const char* state = wifi_.state == 2 ? "ok" : wifi_.state == 3 ? "failed" : wifi_.state == 1 ? "testing" : "idle";
+  if (wifi_.state == 2) {
+    snprintf(out.body, sizeof out.body, "{\"state\":\"ok\",\"test_id\":\"%s\",\"ip\":\"%s\"}", wifi_.test_id, wifi_.ip);
+  } else if (wifi_.test_id[0]) {
+    snprintf(out.body, sizeof out.body, "{\"state\":\"%s\",\"test_id\":\"%s\"}", state, wifi_.test_id);
+  } else {
+    snprintf(out.body, sizeof out.body, "{\"state\":\"idle\"}");
+  }
+  out.status = 200;
+  return out;
+}
+
+HttpReply ManualApi::wifi_save(const char* authorization, const ClientHeaders& headers, uint32_t now_ms) {
+  HttpReply out;
+  if (!post_headers_ok(headers, &out)) return out;
+  if (!bearer_ok(bearer_kind(authorization, now_ms), false, &out)) return out;
+  char ip[16];
+  if (!wifi_.save(ip, sizeof ip)) {
+    login_error(&out, 409, "no_successful_test", 0);
+    return out;
+  }
+  snprintf(out.body, sizeof out.body, "{\"ok\":true,\"ip\":\"%s\",\"hotspot_off_in\":120}", ip);
+  out.status = 200;
+  return out;
+}
+
+void ManualApi::wifi_test_succeeded(const char* ip) { wifi_.succeed(ip); }
+
+HttpReply ManualApi::network_mode(const char* authorization, const char* json, const ClientHeaders& headers,
+                                  uint32_t now_ms) {
+  HttpReply out;
+  if (!post_headers_ok(headers, &out)) return out;
+  if (!bearer_ok(bearer_kind(authorization, now_ms), true, &out)) return out;
+  char mode[16];
+  if (!json_string(json, "mode", mode, sizeof mode) ||
+      (strcmp(mode, "station") != 0 && strcmp(mode, "hotspot_only") != 0)) {
+    login_error(&out, 400, "invalid_mode", 0);
+    return out;
+  }
+  snprintf(wifi_.mode, sizeof wifi_.mode, "%s", mode);
+  snprintf(out.body, sizeof out.body, "{\"ok\":true,\"mode\":\"%s\"}", mode);
+  out.status = 200;
+  return out;
+}
+
+HttpReply ManualApi::ap_password(const char* authorization, const char* json, const ClientHeaders& headers,
+                                 uint32_t now_ms) {
+  HttpReply out;
+  if (!post_headers_ok(headers, &out)) return out;
+  if (!bearer_ok(bearer_kind(authorization, now_ms), false, &out)) return out;
+  char next[64];
+  if (!json_string(json, "new", next, sizeof next) || strlen(next) < 8 || strlen(next) > 63) {
+    login_error(&out, 400, "invalid_password", 0);
+    return out;
+  }
+  snprintf(ap_pass_, sizeof ap_pass_, "%s", next);
+  reply_set(&out, 200, "{\"ok\":true,\"applies\":\"after_reconnect\"}");
+  return out;
+}
+
+HttpReply ManualApi::claim_code(const char* authorization, const ClientHeaders& headers, uint32_t now_ms) {
+  HttpReply out;
+  if (!post_headers_ok(headers, &out)) return out;
+  if (!bearer_ok(bearer_kind(authorization, now_ms), false, &out)) return out;
+  snprintf(claim_code_, sizeof claim_code_, "ABCDEFGH");
+  snprintf(out.body, sizeof out.body, "{\"claim_code\":\"%s\",\"expires_in\":900}", claim_code_);
+  out.status = 200;
+  return out;
+}
+
+HttpReply ManualApi::set_time(const char* authorization, const char* json, const ClientHeaders& headers,
+                              uint32_t now_ms) {
+  HttpReply out;
+  if (!post_headers_ok(headers, &out)) return out;
+  if (!bearer_ok(bearer_kind(authorization, now_ms), false, &out)) return out;
+  int epoch = 0;
+  if (!json_int(json, "epoch", &epoch) || epoch < 1700000000) {
+    login_error(&out, 400, "invalid_epoch", 0);
+    return out;
+  }
+  reply_set(&out, 200, "{\"ok\":true,\"applied\":false,\"reason\":\"phone_clock_not_applied\"}");
+  return out;
 }
 
 }  // namespace powercell

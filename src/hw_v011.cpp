@@ -555,6 +555,15 @@ void hwV011AppendTelemetry(JsonDocument& doc) {
   ac["retained_allocated_wh"] = snap.allocated_wh;
   ac["retained_unallocated_wh"] = snap.unallocated_wh;
   ac["store_full"] = snap.store_full;
+  doc["output_voltage_v"] = nullptr;
+  doc["output_current_a"] = nullptr;
+  doc["output_power"] = nullptr;
+  doc["grid_voltage_v"] = nullptr;
+  doc["temperature_c"] = nullptr;
+  doc["battery_voltage_v"] = nullptr;
+  doc["pv_voltage_v"] = nullptr;
+  doc["pv_current_a"] = nullptr;
+  doc["pv_power_w"] = nullptr;
   JsonObject dsp = doc["dsp"].to<JsonObject>();
   dsp["present"] = false;
   dsp["protocol"] = "none";

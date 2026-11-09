@@ -1,4 +1,5 @@
 #include "collector_radio.h"
+#include "factory_station.h"
 #ifdef POWERCELL_HW_V011
 #include "hw_v011.h"
 #endif
@@ -150,6 +151,43 @@ void handleSerialProvisioning() {
 
     String line = Serial.readStringUntil('\n');
     line.trim();
+    if (line == "INFO" || line.startsWith("SET ") || line.startsWith("SERIAL") || line == "SECRET" ||
+        line == "ROTATE_SECRET" || line == "LOCK" || line == "FACTORY_RESET") {
+      powercell::FactoryStation station;
+      station.usable_w =
+#ifdef POWERCELL_FACTORY_RATED_ACTIVE_W
+          POWERCELL_FACTORY_RATED_ACTIVE_W == 5000 ? 4500 : POWERCELL_FACTORY_RATED_ACTIVE_W == 3500 ? 3150 : 0;
+#else
+          0;
+#endif
+      Preferences ident;
+      if (ident.begin("pc_ident", true)) {
+        String serial = ident.getString("serial", "");
+        station.secret_set = ident.getBytesLength("secret") == 32;
+        if (station.secret_set) ident.getBytes("secret", station.secret, 32);
+        station.secret_reported = ident.getBool("sec_rep", false);
+        station.locked = ident.getBool("locked", false);
+        station.payment_locked = ident.getBool("pay_lock", false);
+        snprintf(station.serial, sizeof station.serial, "%s", serial.c_str());
+        ident.end();
+      }
+      if (line == "ROTATE_SECRET" && !station.locked) {
+        esp_fill_random(station.secret, 32);
+        station.secret_set = true;
+      }
+      char reply[512];
+      station.console(line.c_str(), reply, sizeof reply);
+      if (ident.begin("pc_ident", false)) {
+        if (station.serial[0]) ident.putString("serial", station.serial);
+        if (station.secret_set) ident.putBytes("secret", station.secret, 32);
+        ident.putBool("sec_rep", station.secret_reported);
+        ident.putBool("locked", station.locked);
+        ident.putBool("pay_lock", station.payment_locked);
+        ident.end();
+      }
+      Serial.println(reply);
+      return;
+    }
 
 #ifdef POWERCELL_HW_V011
     if (hwV011ConsumeSerial(line)) return;

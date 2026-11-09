@@ -95,6 +95,18 @@ with tempfile.TemporaryDirectory(prefix="hw-v011-") as directory:
     ], "ac output tests")
     subprocess.run([str(ac_bin)], check=True)
 
+    factory_bin = pathlib.Path(directory) / "factory-contract-tests"
+    compile_one([
+        compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+        "-I", str(root / "include"),
+        "-I", str(root / "lib/pc_onb/src"),
+        str(root / "lib/pc_onb/src/sha256.cpp"),
+        str(root / "src/factory_station.cpp"),
+        str(root / "test/factory_contract_test.cpp"),
+        "-o", str(factory_bin),
+    ], "factory contract tests")
+    subprocess.run([str(factory_bin)], check=True)
+
     manual_bin = pathlib.Path(directory) / "manual-api-tests"
     compile_one([
         compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
@@ -105,6 +117,7 @@ with tempfile.TemporaryDirectory(prefix="hw-v011-") as directory:
         str(root / "src/lan_access.cpp"),
         str(root / "src/battery_settings.cpp"),
         str(root / "src/ac_output_settings.cpp"),
+        str(root / "src/factory_station.cpp"),
         str(root / "src/local_manual_api.cpp"),
         str(root / "test/local_manual_api_test.cpp"),
         "-o", str(manual_bin),

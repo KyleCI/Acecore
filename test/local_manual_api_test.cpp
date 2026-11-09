@@ -42,7 +42,7 @@ static void login_unit(ManualApi* api, const DeviceNames& device, char* bearer_l
       "\"phone_name\":\"Powercore\"}";
   CHECK(api->setup_passcode(setup, json_headers(), true, salt, 1000, 0).status == 200);
   const char* login_json =
-      "{\"device_id\":\"aa:bb:cc:dd:ee:ff\",\"passcode\":\"135790\","
+      "{\"device_id\":\"ACE-000123\",\"passcode\":\"135790\","
       "\"phone_id\":\"11111111-2222-3333-4444-555555555555\",\"phone_name\":\"Powercore\"}";
   HttpReply logged = api->login(login_json, json_headers(), device, 5000, 1700001000, 9);
   char lan[80];
@@ -107,7 +107,7 @@ int main() {
   device.mac_colon = "AA:BB:CC:DD:EE:FF";
   device.collector_ap = "Acecore PowerCell LabTest";
   device.stored_gw_name = nullptr;
-  device.stored_serial = nullptr;
+  device.stored_serial = "ACE-000123";
   UnitFacts facts;
   facts.wifi_configured = false;
   facts.model = "hw-v0.1.1";
@@ -117,11 +117,18 @@ int main() {
   api.set_random(fill_random, nullptr);
   HttpReply info = api.setup_info(device, facts);
   CHECK(info.status == 200);
-  CHECK(strstr(info.body, "\"device_id\":\"ACE-DDEEFF\""));
+  CHECK(strstr(info.body, "\"device_id\":\"ACE-000123\""));
+  CHECK(strstr(info.body, "\"model\":\"esp32dev\""));
   CHECK(strstr(info.body, "\"state\":\"unconfigured\""));
   CHECK(strstr(info.body, "\"passcode_set\":false"));
+  CHECK(strstr(info.body, "\"powercell_model\":\"PC5K\""));
   CHECK(strstr(info.body, "\"rated_kva\":null"));
-  CHECK(strstr(info.body, "\"usable_kw\":null"));
+  CHECK(strstr(info.body, "\"usable_kw\":4.5"));
+  HttpReply mac = api.login(
+      "{\"device_id\":\"aa:bb:cc:dd:ee:ff\",\"passcode\":\"135790\","
+      "\"phone_id\":\"11111111-2222-3333-4444-555555555555\",\"phone_name\":\"Powercore\"}",
+      json_headers(), device, 1000, 1700001000, 1);
+  CHECK(mac.status == 401);
 
   uint8_t salt[16];
   memset(salt, 7, sizeof salt);
@@ -138,8 +145,12 @@ int main() {
   char first_lan[80];
   CHECK(field(created.body, "lan_token", first_lan, sizeof first_lan) && first_lan[0]);
 
+  CHECK(api.login("{\"device_id\":\"aa:bb:cc:dd:ee:ff\",\"passcode\":\"135790\","
+                  "\"phone_id\":\"11111111-2222-3333-4444-555555555555\",\"phone_name\":\"Powercore\"}",
+                  json_headers(), device, 4000, 1700001000, 4)
+            .status == 401);
   const char* login_json =
-      "{\"device_id\":\"aa:bb:cc:dd:ee:ff\",\"passcode\":\"135790\","
+      "{\"device_id\":\"ace-000123\",\"passcode\":\"135790\","
       "\"phone_id\":\"11111111-2222-3333-4444-555555555555\",\"phone_name\":\"Powercore\"}";
   HttpReply logged = api.login(login_json, json_headers(), device, 5000, 1700001000, 1);
   CHECK(logged.status == 200);
@@ -305,7 +316,7 @@ int main() {
   other_factory_images(device, facts);
 
   HttpReply bad = api.login(
-      "{\"device_id\":\"aa:bb:cc:dd:ee:ff\",\"passcode\":\"246801\","
+      "{\"device_id\":\"ACE-000123\",\"passcode\":\"246801\","
       "\"phone_id\":\"11111111-2222-3333-4444-555555555555\",\"phone_name\":\"Powercore\"}",
       json_headers(), device, 9000, 1700001000, 2);
   CHECK(bad.status == 401 && strstr(bad.body, "\"error\":\"bad_credentials\""));

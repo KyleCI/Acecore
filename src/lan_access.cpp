@@ -1,10 +1,10 @@
 #include "lan_access.h"
+#include "display_identity.h"
 
 #include "onb_core.h"
 #include "sha256.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 namespace powercell {
@@ -22,61 +22,6 @@ using pc::onb::tokenFromRandom;
 using pc::onb::validPasscode;
 using pc::onb::verifierHex;
 
-bool eq_ci(const char* a, const char* b) {
-  if (!a || !b || !a[0] || !b[0]) return false;
-  while (*a && *b) {
-    char x = *a >= 'a' && *a <= 'z' ? char(*a - 32) : *a;
-    char y = *b >= 'a' && *b <= 'z' ? char(*b - 32) : *b;
-    if (x != y) return false;
-    ++a;
-    ++b;
-  }
-  return *a == 0 && *b == 0;
-}
-
-bool mac_canon(const char* s, char out[13]) {
-  if (!s) return false;
-  size_t n = strlen(s);
-  if (n == 12) {
-    for (size_t i = 0; i < 12; ++i) {
-      char c = s[i];
-      if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) return false;
-      out[i] = c >= 'a' && c <= 'f' ? char(c - 32) : c;
-    }
-    out[12] = 0;
-    return true;
-  }
-  if (n != 17) return false;
-  char sep = s[2];
-  if (sep != ':' && sep != '-') return false;
-  size_t o = 0;
-  for (size_t i = 0; i < 17; ++i) {
-    if (i % 3 == 2) {
-      if (s[i] != sep) return false;
-      continue;
-    }
-    char c = s[i];
-    if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) return false;
-    out[o++] = c >= 'a' && c <= 'f' ? char(c - 32) : c;
-  }
-  out[12] = 0;
-  return true;
-}
-
-void names_from_mac(const char* mac_colon, char gw[16], char ap[24]) {
-  gw[0] = ap[0] = 0;
-  char hex[13];
-  if (!mac_canon(mac_colon, hex)) return;
-  uint8_t m[6];
-  for (int i = 0; i < 6; ++i) {
-    char b[3] = {hex[i * 2], hex[i * 2 + 1], 0};
-    m[i] = static_cast<uint8_t>(strtoul(b, nullptr, 16));
-  }
-  // Same formats as 2.5.11 identity.cpp gatewayName / apSsid. No AP password.
-  snprintf(gw, 16, "ACE-%02X%02X%02X", m[3], m[4], m[5]);
-  snprintf(ap, 24, "Powercell-%02X%02X%02X", m[3], m[4], m[5]);
-}
-
 struct IpSlot {
   uint32_t key = 0;
   uint32_t last = 0;
@@ -85,24 +30,7 @@ struct IpSlot {
 }  // namespace
 
 bool login_device_matches(const DeviceNames& names) {
-  const char* id = names.requested;
-  if (!id || !id[0]) return false;
-  if (eq_ci(id, names.collector_ap)) return true;
-  if (eq_ci(id, names.stored_gw_name)) return true;
-  char mac[13], other[13];
-  if (mac_canon(id, mac) && mac_canon(names.mac_colon, other) && strcmp(mac, other) == 0) return true;
-  char gw[16], ap[24];
-  names_from_mac(names.mac_colon, gw, ap);
-  if (eq_ci(id, gw) || eq_ci(id, ap)) return true;
-  if (names.stored_serial && names.stored_serial[0]) {
-    if (eq_ci(id, names.stored_serial)) return true;
-    if (strlen(names.stored_serial) > 4) {
-      char powered[40];
-      snprintf(powered, sizeof powered, "Powercell-%s", names.stored_serial + 4);
-      if (eq_ci(id, powered)) return true;
-    }
-  }
-  return false;
+  return display_serial_match(names.requested, names.stored_serial);
 }
 
 using pc::onb::Limiter;
