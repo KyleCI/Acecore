@@ -163,32 +163,22 @@ static void test_identity() {
 
 static void test_ota_hardware_model() {
   using namespace pc;
-  const char* k5 = "esp32dev-hw011-5kw";
-  const char* k35 = "esp32dev-hw011-35kw";
-  char stock[96], hw5[128], hw35[128], look[96];
-  CHECK(otaFormatIdentity(stock, sizeof stock, "collector", "esp32dev", "2.5.14"));
-  CHECK(otaFormatIdentity(hw5, sizeof hw5, "collector", k5, "2.5.14"));
-  CHECK(otaFormatIdentity(hw35, sizeof hw35, "collector", k35, "2.5.14"));
-  CHECK(otaFormatIdentity(look, sizeof look, "collector", "esp32dev", "2.5.14"));
-  CHECK(!otaImageHasIdentity(hw5, strlen(hw5), look));
-  CHECK(!otaImageHasIdentity(hw35, strlen(hw35), look));
-
-  // Stock image offered to a hardware unit.
-  CHECK(!otaHwAccepts(stock, strlen(stock), k5, "2.5.13", "2.5.14", "esp32dev"));
-  CHECK(!otaHwAccepts(stock, strlen(stock), k5, "2.5.13", "2.5.14", nullptr));
-  // Hardware image offered to the matching hardware unit.
-  CHECK(otaHwAccepts(hw5, strlen(hw5), k5, "2.5.13", "2.5.14", nullptr));
-  CHECK(otaHwAccepts(hw5, strlen(hw5), k5, "2.5.13", "2.5.14", k5));
-  CHECK(!otaHwAccepts(hw5, strlen(hw5), k5, "2.5.13", "2.5.13", nullptr));
-  // Hardware image checked with the unchanged 2.5.11 rule.
-  CHECK(!otaStock2511Accepts(hw5, strlen(hw5), "2.5.14"));
-  CHECK(!otaStock2511Accepts(hw35, strlen(hw35), "2.5.13"));
-  CHECK(otaStock2511Accepts(stock, strlen(stock), "2.5.14"));
-  CHECK(!otaStock2511Accepts(stock, strlen(stock), "2.5.11"));
-  // 5 kW and 3.5 kW refuse each other.
-  CHECK(!otaHwAccepts(hw5, strlen(hw5), k35, "2.5.13", "2.5.14", nullptr));
-  CHECK(!otaHwAccepts(hw35, strlen(hw35), k5, "2.5.13", "2.5.14", k35));
-  CHECK(!otaHwAccepts(hw5, strlen(hw5), k5, "2.5.13", "2.5.14", k35));
+  const char* models[] = {"pc-dsp011-5kw", "pc-dsp011-35kw", "pc-stm01-5kw", "pc-stm01-35kw"};
+  char ids[4][128];
+  char legacy[96];
+  CHECK(otaFormatIdentity(legacy, sizeof legacy, "collector", "esp32dev", "2.5.14"));
+  for (int i = 0; i < 4; ++i) {
+    CHECK(otaFormatIdentity(ids[i], sizeof ids[i], "collector", models[i], "2.5.14"));
+    CHECK(otaModelAccepts(ids[i], strlen(ids[i]), models[i], "2.5.13", "2.5.14", models[i]));
+    CHECK(!otaModelAccepts(ids[i], strlen(ids[i]), models[i], "2.5.13", "2.5.14", nullptr));
+    CHECK(!otaModelAccepts(ids[i], strlen(ids[i]), models[i], "2.5.13", "2.5.14", "esp32dev"));
+    CHECK(!otaModelAccepts(legacy, strlen(legacy), models[i], "2.5.13", "2.5.14", models[i]));
+    CHECK(!otaModelAccepts(ids[i], strlen(ids[i]), models[i], "2.5.13", "2.5.13", models[i]));
+  }
+  for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) if (i != j) {
+    CHECK(!otaModelAccepts(ids[i], strlen(ids[i]), models[j], "2.5.13", "2.5.14", models[i]));
+    CHECK(!otaModelAccepts(ids[i], strlen(ids[i]), models[j], "2.5.13", "2.5.14", models[j]));
+  }
 }
 
 static void test_local_auth() {

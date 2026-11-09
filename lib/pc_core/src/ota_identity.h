@@ -6,9 +6,9 @@
 namespace pc {
 // Identity embedded in every image and searched for during install:
 //   POWERCELL_FW|<kind>|<model>|<version>|END
-// Deployed 2.5.11 (ota.cpp) accepts an image when the offered version differs
-// from the running one and that exact string is present. It does not read an
-// offer "model" field. The running model on those units is esp32dev.
+// An image accepts an offer only when the version differs from the one it is
+// running, the offer names this image's exact model, and the file contains
+// that model's identity. Model esp32dev is not one of these images.
 
 inline bool otaVersionOk(const char* running, const char* offered) {
   if (!offered || !offered[0] || !running) return false;
@@ -34,23 +34,14 @@ inline bool otaImageHasIdentity(const void* image, size_t n, const char* identit
   return false;
 }
 
-// Unchanged 2.5.11 install rule. Model is esp32dev. An offer model is ignored.
-inline bool otaStock2511Accepts(const void* image, size_t n, const char* offered_version) {
-  if (!otaVersionOk("2.5.11", offered_version)) return false;
-  char id[96];
-  if (!otaFormatIdentity(id, sizeof id, "collector", "esp32dev", offered_version)) return false;
-  return otaImageHasIdentity(image, n, id);
-}
-
-// Hardware image. offered_model == nullptr means the check response omitted model.
-// A present model that is not this image's model is refused, even if the bytes match.
-inline bool otaHwAccepts(const void* image, size_t n, const char* hw_model, const char* running_version,
-                         const char* offered_version, const char* offered_model) {
-  if (!hw_model || !hw_model[0]) return false;
+// offered_model is required. A missing or different model is refused.
+inline bool otaModelAccepts(const void* image, size_t n, const char* own_model, const char* running_version,
+                            const char* offered_version, const char* offered_model) {
+  if (!own_model || !own_model[0]) return false;
+  if (!offered_model || strcmp(offered_model, own_model) != 0) return false;
   if (!otaVersionOk(running_version, offered_version)) return false;
-  if (offered_model && strcmp(offered_model, hw_model) != 0) return false;
   char id[128];
-  if (!otaFormatIdentity(id, sizeof id, "collector", hw_model, offered_version)) return false;
+  if (!otaFormatIdentity(id, sizeof id, "collector", own_model, offered_version)) return false;
   return otaImageHasIdentity(image, n, id);
 }
 }  // namespace pc

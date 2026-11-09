@@ -10,14 +10,14 @@
 #define POWERCELL_FIRMWARE_KIND "collector"
 #endif
 #ifndef POWERCELL_HARDWARE_MODEL
-#define POWERCELL_HARDWARE_MODEL "esp32dev"  // stock OTA model. Hardware images override this with -D.
+#define POWERCELL_HARDWARE_MODEL "esp32dev"  // unset default. Product images override this with -D.
 #endif
 
 // ---- Backend ---------------------------------------------------------------
 // Defaults = live cloud api-dev (Caleb 2026-10-26). Override via platformio.ini:
 //   esp32dev / framed / nolora / esp32dev_dev → api-dev.acecore.tech
 //   esp32dev_prod (opt-in) → api.acecore.tech
-// Stock OTA model stays "esp32dev". Hardware v0.1.1 images set their own POWERCELL_HARDWARE_MODEL.
+// Product images set POWERCELL_HARDWARE_MODEL to pc-stm01-* or pc-dsp011-*.
 #ifndef POWERCELL_WS_HOST
 #define POWERCELL_WS_HOST "api-dev.acecore.tech"
 #endif
