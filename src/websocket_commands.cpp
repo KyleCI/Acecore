@@ -1,5 +1,6 @@
 #include <PowercellOTA.h>
 #include "websocket_commands.h"
+#include "home_snapshot.h"
 #include <ArduinoJson.h>
 #include <WebSocketsClient.h>
 #include <time.h>
@@ -113,7 +114,8 @@ void telemetry() {
   doc["type"] = "telemetry";
   identity(doc);
   JKPacketData bms;
-  const bool bms_fresh = getBmsData(bms) && (millis() - bms.receivedAtMs) <= 15000;
+  const bool got_bms = getBmsData(bms);
+  const bool bms_fresh = powercell::bms_sample_fresh(got_bms && bms.valid, bms.receivedAtMs, millis());
   if (bms_fresh) {
     JsonObject battery = doc["battery"].to<JsonObject>();
     battery["voltage"] = bms.packVoltage;
@@ -148,6 +150,7 @@ void telemetry() {
   inverter["temperature"] = inv.tempC;
 #endif
 
+#ifndef POWERCELL_HW_V011
   JsonObject solar = doc["solar"].to<JsonObject>();
   MpptData mppt;
   if (mppt_get_data(mppt)) {
@@ -161,6 +164,7 @@ void telemetry() {
     solar["current"] = nullptr;
     solar["power"] = nullptr;
   }
+#endif
   JsonArray sockets = doc["sockets"].to<JsonArray>();
   populateDeviceArray(sockets);
   sendJson(doc);

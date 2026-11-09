@@ -474,52 +474,8 @@ void httpRoutes() {
     });
 
 
-    // // ─────────────────────────────────────────────────────────────────────────
-    // // Monitor Routes
-    // // ─────────────────────────────────────────────────────────────────────────
-
-    // server.on("/monitor", HTTP_GET, [](AsyncWebServerRequest *req)
-    // {
-    //     handleRoot(req);
-    // });
-
-
-    // server.on("/data", HTTP_GET, [](AsyncWebServerRequest *req)
-    // {
-    //     handleData(req);
-    // });
-
-
-    // server.on("/approve", HTTP_GET, [](AsyncWebServerRequest *req)
-    // {
-    //     handleApprove(req);
-    // });
-
-
-    // server.on("/reject", HTTP_GET, [](AsyncWebServerRequest *req)
-    // {
-    //     handleReject(req);
-    // });
-
-
-    // server.on("/relay", HTTP_GET, [](AsyncWebServerRequest *req)
-    // {
-    //     handleRelay(req);
-    // });
-
-
-    // // ─────────────────────────────────────────────────────────────────────────
-    // // Server-Sent Events
-    // // ─────────────────────────────────────────────────────────────────────────
-
-    // events.onConnect([](AsyncEventSourceClient *client)
-    // {
-    //     client->send("{\"status\":\"connected\"}", "ready", millis(), 1000);
-    //     String state = buildJSON();
-    //     client->send(state.c_str(), "state", millis(), 1000);
-    // });
-    // server.addHandler(&events);
-
+    // GET /data and GET /events are mounted by initOfflineBatteryNotifications.
+    // They require the LAN bearer. This file does not register a second copy.
 
     // ─────────────────────────────────────────────────────────────────────────
     // Static Files / 404

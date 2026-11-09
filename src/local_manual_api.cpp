@@ -279,7 +279,9 @@ HttpReply ManualApi::status(const char* authorization, const DeviceNames& device
 }
 
 int ManualApi::data_auth(const char* authorization, uint32_t now_ms) const {
-  if (!authorization || !authorization[0]) return 200;
+  // Installed c874f427 sends the LAN bearer on /data and /events. A missing
+  // header, a session, and an API key are not that credential.
+  if (!authorization || !authorization[0]) return 401;
   return bearer_kind(authorization, now_ms) == LanKind::Lan ? 200 : 401;
 }
 

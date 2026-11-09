@@ -15,6 +15,15 @@ void hwV011NoteBmsFail(const char* reason);
 void hwV011NotePv(float volts, float amps, float watts);
 void hwV011Routes(AsyncWebServer& server);
 bool hwV011ConsumeSerial(const String& line);
+struct HwV011Ac {
+  bool valid = false;
+  float volts = 0;
+  float amps = 0;
+  float active_w = 0;
+  uint32_t lifetime_wh = 0;
+};
+
+bool hwV011AcSample(HwV011Ac* out);
 void hwV011AppendTelemetry(JsonDocument& doc);
 bool hwV011HandleAck(JsonDocument& doc);
 #endif

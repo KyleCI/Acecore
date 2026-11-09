@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Host checks for hardware v0.1.1. No device, flash, or network."""
+import json
 import pathlib
 import re
 import shutil
@@ -188,5 +189,112 @@ with tempfile.TemporaryDirectory(prefix="hw-v011-") as directory:
     expect_build(["-DPOWERCELL_HW_V011=1", "-DPOWERCELL_SD_CS=25"], False, "v0.1.1 CS on PZEM RX")
     expect_build(["-DPOWERCELL_HW_V011=1", "-DPZEM_RX_GPIO=33", "-DPZEM_TX_GPIO=26"], False,
                  "PZEM RX on the SD select")
+
+    def code_only(path):
+        kept = []
+        for line in path.read_text().splitlines():
+            if line.lstrip().startswith("//"):
+                continue
+            kept.append(line)
+        return "\n".join(kept)
+
+    battery = code_only(root / "src/offline_battery_notifications.cpp")
+    provisioning = code_only(root / "src/provisioning.cpp")
+    http = code_only(root / "src/local_http.cpp")
+    if 'server.on("/data"' not in battery or "addHandler(&events)" not in battery:
+        sys.exit("GET /data and /events must be mounted, not left commented")
+    if "addMiddleware" not in battery or "home_snapshot_write" not in battery:
+        sys.exit("mounted /data must use the snapshot serializer and event auth")
+    if 'server.on("/data"' in provisioning or "addHandler(&events)" in provisioning:
+        sys.exit("provisioning.cpp must not register a second /data or /events")
+    for route in ("/state", "/relay", "/v2/time", "/v2/setup/info", "/v2/login",
+                  "/v1/system-rating", "/v1/battery-settings", "/v1/ac-output-settings"):
+        if route not in http:
+            sys.exit(f"missing mounted route {route}")
+
+    snap_bin = pathlib.Path(directory) / "home-snapshot-tests"
+    compile_one([
+        compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+        "-I", str(root / "include"),
+        str(root / "src/home_snapshot.cpp"),
+        str(root / "test/home_snapshot_test.cpp"),
+        "-o", str(snap_bin),
+    ], "home snapshot serializer")
+    printed = subprocess.run([str(snap_bin)], check=True, capture_output=True, text=True).stdout
+    snaps = {}
+    for line in printed.splitlines():
+        if not line.startswith("SNAP "):
+            continue
+        name, payload = line.split(" ", 2)[1:]
+        snaps[name] = json.loads(payload)
+    forbidden = {
+        "grid_voltage", "gridVoltage", "ac_input_voltage",
+        "energy_today_kwh", "energy_today", "today_energy", "today_kwh", "days",
+    }
+
+    def walk(node, where):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in forbidden:
+                    sys.exit(f"{where} publishes {key}")
+                walk(value, where + "." + key)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, where)
+
+    def near(value, expected):
+        if abs(value - expected) > 1e-3:
+            sys.exit(f"{value} != {expected}")
+
+    for name, doc in snaps.items():
+        walk(doc, name)
+        if "rated_kva" in doc:
+            sys.exit(f"{name} invents rated_kva")
+    fresh = snaps["fresh"]
+    near(fresh["last_data"]["power"], 15)
+    near(fresh["inverter"]["output_voltage"], 230)
+    near(fresh["inverter"]["output_current"], 0.1)
+    near(fresh["inverter"]["output_power"], 23)
+    if fresh["inverter"]["output_power_quantity"] != "apparent_va":
+        sys.exit("output_power must stay apparent VA")
+    near(fresh["metrics"]["output_power_w"], 15)
+    near(fresh["live"]["output_power_w"], 15)
+    if fresh["metrics"]["output_power_source"] != "pzem004t_v3_active":
+        sys.exit("active watts need their source")
+    for key in ("output_power", "power", "current", "voltage"):
+        if key in fresh["metrics"] or key in fresh["live"]:
+            sys.exit(f"metrics/live must not carry bare {key}")
+    if "power" in fresh["solar"] or abs(fresh["solar"]["power_w"] - 72) > 1e-3:
+        sys.exit("solar power_w is watts; solar.power would be misread as kW")
+    near(fresh["battery"]["soc"], 40)
+    near(fresh["battery"]["power"], 76.8)
+    near(fresh["ac_consumed"]["lifetime_wh"], 1200)
+    near(fresh["usable_kw"], 4.5)
+    if fresh["powercell_model"] != "PC5K" or fresh["inverter_temperature"] is not None:
+        sys.exit("5kW model or temperature shape is wrong")
+    if fresh["inverter"]["stm32_online"] is not False:
+        sys.exit("v0.1.1 must not claim an STM32")
+    stale = snaps["stale"]
+    if stale["last_data"]["power"] is not None or stale["metrics"]["output_power_w"] is not None:
+        sys.exit("stale active power must be null")
+    if "output_power" in stale["inverter"] or stale["metrics"]["inverterLoad"] is not None:
+        sys.exit("stale apparent power must not remain as a number")
+    if stale["live"]["output_power_w"] is not None or stale["battery"]["soc"] is not None:
+        sys.exit("stale live power or BMS SOC must be null")
+    if stale["battery"]["power"] not in (None,):
+        sys.exit("stale battery power must be null")
+    if stale["solar"].get("valid") is not False or "power" in stale["solar"] or "power_w" in stale["solar"]:
+        sys.exit("missing PV must not publish a solar power")
+    if stale["ac_consumed"]["lifetime_wh"] is not None:
+        sys.exit("stale lifetime Wh must be null")
+    small = snaps["kw35"]
+    near(small["usable_kw"], 3.15)
+    near(small["metrics"]["usable_kw"], 3.15)
+    if small["powercell_model"] is not None or small["device_id"] is not None:
+        sys.exit("3.5kW model stays null and a MAC is not the device id")
+    encoded = json.dumps(small)
+    for banned in ("PC3K", "PC5K", "PC10K", "rated_kva"):
+        if banned in encoded:
+            sys.exit(f"3.5kW document contains {banned}")
 
 print("profile pin checks passed")

@@ -2,6 +2,8 @@
 #include "battery_alert_policy.h"
 #include "board_pins.h"
 #include "bms.h"
+#include "home_meters.h"
+#include "home_snapshot.h"
 #include "provisioning.h"
 #include "local_http.h"
 #include <ArduinoJson.h>
@@ -145,18 +147,26 @@ void initOfflineBatteryNotifications(AsyncWebServer& server) {
 
   server.on("/data", HTTP_GET, [](AsyncWebServerRequest* request) {
     String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
-    if (manualDataStatus(auth.c_str()) == 401) {
-      request->send(401, "application/json", "{\"error\":\"unauthorized\"}");
+    if (manualDataStatus(auth.c_str()) != 200) {
+      request->send(401, "application/json", "{\"ok\":false,\"reason\":\"unauthorized\"}");
       return;
     }
     String data;
-    if (!copySnapshot(data)) {
+    if (!copySnapshot(data) || data.length() == 0) {
       request->send(503, "application/json", "{\"error\":\"Battery snapshot temporarily unavailable\"}");
       return;
     }
     auto* response = request->beginResponse(200, "application/json", data);
     response->addHeader("Cache-Control", "no-store");
     request->send(response);
+  });
+  events.addMiddleware([](AsyncWebServerRequest* request, ArMiddlewareNext next) {
+    String auth = request->hasHeader("Authorization") ? request->header("Authorization") : String();
+    if (manualDataStatus(auth.c_str()) != 200) {
+      request->send(401, "application/json", "{\"ok\":false,\"reason\":\"unauthorized\"}");
+      return;
+    }
+    next();
   });
   events.onConnect([](AsyncEventSourceClient* client) {
     String data, battery, unavailable;
@@ -190,34 +200,18 @@ void serviceOfflineBatteryNotifications() {
 
   const String battery = alertJson(false, reading);
   const String unavailable = alertJson(true, reading);
-  JsonDocument doc;
-  doc["device_id"] = collectorId;
-  doc["device_state"] = deviceState ? "On" : "Off";
-  auto status = doc["battery"].to<JsonObject>();
-  status["valid"] = policy.available();
-  status["status"] = policy.available() ? "available" : "unavailable";
-  if (policy.available()) {
-    status["percentage"] = reading.percent;
-    status["voltage"] = reading.voltage;
-    status["age_ms"] = static_cast<uint32_t>(now - reading.receivedAtMs);
-  } else {
-    status["percentage"] = nullptr;
-    status["voltage"] = nullptr;
-    if (valid) status["age_ms"] = static_cast<uint32_t>(now - reading.receivedAtMs);
-    else status["age_ms"] = nullptr;
-  }
-  auto notifications = doc["notifications"].to<JsonArray>();
-  JsonDocument parsed;
-  deserializeJson(parsed, battery);
-  notifications.add(parsed.as<JsonObjectConst>());
-  deserializeJson(parsed, unavailable);
-  notifications.add(parsed.as<JsonObjectConst>());
+  powercell::HomeMeters meters;
+  collect_home_meters(&meters);
+  static char docbuf[5120];
+  const int wrote = powercell::home_snapshot_write(meters, battery.c_str(), unavailable.c_str(),
+                                                   docbuf, sizeof docbuf);
   String data;
-  serializeJson(doc, data);
+  if (wrote > 0) data = docbuf;
+  else Serial.println("[Battery alerts] snapshot did not fit");
 
   // Requests only copy immutable snapshots; they never advance the policy.
   xSemaphoreTake(snapshotMutex, portMAX_DELAY);
-  snapshotJson = data;
+  if (wrote > 0) snapshotJson = data;
   batteryJson = battery;
   unavailableJson = unavailable;
   xSemaphoreGive(snapshotMutex);
@@ -250,7 +244,7 @@ void serviceOfflineBatteryNotifications() {
   }
   if (changes || static_cast<uint32_t>(now - lastHeartbeatAt) >= 10000) {
     lastHeartbeatAt = now;
-    events.send(data.c_str(), "state");
+    if (data.length()) events.send(data.c_str(), "state");
     events.send("{}", "heartbeat");
   }
 }

@@ -3,6 +3,8 @@
 #ifdef POWERCELL_HW_V011
 
 #include "ac_energy_log.h"
+#include "home_meters.h"
+#include "home_snapshot.h"
 #include "ac_output_policy.h"
 #include "provisioning.h"
 #include "board_pins.h"
@@ -521,6 +523,30 @@ bool hwV011ConsumeSerial(const String& line) {
   return false;
 }
 
+bool hwV011AcSample(HwV011Ac* out) {
+  if (!out) return false;
+  Live snap;
+  bool got = false;
+  if (live_mu && xSemaphoreTake(live_mu, pdMS_TO_TICKS(10)) == pdTRUE) {
+    snap = live;
+    got = true;
+    xSemaphoreGive(live_mu);
+  }
+  out->valid = false;
+  out->volts = 0;
+  out->amps = 0;
+  out->active_w = 0;
+  out->lifetime_wh = 0;
+  if (!got) return true;
+  if (!powercell::ac_sample_fresh(snap.valid, snap.power_at_ms, millis())) return true;
+  out->valid = true;
+  out->volts = snap.voltage_dV / 10.0f;
+  out->amps = snap.current_mA / 1000.0f;
+  out->active_w = snap.power_dW / 10.0f;
+  out->lifetime_wh = snap.wh;
+  return true;
+}
+
 void hwV011AppendTelemetry(JsonDocument& doc) {
   Live snap;
   if (live_mu && xSemaphoreTake(live_mu, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -538,9 +564,10 @@ void hwV011AppendTelemetry(JsonDocument& doc) {
   ac["freshness_ms"] = 2000;
   ac["total_output_coverage_verified"] = false;
   ac["stale_is_zero"] = false;
-  ac["valid"] = snap.valid;
-  ac["reason"] = snap.reason;
-  if (snap.valid) {
+  const bool fresh = powercell::ac_sample_fresh(snap.valid, snap.power_at_ms, millis());
+  ac["valid"] = fresh;
+  ac["reason"] = fresh ? "ok" : (snap.valid ? "stale" : snap.reason);
+  if (fresh) {
     ac["lifetime_wh"] = snap.wh;
     ac["active_power_w"] = snap.power_dW / 10.0;
     ac["active_power_age_ms"] = millis() - snap.power_at_ms;
@@ -549,30 +576,30 @@ void hwV011AppendTelemetry(JsonDocument& doc) {
   } else {
     ac["lifetime_wh"] = nullptr;
     ac["active_power_w"] = nullptr;
+    ac["voltage_v"] = nullptr;
+    ac["current_a"] = nullptr;
   }
   ac["counter_epoch"] = snap.epoch;
   ac["clock_quality"] = snap.clock;
   ac["retained_allocated_wh"] = snap.allocated_wh;
   ac["retained_unallocated_wh"] = snap.unallocated_wh;
   ac["store_full"] = snap.store_full;
-  doc["grid_voltage"] = nullptr;
   doc["inverter_temperature"] = nullptr;
-  if (snap.valid) {
-    const float volts = snap.voltage_dV / 10.0f;
-    const float amps = snap.current_mA / 1000.0f;
-    const float active = snap.power_dW / 10.0f;
-    doc["output_voltage"] = volts;
-    doc["output_current"] = amps;
-    doc["output_power"] = volts * amps;
-    doc["output_power_quantity"] = "apparent_va";
-    doc["output_power_w"] = active;
-    doc["output_power_source"] = "pzem004t_v3_active";
-  } else {
-    doc["output_voltage"] = nullptr;
-    doc["output_current"] = nullptr;
-    doc["output_power"] = nullptr;
-    doc["output_power_w"] = nullptr;
-    doc["output_power_source"] = nullptr;
+  powercell::HomeMeters meters;
+  collect_home_meters(&meters);
+  static char nested_json[4096];
+  if (powercell::home_snapshot_write(meters, nullptr, nullptr, nested_json, sizeof nested_json) > 0) {
+    JsonDocument nested;
+    if (!deserializeJson(nested, nested_json)) {
+      doc["last_data"] = nested["last_data"];
+      doc["inverter"] = nested["inverter"];
+      doc["metrics"] = nested["metrics"];
+      doc["live"] = nested["live"];
+      doc["solar"] = nested["solar"];
+      doc["battery"] = nested["battery"];
+      if (!nested["usable_kw"].isNull()) doc["usable_kw"] = nested["usable_kw"];
+      doc["powercell_model"] = nested["powercell_model"];
+    }
   }
   JsonObject dsp = doc["dsp"].to<JsonObject>();
   dsp["present"] = false;

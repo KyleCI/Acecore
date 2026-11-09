@@ -326,7 +326,8 @@ int main() {
   missing.content_type_json = false;
   missing.accept_json = true;
   CHECK(api.login(login_json, missing, device, 9000, 1700001000, 3).status == 415);
-  CHECK(api.data_auth(nullptr, 9000) == 200);
+  CHECK(api.data_auth(nullptr, 9000) == 401);
+  CHECK(api.data_auth("", 9000) == 401);
   CHECK(api.data_auth(bearer_lan, 9000) == 200);
   CHECK(api.data_auth(bearer_session, 9000) == 401);
   CHECK(api.data_auth("Authorization: Bearer ota-token", 9000) == 401);
