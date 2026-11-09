@@ -834,11 +834,11 @@ static powercell::BatteryReading soc_at(float percent, uint32_t at, bool bms_own
 #include "ac_output_policy.h"
 static void test_factory_rating() {
   using namespace powercell;
-  SystemRating five(5000, "hw-v0.1.1-5kw");
-  CHECK(five.armed() && five.usableW() == 4500 && !strcmp(five.state().variant, "hw-v0.1.1-5kw"));
+  SystemRating five(5000, "pc-dsp011-5kw");
+  CHECK(five.armed() && five.usableW() == 4500 && !strcmp(five.state().variant, "pc-dsp011-5kw"));
   five.observeStore(true, 3500);
   CHECK(!five.armed() && !strcmp(five.reason(), "rating_mismatch"));
-  SystemRating mid(3500, "hw-v0.1.1-3.5kw");
+  SystemRating mid(3500, "pc-dsp011-35kw");
   CHECK(mid.armed() && mid.usableW() == 3150);
   mid.observeStore(false, 5000);
   CHECK(mid.armed());

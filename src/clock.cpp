@@ -1,6 +1,6 @@
 #include "prefs_safe.h"
 #include "clock.h"
-#include "hw_rtc.h"
+#include "dsp011_rtc.h"
 #include <Arduino.h>
 #include <Preferences.h>
 #include <esp_sntp.h>
@@ -31,7 +31,7 @@ bool save() {
 }
 void onNtp(struct timeval *tv) {
   g_src = Source::Ntp; g_ntpAt = millis(); g_ntpEver = true;
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   if (tv && (int64_t)tv->tv_sec >= kMinEpoch && (int64_t)tv->tv_sec <= kMaxEpoch) hwRtcWrite((int64_t)tv->tv_sec);
 #else
   (void)tv;
@@ -50,7 +50,7 @@ void begin() {
     setNow(last); g_src = Source::Nvs;
     LOGI("CLOCK", "NVS_RESTORE", "last good time %lld (stale by the downtime)", (long long)last);
   }
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   int64_t rtc = 0;
   if (hwRtcBegin(&rtc) && rtc >= kMinEpoch && rtc <= kMaxEpoch) {
     setNow(rtc); g_src = Source::Rtc;  // coherent, unanchored: not a signing clock
@@ -77,7 +77,7 @@ Verdict setFromPhone(int64_t epoch, bool hasTz, long tz) {
   if (v == Verdict::Accept) {
     LOGI("CLOCK", "PHONE_SET", "epoch=%lld was=%lld src=%s", (long long)epoch, (long long)nowS(), sourceName(g_src));
     setNow(epoch); g_src = Source::Phone; g_nvsPersisted = save(); g_lastSave = millis();
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
     g_rtc = hwRtcWrite(epoch) ? "persisted" : "failed";
 #else
     g_rtc = "not_fitted";

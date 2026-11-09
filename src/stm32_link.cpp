@@ -5,7 +5,7 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include "config.h"
-#include "hw_pzem.h"
+#include "dsp011_pzem.h"
 #include "log.h"
 #include "pins.h"
 #include "stm32_legacy_parser.h"
@@ -146,7 +146,7 @@ void begin() {
 Protocol protocol() { return g_proto; }
 
 bool status(Stm32Status &out, uint32_t *ageMs) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   float v = 0, a = 0, w = 0;
   uint32_t energy = 0, age = 0;
   if (!hwPzemSample(&v, &a, &w, &energy, &age)) return false;

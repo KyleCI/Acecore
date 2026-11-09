@@ -16,7 +16,7 @@
 #include "settings.h"
 #include "sockets/sockets.h"
 #include "solar.h"
-#include "hw_pzem.h"
+#include "dsp011_pzem.h"
 #include "stm32_link.h"
 #include "factory_id.h"
 #include "live.h"
@@ -49,7 +49,7 @@ void inverterBlock(JsonObject inv) {
   num("output_voltage", s.has_vout, s.vout);
   num("output_current", s.has_iout, s.iout);  // AC load current (CT)
   num("output_power", s.has_vout && s.has_iout, s.vout * s.iout);  // apparent, V x I
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   if (fresh && s.has_vout && s.has_iout) inv["output_power_quantity"] = "apparent_va";
   else inv["output_power_quantity"] = nullptr;
   inv["stm32_online"] = false;
@@ -192,7 +192,7 @@ void liveToJson(JsonObject o) {
   pc::live::PowerSrc ps = pc::live::outputPowerW(in, w);
   num("output_power_w", ps != pc::live::PowerSrc::None, w);
   if (const char *n = pc::live::powerSrcName(ps)) o["output_power_source"] = n; else o["output_power_source"] = nullptr;
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   float pz_v = 0, pz_a = 0, pz_w = 0;
   uint32_t pz_wh = 0, pz_age = 0;
   if (hwPzemSample(&pz_v, &pz_a, &pz_w, &pz_wh, &pz_age)) {
@@ -304,7 +304,7 @@ void buildMetrics(JsonDocument &doc) {
   uint32_t age = 0;
   bool fresh = stm32link::status(s, &age) && age < STM32_STALE_MS;
   doc["stm32_online"] = fresh;
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   doc["stm32_online"] = false;
   if (fresh && s.has_vout && s.has_iout) doc["output_power_quantity"] = "apparent_va";
 #endif

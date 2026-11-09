@@ -1,6 +1,6 @@
 #include "serial_spool.h"
 
-#ifdef POWERCELL_HW_V011
+#ifdef POWERCELL_DSP011
 #include <Arduino.h>
 #include "driver/uart.h"
 

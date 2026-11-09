@@ -1,6 +1,6 @@
 #include "i2c_bus.h"
 
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
 #include "config.h"
 #include <Arduino.h>
 

@@ -1,5 +1,5 @@
-#include "hw_pzem.h"
-#if POWERCELL_HW_V011
+#include "dsp011_pzem.h"
+#if POWERCELL_DSP011
 #include "pzem_v3.h"
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>

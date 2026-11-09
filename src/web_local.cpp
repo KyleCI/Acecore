@@ -412,14 +412,14 @@ void begin() {
     if (fid::paymentLocked()) return fail(r, 403, "payment_locked");
     if (s == "on" && ota::busy()) return fail(r, 409, "refused");
     if (s == "on" && powerguard::latched()) return fail(r, 409, "battery_critical_latched");
-#if !POWERCELL_HW_V011
+#if !POWERCELL_DSP011
     if (s == "on" && !stm32link::online()) return fail(r, 503, "stm32_timeout");  // IO15 stays LOW
 #endif
     // Applied from loop(): the framed STM32 set_mode blocks until the STM32 ACKs.
     gateway::request(s == "on", "local");
     afterGatewayChange(s);
     JsonDocument d; d["ok"] = true; d["state"] = s;
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
     d["applied_via"] = "dsp_gpio15";
 #else
     d["applied_via"] = gateway::viaFramed() ? "stm32_set_mode" : "pwr_key";
@@ -427,7 +427,7 @@ void begin() {
     json(r, 200, d);
   });
   postRoute("/relay", false, [](AsyncWebServerRequest *r, JsonDocument &doc, Cred) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
     fail(r, 409, "lora_not_fitted");  // AcePlug command. GPIO15 is the AC enable and is not written.
     return;
 #endif

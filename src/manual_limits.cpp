@@ -4,7 +4,7 @@
 #include "ac_output_settings.h"
 #include "battery_settings.h"
 #include "factory_rating.h"
-#include "hw_pzem.h"
+#include "dsp011_pzem.h"
 #include "power_guard.h"
 #include "prefs_safe.h"
 #include <Preferences.h>
@@ -76,7 +76,7 @@ void manualLimitsBegin() {
 }
 
 void manualLimitsService(uint32_t now) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   manualLimitsBegin();
   float volts = 0, amps = 0, watts = 0;
   uint32_t wh = 0, age = 0;

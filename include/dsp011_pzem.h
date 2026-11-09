@@ -2,7 +2,7 @@
 #include "config.h"
 #include <stdint.h>
 
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
 void hwPzemBegin();
 // Fresh PZEM-004T V3 100 A sample on UART1 RX25/TX26.
 // Power is active watts. Energy is lifetime watt-hours.

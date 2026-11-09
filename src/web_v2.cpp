@@ -108,7 +108,7 @@ void registerRoutes(AsyncWebServer &s) {
     if (const pc::live::Model *m = unitmodel::get()) d["powercell_model"] = m->code; else d["powercell_model"] = nullptr;
     if (const pc::live::Model *m = unitmodel::get()) { d["rated_kva"] = m->ratedKva; d["usable_kw"] = m->usableKw; }
     else { d["rated_kva"] = nullptr; d["usable_kw"] = nullptr; }
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
     manualSetupRating(d);
 #endif
     JsonObject units = d["units"].to<JsonObject>();
@@ -249,7 +249,7 @@ void registerRoutes(AsyncWebServer &s) {
     d["payment_locked"] = fid::paymentLocked();
     d["payment_lock_reason"] = fid::paymentLocked() ? fid::paymentLockReason() : "";
     telemetry::liveToJson(d["live"].to<JsonObject>());  // 2.5.4 app live view
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
     manualStatusRating(d.as<JsonObject>());
 #endif
     send(r, 200, d);

@@ -60,37 +60,37 @@ void energyStep(bool ok, float powerW) {
 }
 
 bool writeReg(uint8_t reg, uint16_t v) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   if (!i2c_bus_lock(I2C_TIMEOUT_MS)) return false;
 #endif
   Wire.beginTransmission(ADDR);
   Wire.write(reg); Wire.write(uint8_t(v >> 8)); Wire.write(uint8_t(v));
   bool ok = Wire.endTransmission() == 0;
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   i2c_bus_unlock();
 #endif
   return ok;
 }
 bool readReg(uint8_t reg, uint16_t &v) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   if (!i2c_bus_lock(I2C_TIMEOUT_MS)) return false;
 #endif
   Wire.beginTransmission(ADDR);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
     i2c_bus_unlock();
 #endif
     return false;
   }
   if (Wire.requestFrom(ADDR, (uint8_t)2) != 2) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
     i2c_bus_unlock();
 #endif
     return false;
   }
   v = uint16_t(Wire.read()) << 8; v |= uint8_t(Wire.read());
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   i2c_bus_unlock();
 #endif
   return true;

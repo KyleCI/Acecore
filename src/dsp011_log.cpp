@@ -1,8 +1,8 @@
-#include "hw_log.h"
-#if POWERCELL_HW_V011
+#include "dsp011_log.h"
+#if POWERCELL_DSP011
 #include "ac_energy_log.h"
 #include "clock.h"
-#include "hw_pzem.h"
+#include "dsp011_pzem.h"
 #include "log.h"
 #include "periph.h"
 #include "pins.h"

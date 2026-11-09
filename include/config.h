@@ -61,13 +61,13 @@
 #ifndef FEATURE_STM32             // UART1 text/framed link. v0.1.1 has no STM32.
 #define FEATURE_STM32 1
 #endif
-#ifndef POWERCELL_HW_V011
-#define POWERCELL_HW_V011 0
+#ifndef POWERCELL_DSP011
+#define POWERCELL_DSP011 0
 #endif
-#if POWERCELL_HW_V011 && FEATURE_STM32
+#if POWERCELL_DSP011 && FEATURE_STM32
 #error "hardware v0.1.1 is not connected to an STM32"
 #endif
-#if POWERCELL_HW_V011 && FEATURE_LORA
+#if POWERCELL_DSP011 && FEATURE_LORA
 #error "hardware v0.1.1 is not fitted with LoRa"
 #endif
 #ifndef FEATURE_ESPNOW_SOCKETS    // legacy smart-socket path over ESP-NOW; disabled in 2.2 (sockets use LoRa)

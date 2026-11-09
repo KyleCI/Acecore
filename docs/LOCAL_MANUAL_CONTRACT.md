@@ -66,11 +66,12 @@ as the saved LAN token.
 ## GET /v2/setup/info
 
 No authentication. `passcode_set` is the boolean the app should trust.
-`same_as_label` is not sent. `powercell_model`, `rated_kva`, and `usable_kw`
-are JSON null. This firmware does not invent a usable rating.
+`same_as_label` is not sent. `rated_kva` stays null. The STM32 images leave
+`powercell_model` and `usable_kw` null. The 5 kW DSP image below sets them
+from the image rating.
 
 ```json
-{"device_id":"ACE-DDEEFF","model":"hw-v0.1.1","fw":"1.0.1","state":"unconfigured","claimed":false,"passcode_default":false,"passcode_set":false,"hotspot":false,"onboarding_version":2,"powercell_model":null,"rated_kva":null,"usable_kw":null,"units":{"power":"W","energy":"Wh"},"data_format_version":1}
+{"device_id":"ACE-DDEEFF","model":"pc-dsp011-5kw","fw":"2.5.13","state":"unconfigured","claimed":false,"passcode_default":false,"passcode_set":false,"hotspot":false,"onboarding_version":2,"powercell_model":"PC5K","rated_kva":null,"usable_kw":4.5,"units":{"power":"W","energy":"Wh"},"data_format_version":1}
 ```
 
 `units` and integer `data_format_version` are fixed for the build. They match
@@ -142,18 +143,19 @@ when the body repeats the value already in the image. There is no web,
 socket, or serial command that writes it.
 
 This is rated active watts, not kVA. No power factor is applied. The only
-armed images are 5000 W usable 4500 W (`hw-v0.1.1-5kw`) and 3500 W usable
-3150 W (`hw-v0.1.1-3.5kw`). `usable_kw` and `rated_kva` on setup info stay
-null. An image without a rating, an image whose rating is not one of those
+armed images are 5000 W usable 4500 W (`pc-dsp011-5kw`) and 3500 W usable
+3150 W (`pc-dsp011-35kw`). `rated_kva` on setup info stays null. The 5 kW
+image sets `usable_kw` to 4.5 and `powercell_model` to `PC5K`. The 3.5 kW
+image sets `usable_kw` to 3.15 and leaves `powercell_model` null. An image without a rating, an image whose rating is not one of those
 two, or a leftover `system_cfg/rated` value that does not equal the image,
 leaves `overload_configured` false and `usable_active_w` null. The firmware
 does not fill in or overwrite that stored value.
 
 ```json
-{"schema":1,"result":"readback","reason":"none","applied":false,"durable_commit":false,"writable":false,"authority":"factory_image","overload_configured":true,"physical_shutdown_verified":false,"factory_variant":"hw-v0.1.1-5kw","readback":{"rated_active_w":5000,"usable_active_w":4500,"factory_rated_active_w":5000,"stored_rated_active_w":null,"rating_match":true}}
+{"schema":1,"result":"readback","reason":"none","applied":false,"durable_commit":false,"writable":false,"authority":"factory_image","overload_configured":true,"physical_shutdown_verified":false,"factory_variant":"pc-dsp011-5kw","readback":{"rated_active_w":5000,"usable_active_w":4500,"factory_rated_active_w":5000,"stored_rated_active_w":null,"rating_match":true}}
 ```
 
-The 3.5 kW image is the same object with `factory_variant` `hw-v0.1.1-3.5kw`,
+The 3.5 kW image is the same object with `factory_variant` `pc-dsp011-35kw`,
 `rated_active_w` 3500, and `usable_active_w` 3150. `GET /v2/status` repeats
 `factory_variant`, `rated_active_w`, `usable_active_w`,
 `overload_configured`, and `rating_writable:false` for a session or a LAN

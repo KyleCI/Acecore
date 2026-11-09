@@ -14,8 +14,8 @@ login store, or the boot path.
 | --- | --- | --- | --- | --- | --- |
 | `esp32dev_stm01_5kw` | `.pio/build/esp32dev_stm01_5kw/` | `unrated` | none | none | off |
 | `esp32dev_stm01_35kw` | `.pio/build/esp32dev_stm01_35kw/` | `unrated` | none | none | off |
-| `esp32dev_dsp011_5kw` | `.pio/build/esp32dev_dsp011_5kw/` | `hw-v0.1.1-5kw` | 5000 | 4500 | armed |
-| `esp32dev_dsp011_35kw` | `.pio/build/esp32dev_dsp011_35kw/` | `hw-v0.1.1-3.5kw` | 3500 | 3150 | armed |
+| `esp32dev_dsp011_5kw` | `.pio/build/esp32dev_dsp011_5kw/` | `pc-dsp011-5kw` | 5000 | 4500 | armed |
+| `esp32dev_dsp011_35kw` | `.pio/build/esp32dev_dsp011_35kw/` | `pc-dsp011-35kw` | 3500 | 3150 | armed |
 
 Usable watts are 90 percent of those two rated values only. A 5 kW unit gets
 the `esp32dev_dsp011_5kw` image. A 3.5 kW unit gets the `esp32dev_dsp011_35kw`
@@ -24,7 +24,7 @@ image. The STM32 images do not guess a rating.
 After a build, `strings firmware.bin` on a rated image contains that image's
 `factory_variant` and does not contain the other product's variant string.
 The word `unrated` is also present as a fallback literal, so the factory
-matches `hw-v0.1.1-5kw` or `hw-v0.1.1-3.5kw` rather than looking for the
+matches `pc-dsp011-5kw` or `pc-dsp011-35kw` rather than looking for the
 absence of `unrated`. After boot, `GET /v1/system-rating` returns the same
 variant. This repository does not flash a board.
 

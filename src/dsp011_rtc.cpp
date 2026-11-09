@@ -1,5 +1,5 @@
-#include "hw_rtc.h"
-#if POWERCELL_HW_V011
+#include "dsp011_rtc.h"
+#if POWERCELL_DSP011
 #include "ds3231_time.h"
 #include "i2c_bus.h"
 #include "log.h"

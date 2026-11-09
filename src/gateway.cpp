@@ -17,7 +17,7 @@ volatile int8_t g_req = -1;  // -1 none, 0 off, 1 on
 const char *g_reqOrigin = "local";
 
 void drive(bool on) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   digitalWrite(PIN_PWR_KEY, powercell::v011_dsp_level(on));
 #else
   digitalWrite(PIN_PWR_KEY, on ? HIGH : LOW);
@@ -27,7 +27,7 @@ void drive(bool on) {
 }  // namespace
 
 void earlyInit() {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   digitalWrite(PIN_PWR_KEY, powercell::v011_dsp_level(false));
 #else
   digitalWrite(PIN_PWR_KEY, LOW);
@@ -37,7 +37,7 @@ void earlyInit() {
 
 void begin() {
   earlyInit();
-#if !POWERCELL_HW_V011
+#if !POWERCELL_DSP011
   digitalWrite(PIN_PWR_LIGHT, LOW);
   pinMode(PIN_PWR_LIGHT, OUTPUT);
 #endif
@@ -74,7 +74,7 @@ Result set(bool on, const char *origin) {
     LOGW("GATEWAY", "REFUSED", "on while battery critical latched (origin=%s)", origin);
     return Result::CriticalLatched;
   }
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   if (on && ota::busy()) {
     LOGW("GATEWAY", "REFUSED", "on during firmware update (origin=%s)", origin);
     return Result::Refused;

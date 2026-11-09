@@ -9,7 +9,7 @@
 #include "config.h"
 #include "ac_output_policy.h"
 #include "gateway.h"
-#include "hw_pzem.h"
+#include "dsp011_pzem.h"
 #include "manual_limits.h"
 #include "hw_output.h"
 #include "log.h"
@@ -31,7 +31,7 @@ float g_soc = 0; bool g_socValid = false;
 bool g_gridDown = true;   // STM32 grid < 160 V (restore 170 V); unknown/stale = down
 bool g_overload = false;  // inverter overload (STM32 bit16 or iout >= 19 A, clear 17 A)
 const char *NS = "pwr_guard";
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
 powercell::BatteryAlertPolicy g_cutoff;
 bool g_cutoffOff = false;
 const char *kCutoffNs = "battery_guard";
@@ -78,7 +78,7 @@ void shedPass() { socketcfg::pass(g_socValid, g_soc, g_gridDown, latched(), g_ov
 }  // namespace
 
 bool espLatched() {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   return g_cutoff.outputLatched() || !g_cutoff.outputOnAllowed();
 #else
   return g_guard.latched();
@@ -86,7 +86,7 @@ bool espLatched() {
 }
 bool stmReserve() { return g_stmRsv; }
 bool latched() {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   return !g_cutoff.outputOnAllowed();
 #else
   return g_guard.latched() || g_stmRsv;
@@ -94,7 +94,7 @@ bool latched() {
 }
 bool lowPower() { return g_low; }
 void setAlertThresholds(float lowPercent, float warningPercent) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   g_cutoff.setThresholds(lowPercent, warningPercent);
 #else
   (void)lowPercent;
@@ -103,7 +103,7 @@ void setAlertThresholds(float lowPercent, float warningPercent) {
 }
 
 bool refuseOn(const char *origin) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   (void)origin;
   if (!g_cutoff.outputOnAllowed()) return true;
   return powercell::acOutputPolicy().shutdownLatched();
@@ -147,7 +147,7 @@ bool refuseOn(const char *origin) {
 void setPriority(const String &id, bool essential) { socketcfg::setPriority(id, essential); }  // console PRIO fallback
 
 void begin() {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   g_cutoff = powercell::BatteryAlertPolicy(millis());
   Preferences prefs;
   bool latched = false, read_ok = false;
@@ -170,7 +170,7 @@ void begin() {
 }
 
 void service() {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   uint32_t now = millis();
   if (now - g_last < 1000) return;
   g_last = now;
@@ -231,7 +231,7 @@ void service() {
     g_restorePending = g_wasOn;  // applied once the STM32 reserve latch is clear too
   }
   if (g_restorePending && !g_guard.latched() && !g_stmRsv) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
     g_restorePending = false;  // recovery does not turn the AC output on
 #else
     g_restorePending = false;
@@ -252,7 +252,7 @@ void service() {
 }
 
 void toJson(JsonObject o) {
-#if POWERCELL_HW_V011
+#if POWERCELL_DSP011
   o["critical_latched"] = g_cutoff.outputLatched();
   o["boot_hold"] = !g_cutoff.outputOnAllowed() && !g_cutoff.outputLatched();
   o["output_on_allowed"] = g_cutoff.outputOnAllowed();
