@@ -1,4 +1,4 @@
-#include "lora.h"
+#include "collector_radio.h"
 #ifdef POWERCELL_HW_V011
 #include "hw_v011.h"
 #endif

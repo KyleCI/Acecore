@@ -5,7 +5,7 @@
 #include "local_manual_api.h"
 #include "offline_battery_notifications.h"
 #include "provisioning.h"
-#include "lora.h"
+#include "collector_radio.h"
 #include <PowercellOTA.h>
 
 #include <Arduino.h>

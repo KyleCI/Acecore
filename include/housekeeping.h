@@ -15,7 +15,7 @@ Instead of a long list of includes, just include this file and you're good to go
 #include <bms.h>
 #include <mppt.h>
 #include <inverter.h>
-#include <lora.h>
+#include <collector_radio.h>
 #include <lighting.h>
 #include <provisioning.h>
 #include <energy.h>

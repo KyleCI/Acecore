@@ -1,12 +1,33 @@
 #!/usr/bin/env python3
 """Host checks for hardware v0.1.1. No device, flash, or network."""
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[1]
+
+def reject_case_folded_headers():
+    """Windows opens LoRa.h as lora.h. A project header must not use that name."""
+    project = {path.name.casefold(): path.name for path in (root / "include").glob("*.h")}
+    requested = set()
+    for folder in (root / "include", root / "src", root / "lib"):
+        for path in folder.rglob("*"):
+            if path.suffix not in {".h", ".cpp"}:
+                continue
+            requested.update(re.findall(r'#include\s*[<"]([^>"]+)[>"]', path.read_text(errors="replace")))
+    collisions = []
+    for name in requested:
+        base = pathlib.Path(name).name
+        existing = project.get(base.casefold())
+        if existing and existing != base:
+            collisions.append(f"{existing} collides with {base}")
+    if collisions:
+        sys.exit("case-insensitive include collision:\n" + "\n".join(collisions))
+
+reject_case_folded_headers()
 compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
 if not compiler:
     sys.exit("A C++ compiler is required.")

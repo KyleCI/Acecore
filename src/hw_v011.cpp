@@ -198,7 +198,7 @@ RtcIo read_ds3231(uint8_t frame[16]) {
     i2c_bus_unlock();
     return RtcIo::Nack;
   }
-  const uint8_t got = Wire.requestFrom(powercell::kDs3231Address,
+  const uint8_t got = Wire.requestFrom(static_cast<uint8_t>(powercell::kDs3231Address),
                                        static_cast<uint8_t>(powercell::kDs3231FrameBytes));
   if (got != powercell::kDs3231FrameBytes) {
     i2c_bus_unlock();
