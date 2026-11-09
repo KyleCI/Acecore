@@ -20,6 +20,7 @@
 #include "pins.h"
 #include "devauth.h"
 #include "factory_id.h"
+#include "hw_log.h"
 
 namespace console {
 namespace {
@@ -290,6 +291,9 @@ void handle(String cmd) {
   else if (cmd == "SOCKETS") Serial.println(buildMetricsJson());
   else if (cmd.startsWith("STM32 ")) stm32(cmd.substring(6));
   else if (cmd == "REBOOT") { ESP.restart(); }
+#if POWERCELL_HW_V011
+  else if (cmd.startsWith("BBTAIL") || cmd.startsWith("BBEXPORT")) hwLogExport(cmd.startsWith("BBEXPORT"));
+#endif
   else Serial.println("ERR unknown command (INFO, SERIAL, SECRET, ROTATE_SECRET, SELFTEST, BMS RAW, STM VER, STM CAL?, SET, OTA_CONFIG, LOCK, AP ON, PAYMENT_UNLOCK, FACTORY_RESET, FACTORY_WIPE, REGISTER:, UNREGISTER:, RELAY:, SOCKETS, STM32, REBOOT)");
 }
 }  // namespace

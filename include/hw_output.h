@@ -43,4 +43,15 @@ inline int battery_cutoff_pin_level(HardwareProfile profile, bool hold_off) {
 inline bool battery_cutoff_writes_bms_fets() { return false; }
 inline bool battery_cutoff_stops_charging() { return false; }
 
+// SD chip select. v0.1.1 uses GPIO33. The original profile keeps GPIO14
+// because GPIO33 is the STM32 RX pin.
+inline int profile_sd_cs(HardwareProfile profile) {
+  return profile == HardwareProfile::V011 ? 33 : 14;
+}
+
+inline bool diag_kind_allowed(HardwareProfile profile, uint8_t kind) {
+  if (profile == HardwareProfile::V011 && (kind == 13 || kind == 14)) return false;
+  return true;
+}
+
 }  // namespace powercell

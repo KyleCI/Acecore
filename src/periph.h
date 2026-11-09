@@ -8,6 +8,7 @@
 namespace periph {
 void begin();
 bool sdPresent();
+void noteSd(bool present, uint32_t sizeMb);
 bool loraPresent();
 void toJson(JsonObject o);
 // One lock for every LoRa and SD access on the shared VSPI bus (hardware VP,

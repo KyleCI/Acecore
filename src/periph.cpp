@@ -25,12 +25,18 @@ void begin() {
   if (!g_spi) ESP.restart();
   // Deselect every SPI device on the shared bus before either library begins:
   // LoRa CS (IO4) and SD CS (IO14) driven HIGH as outputs (MPPT CS too).
+#if POWERCELL_HW_V011
+  // GPIO33 is the SD chip select. GPIO14 stays the original profile's CS.
+  // GPIO4 (LoRa CS) is not driven: that radio is not fitted.
+  for (int cs : {33, PIN_SPI_CS_MPPT}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
+#else
   for (int cs : {PIN_LORA_CS, PIN_SD_CS, PIN_SPI_CS_MPPT}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
+#endif
   SPI.begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI);
   solar::begin();
   xSemaphoreTake(g_spi, portMAX_DELAY);
   lora = loraLinkBegin();
-#if FEATURE_SD_PROBE
+#if FEATURE_SD_PROBE && !POWERCELL_HW_V011
   sd = SD.begin(PIN_SD_CS, SPI, 4000000);
   if (sd) sdMb = uint32_t(SD.cardSize() / (1024 * 1024));
 #endif
@@ -43,6 +49,7 @@ void begin() {
 SemaphoreHandle_t spiMutex() { return g_spi; }
 
 bool sdPresent() { return sd; }
+void noteSd(bool present, uint32_t sizeMb) { sd = present; sdMb = sizeMb; }
 bool loraPresent() { return lora; }
 
 void toJson(JsonObject o) {

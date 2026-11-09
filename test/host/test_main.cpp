@@ -782,6 +782,61 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
 static powercell::BatteryReading soc_at(float percent, uint32_t at, bool bms_own = true) {
   return {true, percent, 51.2f, at, false, bms_own};
 }
+#include "sd_log.h"
+#include "serial_spool.h"
+#include "ac_energy_log.h"
+#include "byte_store.h"
+static void test_sd_energy() {
+  using namespace powercell;
+  CHECK(profile_sd_cs(HardwareProfile::V011) == 33);
+  CHECK(profile_sd_cs(HardwareProfile::Original) == 14);
+  CHECK(profile_sd_cs(HardwareProfile::V011) != 25 && profile_sd_cs(HardwareProfile::V011) != 26);
+  CHECK(!diag_kind_allowed(HardwareProfile::V011, KindDiagStm32));
+  CHECK(diag_kind_allowed(HardwareProfile::Original, KindDiagStm32));
+
+  FakeCard card(8);
+  SdLog log(card, true);
+  CHECK(log.recover());
+  SlotRecord rec;
+  rec.kind = KindDiagConsole;
+  memcpy(rec.payload, "hello", 5);
+  rec.len = 5;
+  CHECK(log.append(rec) == SdStatus::Ok);
+  CHECK(log.flush());
+  SlotRecord got;
+  CHECK(log.read(1, &got) && memcmp(got.payload, "hello", 5) == 0);
+
+  console_spool().ingest("SET api_key supersecret\n", 24);
+  char recent[200];
+  CHECK(console_spool().export_recent(recent, sizeof recent) > 0);
+  CHECK(strstr(recent, "supersecret") == nullptr);
+
+  MemoryByteStore store(16384);
+  MetaMirror mirror(store, 4096);
+  SlotLogConfig cfg;
+  cfg.sector_size = 4096;
+  cfg.allow_overwrite = false;
+  SlotLog slots(store, 8192, 8192, cfg);
+  CHECK(slots.recover());
+  EnergyLog energy(slots, mirror, EnergyConfig());
+  energy.load();
+  MeterSample sample;
+  sample.valid = true;
+  sample.lifetime_wh = 1000;
+  sample.mono_ms = 1000;
+  sample.mono_continuous = true;
+  sample.unix_s = 1700000100;
+  sample.clock = static_cast<uint8_t>(ClockQuality::RtcUnanchored);
+  sample.margin_s = 180;
+  CHECK(energy.observe(sample) == EnergyStatus::Baseline);
+  CHECK(!energy.requests_meter_reset());
+  sample.lifetime_wh = 1004;
+  sample.mono_ms = 1000 + 900000;
+  sample.unix_s += 900;
+  CHECK(energy.observe(sample) != EnergyStatus::Missing);
+  CHECK(!energy.requests_meter_reset());
+}
+
 static void test_battery_cutoff() {
   using P = powercell::BatteryAlertPolicy;
   CHECK(!P::kPhysicalAutoOffEnabled);
@@ -1204,7 +1259,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_v011_gpio(); test_battery_cutoff();
+  test_time_policy(); test_ds3231(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();

@@ -22,6 +22,7 @@
 #include "periph.h"
 #include "settings.h"
 #include "sockets/sockets.h"
+#include "hw_log.h"
 #include "hw_pzem.h"
 #include "stm32_link.h"
 #include "stm32_updater.h"
@@ -60,6 +61,9 @@ void setup() {
   bms::begin();
   unitmodel::begin();  // 2.5.4 PC3K/PC5K/PC10K from NVS
   periph::begin();     // SPI bus, ADS1115 solar, LoRa, optional SD
+#if POWERCELL_HW_V011
+  hwLogStart();
+#endif
   offlineq::begin();
   events::begin();
   socketsInit();
