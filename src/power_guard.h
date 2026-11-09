@@ -14,6 +14,7 @@ bool latched();              // either: on commands are refused (battery_critica
 bool lowPower();             // standby mode active (== latched())
 bool refuseOn(const char *origin);  // gateway::set hook; only "soc_restore" passes while latched
 void setPriority(const String &socketId, bool essential);  // console PRIO fallback: writes the socket config priority
+void setAlertThresholds(float lowPercent, float warningPercent);
 void toJson(JsonObject o);
 String debugJson();
 }  // namespace powerguard

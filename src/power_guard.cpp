@@ -7,7 +7,10 @@
 #include "battery_alert_policy.h"
 #include "bms.h"
 #include "config.h"
+#include "ac_output_policy.h"
 #include "gateway.h"
+#include "hw_pzem.h"
+#include "manual_limits.h"
 #include "hw_output.h"
 #include "log.h"
 #include "events_core.h"
@@ -90,10 +93,20 @@ bool latched() {
 #endif
 }
 bool lowPower() { return g_low; }
+void setAlertThresholds(float lowPercent, float warningPercent) {
+#if POWERCELL_HW_V011
+  g_cutoff.setThresholds(lowPercent, warningPercent);
+#else
+  (void)lowPercent;
+  (void)warningPercent;
+#endif
+}
+
 bool refuseOn(const char *origin) {
 #if POWERCELL_HW_V011
   (void)origin;
-  return !g_cutoff.outputOnAllowed();
+  if (!g_cutoff.outputOnAllowed()) return true;
+  return powercell::acOutputPolicy().shutdownLatched();
 #else
   if (!strcmp(origin ? origin : "", "soc_restore")) return false;  // guard's own restore
   // 2.5.5: battery percentage gate (BMS SoC > 10 %), 48.0 V fallback without the BMS.
@@ -176,6 +189,11 @@ void service() {
   if (g_cutoff.latchDirty()) saveCutoff();
   if (!g_cutoff.outputOnAllowed()) holdAcOff();
   else g_cutoffOff = false;  // eligible again; do not turn the output on
+  manualLimitsService(now);
+  if (powercell::acOutputPolicy().shutdownLatched()) {
+    const bool edge = powercell::acOutputPolicy().takeShutdownEdge();
+    if (gateway::state() || edge) gateway::set(false, "ac_overload");
+  }
   return;
 #else
   uint32_t now = millis();

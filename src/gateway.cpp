@@ -62,7 +62,8 @@ Result set(bool on, const char *origin) {
   // HQ payment_lock: refuse user/cloud on and off. System force-off (payment_lock,
   // battery_critical, ota) still runs. ON is never allowed while locked.
   if (fid::paymentLocked()) {
-    bool systemOff = !on && origin && (!strcmp(origin, "payment_lock") || !strcmp(origin, "battery_critical") || !strcmp(origin, "ota"));
+    bool systemOff = !on && origin && (!strcmp(origin, "payment_lock") || !strcmp(origin, "battery_critical") ||
+                                    !strcmp(origin, "ac_overload") || !strcmp(origin, "ota"));
     if (on || !systemOff) {
       LOGW("GATEWAY", "PAYMENT_LOCKED", "%s refused (origin=%s)", on ? "on" : "off", origin ? origin : "?");
       return Result::PaymentLocked;

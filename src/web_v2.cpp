@@ -15,6 +15,7 @@
 #include "factory_id.h"
 #include "telemetry.h"
 #include "unit_model.h"
+#include "manual_limits.h"
 
 namespace onboarding {
 namespace {
@@ -107,6 +108,9 @@ void registerRoutes(AsyncWebServer &s) {
     if (const pc::live::Model *m = unitmodel::get()) d["powercell_model"] = m->code; else d["powercell_model"] = nullptr;
     if (const pc::live::Model *m = unitmodel::get()) { d["rated_kva"] = m->ratedKva; d["usable_kw"] = m->usableKw; }
     else { d["rated_kva"] = nullptr; d["usable_kw"] = nullptr; }
+#if POWERCELL_HW_V011
+    manualSetupRating(d);
+#endif
     JsonObject units = d["units"].to<JsonObject>();
     units["power"] = "W";
     units["energy"] = "Wh";
@@ -245,8 +249,40 @@ void registerRoutes(AsyncWebServer &s) {
     d["payment_locked"] = fid::paymentLocked();
     d["payment_lock_reason"] = fid::paymentLocked() ? fid::paymentLockReason() : "";
     telemetry::liveToJson(d["live"].to<JsonObject>());  // 2.5.4 app live view
+#if POWERCELL_HW_V011
+    manualStatusRating(d.as<JsonObject>());
+#endif
     send(r, 200, d);
   });
+  auto manualAuth = [](const Caller &c) { return c.auth == Auth::Lan ? 2 : c.auth == Auth::Session ? 1 : 0; };
+  auto manualRoute = [&](const char *path, int (*fn)(JsonDocument &, JsonDocument &, int, bool)) {
+    s.on(path, HTTP_ANY, [path, fn](AsyncWebServerRequest *r) {
+      (void)path;
+      if (r->method() != HTTP_GET && r->method() != HTTP_POST) {
+        AsyncWebServerResponse *res = new (std::nothrow) AsyncBasicResponse(405, "application/json", "{\"error\":\"method_not_allowed\"}");
+        if (!res) { if (r->client()) r->client()->close(); return; }
+        res->addHeader("Allow", "GET, POST");
+        r->send(res);
+        return;
+      }
+      JsonDocument doc;
+      Body *b = static_cast<Body *>(r->_tempObject);
+      if (b && b->overflow) return err(r, 413, "body_too_large");
+      if (b && b->len && (deserializeJson(doc, b->data, b->len) || !doc.is<JsonObject>())) return err(r, 400, "invalid_json");
+      Caller c = authorize(r->hasHeader("Authorization") ? r->header("Authorization") : String());
+      if (c.auth == Auth::None) return err(r, 401, "unauthorized");
+      JsonDocument d;
+      const bool post = r->method() == HTTP_POST;
+      const int auth = c.auth == Auth::Lan ? 2 : 1;
+      send(r, fn(doc, d, auth, post), d);
+    }, nullptr, onBody);
+  };
+  auto ratingFn = [](JsonDocument &, JsonDocument &out, int auth, bool post) { return manualSystemRating(out, auth, post); };
+  manualRoute("/v1/system-rating", ratingFn);
+  manualRoute("/v2/system-rating", ratingFn);
+  manualRoute("/v1/ac-output-settings", manualAcSettings);
+  manualRoute("/v1/battery-settings", manualBatterySettings);
+  (void)manualAuth;
   route(s, "/v2/claim_code", HTTP_POST, true, [](AsyncWebServerRequest *r, JsonDocument &, const Caller &) {
     JsonDocument d; d["claim_code"] = newClaimCode(); d["expires_in"] = 900; send(r, 200, d);
   });

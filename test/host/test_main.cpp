@@ -786,6 +786,49 @@ static powercell::BatteryReading soc_at(float percent, uint32_t at, bool bms_own
 #include "serial_spool.h"
 #include "ac_energy_log.h"
 #include "byte_store.h"
+#include "ac_output_settings.h"
+#include "ac_output_policy.h"
+static void test_factory_rating() {
+  using namespace powercell;
+  SystemRating five(5000, "hw-v0.1.1-5kw");
+  CHECK(five.armed() && five.usableW() == 4500 && !strcmp(five.state().variant, "hw-v0.1.1-5kw"));
+  five.observeStore(true, 3500);
+  CHECK(!five.armed() && !strcmp(five.reason(), "rating_mismatch"));
+  SystemRating mid(3500, "hw-v0.1.1-3.5kw");
+  CHECK(mid.armed() && mid.usableW() == 3150);
+  mid.observeStore(false, 5000);
+  CHECK(mid.armed());
+  SystemRating none(0, "unrated");
+  CHECK(!none.armed() && none.usableW() == 0);
+  none.observeStore(true, 5000);
+  CHECK(!none.armed());
+
+  AcOutputSettings ceiling;
+  auto too_high = ceiling.set(SettingsAuth::Ok, 1, true, 4501, true, 1, 4500, 0, true);
+  CHECK(!too_high.applied && too_high.reason == SettingsReason::CeilingAboveUsable);
+  auto ok = ceiling.set(SettingsAuth::Ok, 1, true, 4000, true, 1, 4500, 0, true);
+  CHECK(ok.applied && ok.readback.ceiling_w == 4000);
+  auto unset = ceiling.set(SettingsAuth::Ok, 1, true, 100, true, 1, 0, ok.readback.applied_revision, true);
+  CHECK(!unset.applied && unset.reason == SettingsReason::UsableUnset);
+
+  AcOutputPolicy policy;
+  policy.setUsable(4500);
+  AcWatts sample;
+  sample.valid = true;
+  sample.watts = 4500;
+  sample.receivedAtMs = 10000;
+  policy.update(sample, 10000);
+  sample.receivedAtMs = 14000;
+  policy.update(sample, 14000);
+  CHECK(!policy.shutdownLatched());
+  sample.watts = 4501;
+  sample.receivedAtMs = 14000;
+  policy.update(sample, 14000);
+  sample.receivedAtMs = 22000;
+  policy.update(sample, 22000);
+  CHECK(policy.shutdownLatched() && !policy.turnsOutputOn());
+}
+
 static void test_sd_energy() {
   using namespace powercell;
   CHECK(profile_sd_cs(HardwareProfile::V011) == 33);
@@ -1259,7 +1302,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy();
+  test_time_policy(); test_ds3231(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();
