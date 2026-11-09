@@ -4,6 +4,7 @@
 #include <math.h>
 #include "crc.h"
 #include "identity.h"
+#include "ota_identity.h"
 #include "jk_bms.h"
 #include "power_policy.h"
 #include "ota_gate.h"
@@ -158,6 +159,36 @@ static void test_identity() {
   const uint8_t salt[] = {1, 2, 3};
   apPassword(mac, salt, 3, p2); CHECK(strcmp(p1, p2) != 0);
   urlEncode(c, e, sizeof e); CHECK(!strcmp(e, "24%3A6F%3A28%3AAE%3A9C%3A1A"));
+}
+
+static void test_ota_hardware_model() {
+  using namespace pc;
+  const char* k5 = "esp32dev-hw011-5kw";
+  const char* k35 = "esp32dev-hw011-35kw";
+  char stock[96], hw5[128], hw35[128], look[96];
+  CHECK(otaFormatIdentity(stock, sizeof stock, "collector", "esp32dev", "2.5.14"));
+  CHECK(otaFormatIdentity(hw5, sizeof hw5, "collector", k5, "2.5.14"));
+  CHECK(otaFormatIdentity(hw35, sizeof hw35, "collector", k35, "2.5.14"));
+  CHECK(otaFormatIdentity(look, sizeof look, "collector", "esp32dev", "2.5.14"));
+  CHECK(!otaImageHasIdentity(hw5, strlen(hw5), look));
+  CHECK(!otaImageHasIdentity(hw35, strlen(hw35), look));
+
+  // Stock image offered to a hardware unit.
+  CHECK(!otaHwAccepts(stock, strlen(stock), k5, "2.5.13", "2.5.14", "esp32dev"));
+  CHECK(!otaHwAccepts(stock, strlen(stock), k5, "2.5.13", "2.5.14", nullptr));
+  // Hardware image offered to the matching hardware unit.
+  CHECK(otaHwAccepts(hw5, strlen(hw5), k5, "2.5.13", "2.5.14", nullptr));
+  CHECK(otaHwAccepts(hw5, strlen(hw5), k5, "2.5.13", "2.5.14", k5));
+  CHECK(!otaHwAccepts(hw5, strlen(hw5), k5, "2.5.13", "2.5.13", nullptr));
+  // Hardware image checked with the unchanged 2.5.11 rule.
+  CHECK(!otaStock2511Accepts(hw5, strlen(hw5), "2.5.14"));
+  CHECK(!otaStock2511Accepts(hw35, strlen(hw35), "2.5.13"));
+  CHECK(otaStock2511Accepts(stock, strlen(stock), "2.5.14"));
+  CHECK(!otaStock2511Accepts(stock, strlen(stock), "2.5.11"));
+  // 5 kW and 3.5 kW refuse each other.
+  CHECK(!otaHwAccepts(hw5, strlen(hw5), k35, "2.5.13", "2.5.14", nullptr));
+  CHECK(!otaHwAccepts(hw35, strlen(hw35), k5, "2.5.13", "2.5.14", k35));
+  CHECK(!otaHwAccepts(hw5, strlen(hw5), k5, "2.5.13", "2.5.14", k35));
 }
 
 static void test_local_auth() {
@@ -1312,6 +1343,7 @@ int main() {
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();
+  test_ota_hardware_model();
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();

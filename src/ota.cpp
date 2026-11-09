@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <string>
+#include <string.h>
 #include "ca_cert.h"
 #include "config.h"
 #include "local_auth.h"
@@ -231,6 +232,25 @@ void check() {
     }
   }
   uint32_t size = doc["size"] | (fw.isNull() ? 0u : (fw["size"] | 0u));
+#if POWERCELL_HW_V011
+  {
+    bool haveModel = false;
+    String offerModel;
+    if (doc["model"].is<const char *>()) { offerModel = doc["model"].as<const char *>(); haveModel = true; }
+    if (!fw.isNull() && fw["model"].is<const char *>()) {
+      String fm = fw["model"].as<const char *>();
+      if (haveModel && fm != offerModel) {
+        LOGW("OTA", "MODEL_REJECTED", "check model fields disagree");
+        return;
+      }
+      offerModel = fm;
+    }
+    if (offerModel.length() && strcmp(offerModel.c_str(), POWERCELL_HARDWARE_MODEL) != 0) {
+      LOGW("OTA", "MODEL_REJECTED", "offer model=%s want=%s", offerModel.c_str(), POWERCELL_HARDWARE_MODEL);
+      return;
+    }
+  }
+#endif
   handleOffer(base, key, newVersion, url, digest, size);
 }
 
@@ -427,6 +447,12 @@ void wsReply(JsonDocument &doc) {
   o.size = doc["size"] | 0u;
   if (o.version.isEmpty() || o.sha256.isEmpty()) { LOGW("OTA", "BAD_RESPONSE", "ota_available without version/sha256"); return; }
   if (o.version == POWERCELL_FIRMWARE_VERSION) { LOGI("OTA", "WS_NONE", "offered version is the running one"); return; }
+#if POWERCELL_HW_V011
+  if (doc["model"].is<const char *>() && strcmp(doc["model"].as<const char *>(), POWERCELL_HARDWARE_MODEL) != 0) {
+    LOGW("OTA", "MODEL_REJECTED", "offer model=%s want=%s", doc["model"].as<const char *>(), POWERCELL_HARDWARE_MODEL);
+    return;
+  }
+#endif
   o.set = true;
   g_wsOffer = o;
   LOGI("OTA", "WS_AVAILABLE", "version=%s size=%lu", o.version.c_str(), (unsigned long)o.size);
