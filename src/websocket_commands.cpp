@@ -1,6 +1,7 @@
 #include <PowercellOTA.h>
 #include "websocket_commands.h"
 #include "home_snapshot.h"
+#include "power_units.h"
 #include <ArduinoJson.h>
 #include <WebSocketsClient.h>
 #include <time.h>
@@ -145,9 +146,27 @@ void telemetry() {
   inverter["system"] = inv.sys;
   inverter["switch"] = inv.sw;
   inverter["grid_voltage"] = inv.gridVoltage;
-  inverter["output_voltage"] = inv.vout;
-  inverter["output_current"] = inv.iout;
   inverter["temperature"] = inv.tempC;
+  powercell::OutputSample sample;
+  const bool seen = inv.vout != 0.f || inv.iout != 0.f;
+  sample.voltage_present = seen;
+  sample.volts = inv.vout;
+  sample.current_present = seen;
+  sample.amps = inv.iout;
+  sample.active_present = false;
+  const powercell::NormalizedOutput normalized = powercell::normalize_output(sample);
+  if (normalized.have_voltage) inverter["output_voltage"] = normalized.volts;
+  else inverter["output_voltage"] = nullptr;
+  if (normalized.have_current) inverter["output_current"] = normalized.amps;
+  else inverter["output_current"] = nullptr;
+  if (normalized.have_apparent) {
+    inverter["output_power"] = normalized.apparent_va;
+    inverter["output_power_quantity"] = "apparent_va";
+  } else {
+    inverter["output_power"] = nullptr;
+  }
+  doc["output_power_w"] = nullptr;
+  doc["last_data"]["power"] = nullptr;
 #endif
 
 #ifndef POWERCELL_HW_V011
@@ -157,6 +176,7 @@ void telemetry() {
     solar["voltage"] = mppt.v_bus_V;
     solar["current"] = mppt.current_A;
     solar["power"] = mppt.power_W;
+    solar["power_w"] = mppt.power_W;
     solar["valid"] = true;
   } else {
     solar["valid"] = false;

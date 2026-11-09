@@ -260,13 +260,18 @@ with tempfile.TemporaryDirectory(prefix="hw-v011-") as directory:
         sys.exit("output_power must stay apparent VA")
     near(fresh["metrics"]["output_power_w"], 15)
     near(fresh["live"]["output_power_w"], 15)
+    near(fresh["metrics"]["inverterLoad"], 23)
+    if fresh["metrics"]["inverterLoad"] == fresh["metrics"]["output_power_w"]:
+        sys.exit("apparent VA was copied into the active watt key")
     if fresh["metrics"]["output_power_source"] != "pzem004t_v3_active":
         sys.exit("active watts need their source")
     for key in ("output_power", "power", "current", "voltage"):
         if key in fresh["metrics"] or key in fresh["live"]:
             sys.exit(f"metrics/live must not carry bare {key}")
-    if "power" in fresh["solar"] or abs(fresh["solar"]["power_w"] - 72) > 1e-3:
-        sys.exit("solar power_w is watts; solar.power would be misread as kW")
+    near(fresh["solar"]["power"], 72)
+    near(fresh["solar"]["power_w"], 72)
+    if fresh["solar"]["power"] < 1:
+        sys.exit("solar.power is watts, not kW")
     near(fresh["battery"]["soc"], 40)
     near(fresh["battery"]["power"], 76.8)
     near(fresh["ac_consumed"]["lifetime_wh"], 1200)
@@ -297,5 +302,23 @@ with tempfile.TemporaryDirectory(prefix="hw-v011-") as directory:
     for banned in ("PC3K", "PC5K", "PC10K", "rated_kva"):
         if banned in encoded:
             sys.exit(f"3.5kW document contains {banned}")
+    converted = snaps["from_kw"]
+    near(converted["last_data"]["power"], 15)
+    near(converted["metrics"]["output_power_w"], 15)
+    near(converted["live"]["output_power_w"], 15)
+    near(converted["inverter"]["output_power"], 23)
+    if converted["last_data"]["power"] == 0.015:
+        sys.exit("a kW source was published without multiplying by 1000")
+    stm32 = snaps["stm32"]
+    if stm32["last_data"]["power"] is not None or stm32["metrics"]["output_power_w"] is not None:
+        sys.exit("STM32 text has no active watts")
+    if stm32["live"]["output_power_w"] is not None:
+        sys.exit("STM32 apparent VA must not fill output_power_w")
+    near(stm32["inverter"]["output_power"], 345)
+    near(stm32["metrics"]["inverterLoad"], 345)
+    if stm32["inverter"]["output_power_quantity"] != "apparent_va":
+        sys.exit("STM32 V*I must stay flagged as apparent VA")
+    if stm32["inverter"]["stm32_online"] is not True:
+        sys.exit("STM32 profile with a reading reports stm32_online")
 
 print("profile pin checks passed")

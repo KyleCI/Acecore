@@ -5,9 +5,9 @@
 
 namespace powercell {
 
-// Installed Powercore c874f427 reads GET /data, not root metric names.
-// Active watts stay in watts. Apparent VA is V*I and only under output_power.
-// Null is missing. This object does not scale a reading to hide displayKw.
+// Installed Powercore reads GET /data. The collector normalizes first:
+// active keys are watts, apparent keys are V*I VA, and a kW source is
+// multiplied by 1000 before it is stored. Null is missing. 15 W stays 15.
 
 inline bool bms_sample_fresh(bool frame_ok, uint32_t received_at_ms, uint32_t now_ms) {
   return frame_ok && static_cast<uint32_t>(now_ms - received_at_ms) <= 15000u;
@@ -20,10 +20,15 @@ inline bool ac_sample_fresh(bool sample_ok, uint32_t sampled_at_ms, uint32_t now
 struct HomeMeters {
   const char* device_id = nullptr;
   bool output_on = false;
-  bool ac_valid = false;
+  bool stm32_online = false;
+  bool have_voltage = false;
+  bool have_current = false;
+  bool have_active = false;
   double volts = 0;
   double amps = 0;
   double active_w = 0;
+  const char* active_source = nullptr;
+  bool ac_valid = false;
   bool meter_present = false;
   bool has_lifetime_wh = false;
   uint32_t lifetime_wh = 0;

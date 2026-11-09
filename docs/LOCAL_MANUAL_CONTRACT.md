@@ -10,6 +10,10 @@ routes are new: that app still posts Manual settings only to the cloud
 Nothing here was installed on a unit. A phone that fails before response
 headers is a separate capture and is not claimed fixed.
 
+Power on an existing watt key is watts. The collector does that normalization.
+`usable_kw` is the field whose name is already kilowatts. `rated_active_w`,
+`usable_active_w`, and `ceiling_w` are watts. See [POWER_UNITS.md](POWER_UNITS.md).
+
 ## POST /v2/login
 
 Unauthenticated. `Content-Type: application/json`. `Accept` may be

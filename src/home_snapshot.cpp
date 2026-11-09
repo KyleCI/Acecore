@@ -94,14 +94,18 @@ bool serial_ok(const char* serial) {
   return serial[10] == 0;
 }
 
+bool apparent(const HomeMeters& meters) { return meters.have_voltage && meters.have_current; }
+
+double apparent_va(const HomeMeters& meters) { return meters.volts * meters.amps; }
+
 void output_block(Buf& buf, const HomeMeters& meters, bool include_apparent) {
-  buf.key_num("output_voltage", meters.ac_valid, meters.volts);
-  buf.key_num("output_current", meters.ac_valid, meters.amps);
-  buf.key_num("output_power_w", meters.ac_valid, meters.active_w);
-  buf.key_str_or_null("output_power_source", meters.ac_valid ? "pzem004t_v3_active" : nullptr);
-  if (include_apparent && meters.ac_valid) {
+  buf.key_num("output_voltage", meters.have_voltage, meters.volts);
+  buf.key_num("output_current", meters.have_current, meters.amps);
+  buf.key_num("output_power_w", meters.have_active, meters.active_w);
+  buf.key_str_or_null("output_power_source", meters.have_active ? meters.active_source : nullptr);
+  if (include_apparent && apparent(meters)) {
     buf.key("output_power");
-    buf.number(meters.volts * meters.amps);
+    buf.number(apparent_va(meters));
     buf.key("output_power_quantity");
     buf.quoted("apparent_va");
   }
@@ -145,19 +149,19 @@ int home_snapshot_write(const HomeMeters& meters, const char* note_a, const char
   buf.key("last_data");
   buf.add("{");
   buf.comma = false;
-  buf.key_num("power", meters.ac_valid, meters.active_w);
+  buf.key_num("power", meters.have_active, meters.active_w);
   buf.add("}");
 
   buf.comma = true;
   buf.key("inverter");
   buf.add("{");
   buf.comma = false;
-  buf.key_bool("stm32_online", false);
-  buf.key_num("output_voltage", meters.ac_valid, meters.volts);
-  buf.key_num("output_current", meters.ac_valid, meters.amps);
-  if (meters.ac_valid) {
+  buf.key_bool("stm32_online", meters.stm32_online);
+  buf.key_num("output_voltage", meters.have_voltage, meters.volts);
+  buf.key_num("output_current", meters.have_current, meters.amps);
+  if (apparent(meters)) {
     buf.key("output_power");
-    buf.number(meters.volts * meters.amps);
+    buf.number(apparent_va(meters));
     buf.key("output_power_quantity");
     buf.quoted("apparent_va");
   }
@@ -168,9 +172,9 @@ int home_snapshot_write(const HomeMeters& meters, const char* note_a, const char
   buf.add("{");
   buf.comma = false;
   output_block(buf, meters, false);
-  buf.key_num("inverterVoltage", meters.ac_valid, meters.volts);
-  buf.key_num("inverterCurrent", meters.ac_valid, meters.amps);
-  buf.key_num("inverterLoad", meters.ac_valid, meters.ac_valid ? meters.volts * meters.amps : 0);
+  buf.key_num("inverterVoltage", meters.have_voltage, meters.volts);
+  buf.key_num("inverterCurrent", meters.have_current, meters.amps);
+  buf.key_num("inverterLoad", apparent(meters), apparent_va(meters));
   buf.add("}");
 
   buf.comma = true;
@@ -213,6 +217,7 @@ int home_snapshot_write(const HomeMeters& meters, const char* note_a, const char
   if (meters.pv_valid) {
     buf.key_num("voltage", true, meters.pv_v);
     buf.key_num("current", true, meters.pv_a);
+    buf.key_num("power", true, meters.pv_w);
     buf.key_num("power_w", true, meters.pv_w);
   }
   buf.add("}");

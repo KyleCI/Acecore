@@ -60,6 +60,10 @@ zeros for a link that is not fitted. An extension point is the
 `DspConnection` value in `include/board_pins.h`. It stays `NotFitted` until a
 real DSP protocol is supplied.
 
+The collector fills existing power keys in watts. A source that reports
+kilowatts is multiplied by 1000 first. Apparent VA stays on the apparent keys.
+The named `usable_kw` field stays in kilowatts. See [POWER_UNITS.md](POWER_UNITS.md).
+
 PZEM support is the V3 Modbus-RTU map: active power and a cumulative integer
 watt-hour register at 1 Wh. Address `0x01` is the manual's example; `0xF8` is
 the single-slave general address and the build default. CRC is standard

@@ -1,4 +1,5 @@
 #include <housekeeping.h>
+#include "power_units.h"
 #ifdef POWERCELL_HW_V011
 #include "hw_v011.h"
 #endif
@@ -59,7 +60,22 @@ void registerMetricsRoute(AsyncWebServer &server)
 #ifdef POWERCELL_HW_V011
         hwV011AppendTelemetry(doc);
 #else
-        doc["inverterLoad"]  = snap.vout * snap.iout;
+        powercell::OutputSample sample;
+        const bool seen = snap.vout != 0.f || snap.iout != 0.f;
+        sample.voltage_present = seen;
+        sample.volts = snap.vout;
+        sample.current_present = seen;
+        sample.amps = snap.iout;
+        sample.active_present = false;
+        const powercell::NormalizedOutput normalized = powercell::normalize_output(sample);
+        if (normalized.have_apparent) {
+            doc["inverterLoad"] = normalized.apparent_va;
+            doc["output_power"] = normalized.apparent_va;
+            doc["output_power_quantity"] = "apparent_va";
+        } else {
+            doc["inverterLoad"] = nullptr;
+        }
+        doc["output_power_w"] = nullptr;
         doc["inverter_temperature"]  = snap.tempC;
         doc["inverterVoltage"] = snap.vout;
         doc["gridVoltage"] = snap.gridVoltage;
@@ -69,6 +85,7 @@ void registerMetricsRoute(AsyncWebServer &server)
         doc["solarVoltage"] = mppt.v_bus_V;
         doc["solarCurrent"] = mppt.current_A;
         doc["solarPower"] = mppt.power_W;
+        doc["solar_power_w"] = mppt.power_W;
         
         // ── Smart Sockets section -- one entry per registered device ─────────
         JsonArray sockets = doc["sockets"].to<JsonArray>();

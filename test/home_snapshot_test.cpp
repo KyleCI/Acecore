@@ -1,4 +1,5 @@
 #include "home_snapshot.h"
+#include "power_units.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -16,6 +17,10 @@ void check(bool ok, const char* text) {
 void fresh(powercell::HomeMeters* m) {
   m->device_id = "ACE-000123";
   m->output_on = true;
+  m->have_voltage = true;
+  m->have_current = true;
+  m->have_active = true;
+  m->active_source = "pzem004t_v3_active";
   m->ac_valid = true;
   m->volts = 230;
   m->amps = 0.1;
@@ -46,6 +51,31 @@ void fresh(powercell::HomeMeters* m) {
 }  // namespace
 
 int main() {
+  powercell::OutputSample watts;
+  watts.active_present = true;
+  watts.active = 15;
+  watts.active_scale = powercell::PowerScale::Watts;
+  watts.voltage_present = true;
+  watts.volts = 230;
+  watts.current_present = true;
+  watts.amps = 0.1;
+  const powercell::NormalizedOutput fifteen = powercell::normalize_output(watts);
+  check(fifteen.have_active && fifteen.active_w == 15, "15 W stays 15");
+  check(fifteen.have_apparent && fifteen.apparent_va == 23, "apparent stays V*I");
+  check(fifteen.active_w != fifteen.apparent_va, "active is not apparent");
+  powercell::OutputSample kilowatts = watts;
+  kilowatts.active = 0.015;
+  kilowatts.active_scale = powercell::PowerScale::Kilowatts;
+  const powercell::NormalizedOutput from_kw = powercell::normalize_output(kilowatts);
+  check(from_kw.active_w > 14.999 && from_kw.active_w < 15.001, "0.015 kW becomes 15 W");
+  powercell::OutputSample stm32;
+  stm32.voltage_present = true;
+  stm32.volts = 230;
+  stm32.current_present = true;
+  stm32.amps = 1.5;
+  const powercell::NormalizedOutput stm = powercell::normalize_output(stm32);
+  check(!stm.have_active && stm.have_apparent && stm.apparent_va == 345, "STM32 has VA and no active watts");
+
   check(powercell::bms_sample_fresh(true, 5000, 20000), "bms 15s inclusive");
   check(!powercell::bms_sample_fresh(true, 4999, 20000), "bms older than 15s");
   check(!powercell::bms_sample_fresh(false, 20000, 20000), "bms invalid frame");
@@ -62,6 +92,9 @@ int main() {
 
   fresh(&meters);
   meters.ac_valid = false;
+  meters.have_voltage = false;
+  meters.have_current = false;
+  meters.have_active = false;
   meters.bms_valid = false;
   meters.pv_valid = false;
   meters.has_lifetime_wh = false;
@@ -70,12 +103,37 @@ int main() {
 
   fresh(&meters);
   meters.ac_valid = false;
+  meters.have_voltage = false;
+  meters.have_current = false;
+  meters.have_active = false;
   meters.has_usable = true;
   meters.usable_kw = 3.15;
   meters.powercell_model = nullptr;
   meters.device_id = "AA:BB:CC:DD:EE:FF";
   check(powercell::home_snapshot_write(meters, nullptr, nullptr, body, sizeof body) > 0, "3.5kW write");
   printf("SNAP kw35 %s\n", body);
+
+  powercell::HomeMeters converted;
+  converted.have_voltage = from_kw.have_voltage;
+  converted.have_current = from_kw.have_current;
+  converted.have_active = from_kw.have_active;
+  converted.volts = from_kw.volts;
+  converted.amps = from_kw.amps;
+  converted.active_w = from_kw.active_w;
+  converted.active_source = "pzem004t_v3_active";
+  check(powercell::home_snapshot_write(converted, nullptr, nullptr, body, sizeof body) > 0, "kW input write");
+  printf("SNAP from_kw %s\n", body);
+
+  powercell::HomeMeters text;
+  text.stm32_online = true;
+  text.have_voltage = stm.have_voltage;
+  text.have_current = stm.have_current;
+  text.have_active = stm.have_active;
+  text.volts = stm.volts;
+  text.amps = stm.amps;
+  text.active_w = stm.active_w;
+  check(powercell::home_snapshot_write(text, nullptr, nullptr, body, sizeof body) > 0, "stm32 write");
+  printf("SNAP stm32 %s\n", body);
 
   check(powercell::home_snapshot_write(meters, nullptr, nullptr, body, 8) < 0, "short buffer fails");
   if (failures) {
