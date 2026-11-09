@@ -11,7 +11,8 @@
 What it does (real console commands from src/console.cpp):
   INFO -> parse state; refuse if locked, or if a serial is already set (unless --reuse)
   ROTATE_SECRET only if the unit has no factory secret (the board normally generates it itself)
-  SET api_key / SET ota_url from factory_state/factory.env
+  SET api_key from factory.env. SET ota_url only when OTA_URL is non-empty;
+  a blank OTA_URL or API_URL uses https://api-dev.acecore.tech and is not sent empty.
   SERIAL ACE-NNNNNN from factory_state/serial_counter.json (counter bumps only after "OK serial set")
   --register: INFO hardware_model must be one of the four pc-* OTA models
               SECRET (read once, never printed) -> POST {API}/api/devices/register (X-Admin-Key)
@@ -37,7 +38,9 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_STATE = os.path.join(HERE, "factory_state")
+# Same host as POWERCELL_OTA_BASE_URL_DEFAULT and POWERCELL_WS_HOST in include/config.h.
 DEFAULT_OTA = "https://api-dev.acecore.tech"
+DEFAULT_API = DEFAULT_OTA
 SERIAL_RE = re.compile(r"^ACE-\d{6}$")  # fid::validSerial
 CSV_FIELDS = ["serial", "device_id", "mac", "gw_name", "ap_ssid", "fw", "registered", "locked",
               "timestamp", "hardware_model"]
@@ -46,6 +49,30 @@ OTA_MODELS = ("pc-dsp011-5kw", "pc-dsp011-35kw", "pc-stm01-5kw", "pc-stm01-35kw"
 
 
 # ---------- pure helpers (unit tested) ----------
+def _filled(value):
+    return str(value or "").strip()
+
+
+def resolve_factory_urls(env):
+    """Blank or missing OTA_URL/API_URL use the firmware default. Never return an empty URL."""
+    env = env or {}
+    ota = _filled(env.get("OTA_URL")) or DEFAULT_OTA
+    api = _filled(env.get("API_URL")) or ota or DEFAULT_API
+    return ota, api
+
+
+def nvs_sets(api_key, ota_url):
+    """USB SET commands. An empty value is omitted so the console never sees SET <key> with no value."""
+    cmds = []
+    key = _filled(api_key)
+    url = _filled(ota_url)
+    if key:
+        cmds.append(("api_key", key))
+    if url:
+        cmds.append(("ota_url", url))
+    return cmds
+
+
 def read_env(path):
     vals = {}
     with open(path, encoding="utf-8") as f:
@@ -302,8 +329,8 @@ def main(argv=None):
     if not os.path.exists(env_path):
         die(f"{env_path} not found (copy factory.env.example to factory.env and fill API_KEY)")
     env = read_env(env_path)
-    api_key, ota = env.get("API_KEY", ""), env.get("OTA_URL", DEFAULT_OTA)
-    api = env.get("API_URL", ota)
+    api_key = _filled(env.get("API_KEY"))
+    ota, api = resolve_factory_urls(env)
     if not api_key:
         die("API_KEY missing in " + env_path)
     if a.register and not env.get("ADMIN_KEY"):
@@ -358,7 +385,7 @@ def main(argv=None):
         r = con.cmd("ROTATE_SECRET")
         if not (r.startswith("OK") or r == "DRY"):
             die("could not generate device secret: " + r)
-    for key, val in (("api_key", api_key), ("ota_url", ota)):
+    for key, val in nvs_sets(api_key, ota):
         r = con.cmd(f"SET {key} {val}", show=f"SET {key} ****")
         if not (r.startswith("OK") or r == "DRY"):
             die(f"SET {key}: {r}")

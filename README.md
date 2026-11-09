@@ -174,7 +174,10 @@ POST-only routes answer **405** (with `Allow: POST`) to any other method before 
 ## Factory (one command per unit)
 `tools/factory.py` does the whole factory step over USB (pyserial, 115200). Setup once on the factory PC:
 copy `tools/factory_state/factory.env.example` to `tools/factory_state/factory.env` and fill `API_KEY`
-(and `ADMIN_KEY` for `--register`). Everything in `tools/factory_state/` except the example is gitignored.
+(and `ADMIN_KEY` for `--register`). Leave `OTA_URL` and `API_URL` blank to use
+`https://api-dev.acecore.tech`, which is also the firmware default (`POWERCELL_OTA_BASE_URL_DEFAULT`
+and the WebSocket host). Fill both with that same URL if you set them by hand. A blank value is not
+sent as `SET ota_url`. Everything in `tools/factory_state/` except the example is gitignored.
 ```
 pip install pyserial
 python tools\factory.py COM11                     # bench unit
@@ -183,7 +186,10 @@ python tools\factory.py COM11 --dry-run           # read-only plan
 ```
 - Serial `ACE-NNNNNN` from `factory_state/serial_counter.json` (`{"prefix":"ACE-","next":1}`); bumped only after
   `OK serial set`; also checked against `units.csv` so a serial is never assigned twice. A unit that already has a
-  serial is refused unless `--reuse`.
+  serial is refused unless `--reuse`. `LOCK` runs only after registration succeeds. A failure at `SET ota_url`
+  (or any earlier `SET`) does not write a serial, does not bump the counter, and does not lock the unit.
+  Run the same command again. A fresh counter still assigns `ACE-000001`. If `INFO` already shows a serial,
+  rerun with `--reuse`.
 - The device secret and hotspot password are generated on the board (`ROTATE_SECRET` only if missing). Secrets are never printed.
 - `gw_name` is not set: with a serial the firmware uses the serial as gateway name and `Powercell-NNNNNN` as SSID.
 - `--register` reads `hardware_model=` from `INFO` (the image's `POWERCELL_HARDWARE_MODEL`). It refuses to register

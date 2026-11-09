@@ -32,6 +32,23 @@ class T(unittest.TestCase):
         self.assertEqual(rows[0]["hardware_model"], "")
         self.assertEqual(rows[1]["hardware_model"], "pc-stm01-5kw")
 
+    def test_blank_urls_use_firmware_default(self):
+        default = "https://api-dev.acecore.tech"
+        self.assertEqual(f.DEFAULT_OTA, default)
+        self.assertEqual(f.DEFAULT_API, default)
+        for env in ({}, {"OTA_URL": "", "API_URL": ""}, {"OTA_URL": "  ", "API_URL": "\t"}):
+            self.assertEqual(f.resolve_factory_urls(env), (default, default))
+        self.assertEqual(f.resolve_factory_urls({"OTA_URL": "https://ota.example", "API_URL": ""}),
+                         ("https://ota.example", "https://ota.example"))
+        self.assertEqual(f.resolve_factory_urls({"OTA_URL": "", "API_URL": "https://api.example"}),
+                         (default, "https://api.example"))
+        cmds = f.nvs_sets("factory-key", f.resolve_factory_urls({"OTA_URL": "", "API_URL": ""})[0])
+        self.assertEqual(cmds, [("api_key", "factory-key"), ("ota_url", default)])
+        self.assertEqual([k for k, _ in f.nvs_sets("factory-key", "  ")], ["api_key"])
+        for key, val in f.nvs_sets("", "") + f.nvs_sets("factory-key", " "):
+            self.assertTrue(val.strip())
+            self.assertGreater(len(("SET %s %s" % (key, val)).split()), 2)
+
     def test_model(self):
         for v in ("PC5K", "pc5k", "5K", "5kva", " PC5KVA "): self.assertEqual(f.normalize_model(v), "PC5K")
         self.assertEqual(f.normalize_model("10k"), "PC10K"); self.assertEqual(f.normalize_model("PC3K"), "PC3K")
