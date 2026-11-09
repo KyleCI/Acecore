@@ -503,6 +503,23 @@ static void test_wifi_ap_policy() {
   CHECK(!loss.update(true, false, false, 29999) && loss.update(true, false, false, 30000));
   CHECK(loss.update(true, true, false, 30000) && loss.update(true, true, false, 149999));
   CHECK(!loss.update(true, true, false, 150000));  // 120 s after the station returns
+  // STM32 and DSP product images share kApFallbackMs / kApGraceMs / kWifiRetryMs.
+  CHECK(kApFallbackMs == 30000 && kApGraceMs == 120000 && kWifiRetryMs == 5000);
+  ApPolicy boot; boot.fallbackMs = kApFallbackMs; boot.graceMs = kApGraceMs; boot.begin(0);
+  CHECK(boot.update(false, false, false, 0));                              // boot, no credentials
+  ApPolicy stm; stm.fallbackMs = kApFallbackMs; stm.graceMs = kApGraceMs; stm.begin(0);
+  CHECK(!stm.update(true, false, false, kApFallbackMs - 1));
+  CHECK(stm.update(true, false, false, kApFallbackMs));                    // loss
+  CHECK(stm.update(true, true, false, kApFallbackMs));                     // station returns, grace starts
+  CHECK(stm.update(true, true, false, kApFallbackMs + kApGraceMs - 1));
+  CHECK(!stm.update(true, true, false, kApFallbackMs + kApGraceMs));       // grace ends
+  const uint32_t dropped = kApFallbackMs + kApGraceMs + 1000;
+  CHECK(!stm.update(true, false, false, dropped));                         // flap: timer restarts
+  CHECK(!stm.update(true, false, false, dropped + kApFallbackMs - 1));
+  CHECK(stm.update(true, false, false, dropped + kApFallbackMs));
+  ApPolicy setup; setup.fallbackMs = kApFallbackMs; setup.graceMs = kApGraceMs; setup.begin(0);
+  CHECK(setup.update(true, false, true, 0));                               // onboarding test, before the loss timer
+  CHECK(setup.update(true, true, true, 1000));
 }
 
 static void test_ws_rules() {

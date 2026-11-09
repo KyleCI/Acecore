@@ -3,7 +3,7 @@
 #include <ArduinoJson.h>
 // Wi-Fi (firmware 2.1, spec section 5): states UNCONFIGURED (AP), TESTING (AP_STA),
 // ONLINE (STA), FALLBACK (AP_STA). The hotspot "Powercell-XXXXXX" (per-unit password)
-// is on with no saved network, during a Wi-Fi test, after AP_FALLBACK_MIN minutes
+// is on with no saved network, during a Wi-Fi test, and 30 s after the station drops
 // without the router, and for AP_FORCE_MS after the console "AP ON". It closes 120 s
 // after the station is up (or after /v2/wifi/save). No reboot after saving.
 #include "onb_core.h"

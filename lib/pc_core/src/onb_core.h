@@ -92,8 +92,13 @@ const char *netModeName(NetMode m);          // "unset" | "station" | "hotspot_o
 bool parseNetMode(const char *s, NetMode &out);  // accepts only "station" | "hotspot_only"
 NetMode netModeFromStored(const char *s);     // anything unknown/empty -> Unset
 
+// One hotspot timing for every product image (STM32 and DSP).
+constexpr uint32_t kApFallbackMs = 30000;   // saved network lost -> hotspot
+constexpr uint32_t kApGraceMs = 120000;     // hotspot stays after the station returns
+constexpr uint32_t kWifiRetryMs = 5000;     // WiFi.reconnect interval after the first begin
+
 struct ApPolicy {
-  uint32_t fallbackMs = 300000;  // AP_FALLBACK_MIN = 5
+  uint32_t fallbackMs = 300000;  // engine default; product images set kApFallbackMs
   uint32_t graceMs = 120000;     // hotspot stays 120 s after STA is up / after wifi save
   uint32_t forceMs = 600000;     // console "AP ON" keeps it at least 10 min
   bool ap = false, wasUp = false, forced = false;
