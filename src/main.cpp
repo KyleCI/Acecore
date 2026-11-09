@@ -36,7 +36,7 @@ bool prepareForUpdate() {
 }  // namespace
 
 void setup() {
-  gateway::earlyInit();  // IO15 (PWR_KEY, strapping pin) LOW: inverter not requested
+  gateway::earlyInit();  // GPIO15 latch before pinMode. Stock holds LOW. v0.1.1 holds HIGH (AC off).
   Serial.begin(115200);
   delay(50);
   esp_reset_reason_t why = esp_reset_reason();

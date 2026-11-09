@@ -1,11 +1,14 @@
 #include "power_guard.h"
 #include "factory_id.h"
 #include "gateway.h"
+#include "hw_output.h"
 #include "log.h"
 #include "ota.h"
 #include "pins.h"
 #include "power_policy.h"
 #include "stm32_link.h"
+
+static_assert(PIN_PWR_KEY == powercell::kDspEnableV011, "GPIO15 is the shared AC-enable pin");
 
 namespace gateway {
 namespace {
@@ -14,20 +17,30 @@ volatile int8_t g_req = -1;  // -1 none, 0 off, 1 on
 const char *g_reqOrigin = "local";
 
 void drive(bool on) {
+#if POWERCELL_HW_V011
+  digitalWrite(PIN_PWR_KEY, powercell::v011_dsp_level(on));
+#else
   digitalWrite(PIN_PWR_KEY, on ? HIGH : LOW);
   digitalWrite(PIN_PWR_LIGHT, on ? HIGH : LOW);
+#endif
 }
 }  // namespace
 
 void earlyInit() {
+#if POWERCELL_HW_V011
+  digitalWrite(PIN_PWR_KEY, powercell::v011_dsp_level(false));
+#else
   digitalWrite(PIN_PWR_KEY, LOW);
+#endif
   pinMode(PIN_PWR_KEY, OUTPUT);
 }
 
 void begin() {
   earlyInit();
+#if !POWERCELL_HW_V011
   digitalWrite(PIN_PWR_LIGHT, LOW);
   pinMode(PIN_PWR_LIGHT, OUTPUT);
+#endif
 }
 
 bool state() { return g_on; }
@@ -46,7 +59,6 @@ const char *resultName(Result r) {
 }
 
 Result set(bool on, const char *origin) {
-  using pc::PowerAction;
   // HQ payment_lock: refuse user/cloud on and off. System force-off (payment_lock,
   // battery_critical, ota) still runs. ON is never allowed while locked.
   if (fid::paymentLocked()) {
@@ -61,6 +73,17 @@ Result set(bool on, const char *origin) {
     LOGW("GATEWAY", "REFUSED", "on while battery critical latched (origin=%s)", origin);
     return Result::CriticalLatched;
   }
+#if POWERCELL_HW_V011
+  if (on && ota::busy()) {
+    LOGW("GATEWAY", "REFUSED", "on during firmware update (origin=%s)", origin);
+    return Result::Refused;
+  }
+  g_on = on;
+  drive(on);
+  LOGI("GATEWAY", "STATE", "%s via dsp_gpio15 origin=%s", on ? "ON" : "OFF", origin ? origin : "?");
+  return Result::Ok;
+#else
+  using pc::PowerAction;
   PowerAction act = pc::powerAction(on, ota::busy(), stm32link::online(), viaFramed());
   switch (act) {
     case PowerAction::RefuseOta:
@@ -87,6 +110,7 @@ Result set(bool on, const char *origin) {
   }
   LOGI("GATEWAY", "STATE", "%s via %s origin=%s", on ? "ON" : "OFF", act == PowerAction::SendSetMode ? "set_mode" : "pwr_key", origin);
   return Result::Ok;
+#endif
 }
 
 void request(bool on, const char *origin) { g_reqOrigin = origin; g_req = on ? 1 : 0; }

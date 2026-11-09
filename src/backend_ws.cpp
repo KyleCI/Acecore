@@ -248,6 +248,9 @@ void handleSetState(JsonDocument &doc) {
   if (desired && powerguard::latched()) { reject(id, kind, target, desired, "battery_critical_latched"); return; }
   if (fid::paymentLocked()) { reject(id, kind, target, desired, "payment_locked"); return; }
 
+#if POWERCELL_HW_V011
+  if (kind == "socket") { reject(id, kind, target, desired, "lora_not_fitted"); return; }
+#endif
   if (kind == "gateway") {
     if (!isGatewayTarget(target)) { reject(id, kind, target, desired, "unknown_target"); return; }
     gateway::Result gr = gateway::set(desired, "cloud");  // framed: waits for the STM32 set_mode ACK

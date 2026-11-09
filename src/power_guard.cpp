@@ -139,10 +139,14 @@ void service() {
     g_restorePending = g_wasOn;  // applied once the STM32 reserve latch is clear too
   }
   if (g_restorePending && !g_guard.latched() && !g_stmRsv) {
+#if POWERCELL_HW_V011
+    g_restorePending = false;  // recovery does not turn the AC output on
+#else
     g_restorePending = false;
     gateway::Result r = gateway::set(true, "soc_restore");
     LOGI("PWR", "RESTORE", "%s", gateway::resultName(r));
     g_wasOn = false; saveLatch();
+#endif
   }
   if (g_guard.latched() && !g_offDone && (!g_lastOffTry || now - g_lastOffTry >= 5000)) {
     g_lastOffTry = now;  // framed: set_mode OFF; legacy: PWR_KEY released. Retried every 5 s.

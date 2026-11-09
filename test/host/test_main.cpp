@@ -19,6 +19,7 @@
 #include "lora_socket_proto.h"
 #include "../../smart-socket-firmware/src/trip_lockout.h"
 #include "payment_lock.h"
+#include "hw_output.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(c) do { if (c) ++g_pass; else { ++g_fail; printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -777,6 +778,18 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
   frame[0x0E] = powercell::kDs3231ControlRun;
   frame[0x0F] = status;
 }
+static void test_v011_gpio() {
+  using namespace powercell;
+  CHECK(v011_dsp_level(true) == 0 && v011_dsp_level(false) == 1);
+  CHECK(original_relay_level(true) == 1 && original_relay_level(false) == 0);
+  CHECK(!kPhysicalShutdownVerified && kDspPolarityUserConfirmed);
+  CHECK(!battery_recovery_drives_on());
+  BootStep steps[2];
+  v011_dsp_boot(steps);
+  CHECK(steps[0].action == BootAction::SetOutputLatch && steps[0].level == 1);
+  CHECK(steps[1].action == BootAction::EnableOutput && steps[1].level == 1);
+}
+
 static void test_ds3231() {
   using namespace powercell;
   uint8_t a[16], b[16];
@@ -1129,7 +1142,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231();
+  test_time_policy(); test_ds3231(); test_v011_gpio();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();
