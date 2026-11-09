@@ -185,6 +185,14 @@ void handleSerialProvisioning() {
         ident.putBool("pay_lock", station.payment_locked);
         ident.end();
       }
+      if (station.ota_url[0] || station.api_key[0]) {
+        Preferences ota;
+        if (ota.begin("powercell_ota", false)) {
+          if (station.ota_url[0]) ota.putString("url", station.ota_url);
+          if (station.api_key[0]) ota.putString("api_key", station.api_key);
+          ota.end();
+        }
+      }
       Serial.println(reply);
       return;
     }

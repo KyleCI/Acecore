@@ -6,6 +6,7 @@
 #include "factory_station.h"
 #include "lan_access.h"
 #include "time_policy.h"
+#include "wall_clock.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -101,7 +102,12 @@ class ManualApi {
                      uint32_t now_ms);
   void wifi_test_succeeded(const char* ip);
   void observe_clock(int64_t now_s, int source, bool ntp_fresh);
-  // /data: no header stays open for the on-device page. A presented bearer must be the LAN token.
+  void note_ntp(int64_t epoch, uint32_t now_ms);
+  void restore_saved_clock(int64_t last, int tz);
+  void set_clock_hooks(ClockHooks hooks);
+  WallClock& clock() { return clock_; }
+  const WallClock& clock() const { return clock_; }
+  // /data and /events require the LAN bearer. A missing header is 401.
   int data_auth(const char* authorization, uint32_t now_ms) const;
   // /state is the collector output. v0.1.1 is GPIO15 active-low. It is not an AcePlug.
   RouteEffect gateway_state(const char* authorization, const char* json, const ClientHeaders& headers,
@@ -125,9 +131,7 @@ class ManualApi {
   WifiSession wifi_;
   char claim_code_[9];
   char ap_pass_[64];
-  int64_t clock_now_ = 0;
-  int clock_src_ = 0;
-  bool ntp_fresh_ = false;
+  WallClock clock_;
   char verifier_hex_[97];
   bool fail_persist_ = false;
   bool persist(void* ctx, const void* pairs, size_t len, const char* verifier_hex);

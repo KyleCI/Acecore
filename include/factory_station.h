@@ -19,7 +19,9 @@ struct FactoryStation {
   bool locked = false;
   char ap_pass[16] = {};
   bool api_key_set = false;
+  char api_key[129] = {};
   bool ota_url_set = false;
+  char ota_url[181] = {};
   char wifi_ssid[33] = {};
   bool payment_locked = false;
   char payment_reason[65] = {};

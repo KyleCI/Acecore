@@ -523,6 +523,8 @@ bool hwV011ConsumeSerial(const String& line) {
   return false;
 }
 
+bool hwV011SetRtc(int64_t unix_utc) { return write_ds3231(unix_utc); }
+
 bool hwV011AcSample(HwV011Ac* out) {
   if (!out) return false;
   Live snap;

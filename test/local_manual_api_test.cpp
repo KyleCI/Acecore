@@ -219,6 +219,12 @@ int main() {
       "\"readback\":{\"rated_active_w\":5000,\"usable_active_w\":4500,\"factory_rated_active_w\":5000,"
       "\"stored_rated_active_w\":null,\"rating_match\":true}}";
   CHECK(strcmp(api.rating_get(bearer_lan, 6800).body, rating_get) == 0);
+  // manual_device_client.dart 497 requires the key. Lines 505-507 reject a null
+  // _optionalInt result, and 509 does not require stored.present. The helper
+  // itself is not in the c874f427 extract, so a JSON null stays the truthful
+  // absent NVS value. A fabricated stored integer would be a false rating.
+  CHECK(strstr(rating_get, "\"stored_rated_active_w\":null"));
+  CHECK(strstr(rating_get, "applied_revision") == nullptr);
   CHECK(api.rating_get(bearer_session, 6800).status == 401);
   CHECK(strstr(api.status(bearer_lan, device, facts, 6800).body, "\"factory_variant\":\"hw-v0.1.1-5kw\""));
   CHECK(strstr(api.status(bearer_lan, device, facts, 6800).body, "\"rating_writable\":false"));
@@ -366,6 +372,94 @@ int main() {
   CHECK(payment_allows_output(true, false, "ota"));
   CHECK(payment_allows_output(true, false, "ac_overload"));
   CHECK(payment_allows_output(false, true, "user"));
+
+  struct Sink {
+    int64_t system = 0;
+    int system_n = 0;
+    bool system_ok = true;
+    int64_t rtc = 0;
+    int rtc_n = 0;
+    bool rtc_ok = true;
+    int64_t nvs = 0;
+    int nvs_tz = 0;
+    int nvs_n = 0;
+    bool nvs_ok = true;
+  } sink;
+  auto set_sys = [](int64_t epoch, void* ctx) {
+    Sink* s = static_cast<Sink*>(ctx);
+    if (!s->system_ok) return false;
+    s->system = epoch;
+    ++s->system_n;
+    return true;
+  };
+  auto write_rtc = [](int64_t epoch, void* ctx) {
+    Sink* s = static_cast<Sink*>(ctx);
+    if (!s->rtc_ok) return false;
+    s->rtc = epoch;
+    ++s->rtc_n;
+    return true;
+  };
+  auto persist = [](int64_t epoch, bool have_epoch, int tz, void* ctx) {
+    Sink* s = static_cast<Sink*>(ctx);
+    if (!s->nvs_ok) return false;
+    if (have_epoch) s->nvs = epoch;
+    s->nvs_tz = tz;
+    ++s->nvs_n;
+    return true;
+  };
+  ClockHooks hooks;
+  hooks.set_system = set_sys;
+  hooks.write_rtc = write_rtc;
+  hooks.persist = persist;
+  hooks.ctx = &sink;
+  api.set_clock_hooks(hooks);
+  CHECK(api.set_time(bearer_lan, "{\"epoch\":1700002222,\"tz_offset_min\":900}", json_headers(), 10000).status == 400);
+  CHECK(sink.system_n == 0 && api.clock().now() == 0);
+  HttpReply accepted = api.set_time(bearer_lan, "{\"epoch\":1700002222,\"tz_offset_min\":60}", json_headers(), 10000);
+  CHECK(accepted.status == 200);
+  CHECK(strstr(accepted.body, "\"applied\":true"));
+  CHECK(strstr(accepted.body, "\"epoch\":1700002222"));
+  CHECK(strstr(accepted.body, "\"source\":\"phone\""));
+  CHECK(strstr(accepted.body, "\"rtc\":\"persisted\""));
+  CHECK(strstr(accepted.body, "\"nvs_persisted\":true"));
+  CHECK(sink.system == 1700002222 && sink.rtc == 1700002222 && sink.nvs == 1700002222);
+  CHECK(api.clock().now() == 1700002222 && api.clock().last_good() == 1700002222);
+  CHECK(api.clock().signing_trusted());
+  const int after_phone = sink.system_n;
+  HttpReply insync = api.set_time(bearer_lan, "{\"epoch\":1700002240}", json_headers(), 11000);
+  CHECK(strstr(insync.body, "\"applied\":false"));
+  CHECK(strstr(insync.body, "\"reason\":\"clock_in_sync\""));
+  CHECK(strstr(insync.body, "\"rtc\":\"not_written\""));
+  CHECK(sink.system_n == after_phone && api.clock().now() == 1700002222);
+  const int rtc_before_ntp = sink.rtc_n;
+  api.note_ntp(1700003000, 12000);
+  CHECK(api.clock().source() == pc::clk::Source::Ntp);
+  CHECK(api.clock().signing_trusted());
+  CHECK(sink.rtc == 1700003000 && sink.rtc_n == rtc_before_ntp + 1);
+  CHECK(sink.system_n == after_phone);
+  HttpReply blocked = api.set_time(bearer_lan, "{\"epoch\":1700009000}", json_headers(), 13000);
+  CHECK(strstr(blocked.body, "\"applied\":false"));
+  CHECK(strstr(blocked.body, "\"reason\":\"ntp_authoritative\""));
+  CHECK(strstr(blocked.body, "\"epoch\":1700003000"));
+  CHECK(sink.system_n == after_phone && api.clock().now() == 1700003000);
+  api.observe_clock(1700003000, 1, false);
+  CHECK(!api.clock().signing_trusted());
+  HttpReply from_nvs = api.set_time(bearer_lan, "{\"epoch\":1700004000}", json_headers(), 20000);
+  CHECK(strstr(from_nvs.body, "\"applied\":true"));
+  CHECK(api.clock().now() == 1700004000 && sink.system == 1700004000);
+  sink.rtc_ok = false;
+  HttpReply rtc_fail = api.set_time(bearer_lan, "{\"epoch\":1700005000}", json_headers(), 40000);
+  CHECK(strstr(rtc_fail.body, "\"applied\":true"));
+  CHECK(strstr(rtc_fail.body, "\"rtc\":\"failed\""));
+  CHECK(api.clock().now() == 1700005000 && sink.system == 1700005000);
+  sink.system_ok = false;
+  HttpReply sys_fail = api.set_time(bearer_lan, "{\"epoch\":1700008000}", json_headers(), 80000);
+  CHECK(strstr(sys_fail.body, "\"applied\":false"));
+  CHECK(strstr(sys_fail.body, "\"reason\":\"clock_set_failed\""));
+  CHECK(api.clock().now() == 1700005000);
+  const int frozen = sink.system_n;
+  CHECK(api.set_time(bearer_lan, "{\"epoch\":10}", json_headers(), 90000).status == 400);
+  CHECK(sink.system_n == frozen && api.clock().now() == 1700005000);
 
   if (g_failures) {
     fprintf(stderr, "%d manual api checks failed\n", g_failures);

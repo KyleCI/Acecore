@@ -23,6 +23,55 @@ void device_hello(const CloudState& state, const char* display_id, bool passcode
 bool ota_signature(const uint8_t secret[32], const char* method, const char* path, const char* timestamp,
                    const char* nonce, const char* body, char sig_hex[65]);
 
+// Bearer is optional. A missing secret or an untrusted clock (not phone/NTP) does not send.
+struct OtaCheckInput {
+  const char* mac_hex = nullptr;
+  const char* serial = nullptr;
+  const char* version = nullptr;
+  const char* kind = nullptr;
+  const char* model = nullptr;
+  bool healthy = false;
+  const char* last_status = nullptr;
+  const char* last_error = nullptr;
+  const char* bearer = nullptr;
+  const uint8_t* secret = nullptr;
+  bool have_secret = false;
+  int64_t unix_s = 0;
+  int clock_source = 0;
+  const char* nonce_hex = nullptr;
+};
+
+struct OtaCheckRequest {
+  bool send = false;
+  char reason[32];
+  char path[48];
+  char body[480];
+  char authorization[160];
+  bool bearer_present = false;
+  char device_header[24];
+  char timestamp[24];
+  char nonce[33];
+  char signature[65];
+};
+
+struct OtaSigned {
+  bool send = false;
+  char reason[32];
+  char authorization[160];
+  bool bearer_present = false;
+  char device_header[24];
+  char timestamp[24];
+  char nonce[33];
+  char signature[65];
+};
+
+bool sign_ota_headers(const char* method, const char* path, const char* body, const char* mac, const char* serial,
+                      const char* bearer, const uint8_t* secret, bool have_secret, int64_t unix_s, int clock_source,
+                      const char* nonce, OtaSigned* out);
+bool build_ota_check(const OtaCheckInput& in, OtaCheckRequest* out);
+bool ota_may_check(bool healthy, bool running, bool have_base_url, bool wifi_up, bool hotspot_only,
+                   bool have_secret, bool clock_trusted);
+
 struct OtaSchedule {
   uint32_t next_ms = 0;
   bool armed = false;

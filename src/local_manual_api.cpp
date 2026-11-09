@@ -40,6 +40,25 @@ bool json_string(const char* json, const char* key, char* out, size_t cap) {
   return true;
 }
 
+bool json_i64(const char* json, const char* key, int64_t* out) {
+  const char* p = find_key(json, key);
+  if (!p || !out || *p == '"') return false;
+  int sign = 1;
+  if (*p == '-') {
+    sign = -1;
+    ++p;
+  }
+  if (*p < '0' || *p > '9') return false;
+  int64_t value = 0;
+  while (*p >= '0' && *p <= '9') {
+    value = value * 10 + (*p - '0');
+    ++p;
+  }
+  if (*p == '.' || *p == 'e' || *p == 'E') return false;
+  *out = sign * value;
+  return true;
+}
+
 bool json_int(const char* json, const char* key, int* out) {
   const char* p = find_key(json, key);
   if (!p || !out) return false;
@@ -701,43 +720,43 @@ HttpReply ManualApi::claim_code(const char* authorization, const ClientHeaders& 
 }
 
 void ManualApi::observe_clock(int64_t now_s, int source, bool ntp_fresh) {
-  clock_now_ = now_s;
-  clock_src_ = source;
-  ntp_fresh_ = ntp_fresh;
+  clock_.observe(now_s, source, ntp_fresh, 0);
 }
+
+void ManualApi::note_ntp(int64_t epoch, uint32_t now_ms) { clock_.note_ntp(epoch, now_ms); }
+
+void ManualApi::restore_saved_clock(int64_t last, int tz) { clock_.restore_nvs(last, tz); }
+
+void ManualApi::set_clock_hooks(ClockHooks hooks) { clock_.set_hooks(hooks); }
 
 HttpReply ManualApi::set_time(const char* authorization, const char* json, const ClientHeaders& headers,
                               uint32_t now_ms) {
   HttpReply out;
   if (!post_headers_ok(headers, &out)) return out;
   if (!bearer_ok(bearer_kind(authorization, now_ms), false, &out)) return out;
-  int epoch = 0;
-  if (!json_int(json, "epoch", &epoch)) {
+  int64_t epoch = 0;
+  if (!json_i64(json, "epoch", &epoch)) {
     login_error(&out, 400, "invalid_request", 0);
     return out;
   }
   int tz = 0;
-  bool has_tz = json_int(json, "tz_offset_min", &tz);
+  const bool has_tz = json_int(json, "tz_offset_min", &tz);
   if (has_tz && !pc::clk::validTz(tz)) {
     login_error(&out, 400, "invalid_tz_offset", 0);
     return out;
   }
-  pc::clk::Source src = clock_src_ == 3 ? pc::clk::Source::Ntp
-                        : clock_src_ == 2 ? pc::clk::Source::Phone
-                        : clock_src_ == 1 ? pc::clk::Source::Nvs
-                                          : pc::clk::Source::None;
-  pc::clk::Verdict verdict = pc::clk::judge(epoch, clock_now_, src, ntp_fresh_);
-  if (verdict == pc::clk::Verdict::Invalid) {
+  const ClockEffect effect = clock_.set_from_phone(epoch, has_tz, tz, now_ms);
+  if (effect.verdict == pc::clk::Verdict::Invalid) {
     login_error(&out, 400, "invalid_epoch", 0);
     return out;
   }
-  if (verdict == pc::clk::Verdict::Accept) {
-    clock_now_ = epoch;
-    clock_src_ = 2;
-    reply_set(&out, 200, "{\"ok\":true,\"applied\":true}");
-    return out;
-  }
-  snprintf(out.body, sizeof out.body, "{\"ok\":true,\"applied\":false,\"reason\":\"%s\"}", pc::clk::verdictName(verdict));
+  snprintf(out.body, sizeof out.body,
+           "{\"ok\":true,\"applied\":%s,\"reason\":%s%s%s,\"epoch\":%lld,\"tz_offset_min\":%d,"
+           "\"source\":\"%s\",\"ntp_fresh\":%s,\"rtc\":\"%s\",\"nvs_persisted\":%s}",
+           effect.applied ? "true" : "false", effect.reason ? "\"" : "", effect.reason ? effect.reason : "null",
+           effect.reason ? "\"" : "", static_cast<long long>(effect.epoch), effect.tz,
+           pc::clk::sourceName(effect.source), effect.ntp_fresh ? "true" : "false", effect.rtc,
+           effect.nvs_persisted ? "true" : "false");
   out.status = 200;
   return out;
 }

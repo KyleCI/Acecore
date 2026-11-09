@@ -24,6 +24,7 @@ struct HwV011Ac {
 };
 
 bool hwV011AcSample(HwV011Ac* out);
+bool hwV011SetRtc(int64_t unix_utc);
 void hwV011AppendTelemetry(JsonDocument& doc);
 bool hwV011HandleAck(JsonDocument& doc);
 #endif

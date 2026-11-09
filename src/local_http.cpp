@@ -12,8 +12,13 @@
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <esp_sntp.h>
 #include <esp_system.h>
+#include <sys/time.h>
 #include <time.h>
+#ifdef POWERCELL_HW_V011
+#include "hw_v011.h"
+#endif
 
 namespace {
 powercell::ManualApi api(POWERCELL_FACTORY_RATED_ACTIVE_W, POWERCELL_FACTORY_VARIANT);
@@ -132,10 +137,48 @@ void applySaved() {
 }
 }  // namespace
 
+bool setSystemClock(int64_t epoch, void*) {
+  timeval tv;
+  tv.tv_sec = static_cast<time_t>(epoch);
+  tv.tv_usec = 0;
+  return settimeofday(&tv, nullptr) == 0;
+}
+
+bool persistClock(int64_t epoch, bool have_epoch, int tz, void*) {
+  Preferences prefs;
+  if (!prefs.begin("clock", false)) return false;
+  bool ok = prefs.putInt("tz", tz) == sizeof(int);
+  if (ok && have_epoch) ok = prefs.putLong64("last", static_cast<int64_t>(epoch)) == sizeof(int64_t);
+  prefs.end();
+  return ok;
+}
+
+#ifdef POWERCELL_HW_V011
+bool writeRtcClock(int64_t epoch, void*) { return hwV011SetRtc(epoch); }
+#endif
+
+void onSntp(struct timeval* tv) {
+  powercell::WallClock* clock = powercell::wall_clock_bound();
+  if (!tv || !clock) return;
+  clock->note_ntp(static_cast<int64_t>(tv->tv_sec), millis());
+}
+
 void manualApiBegin() {
   if (begun) return;
   begun = true;
   api.set_random([](uint8_t* out, size_t n, void*) { esp_fill_random(out, n); }, nullptr);
+  powercell::ClockHooks hooks;
+  hooks.set_system = setSystemClock;
+  hooks.persist = persistClock;
+#ifdef POWERCELL_HW_V011
+  hooks.write_rtc = writeRtcClock;
+#else
+  hooks.write_rtc = nullptr;
+#endif
+  hooks.ctx = nullptr;
+  api.set_clock_hooks(hooks);
+  powercell::wall_clock_bind(&api.clock());
+  sntp_set_time_sync_notification_cb(onSntp);
   powercell::ManualImage image;
   memset(&image, 0, sizeof image);
   Preferences prefs;
@@ -170,6 +213,14 @@ void manualApiBegin() {
     prefs.end();
   }
   api.restore(image);
+  if (prefs.begin("clock", true)) {
+    const int tz = prefs.getInt("tz", pc::clk::kTzDefault);
+    const bool have_last = prefs.isKey("last");
+    const int64_t last = have_last ? prefs.getLong64("last", 0) : 0;
+    prefs.end();
+    api.restore_saved_clock(have_last ? last : 0, tz);
+    if (have_last && time(nullptr) < pc::clk::kMinEpoch && last >= pc::clk::kMinEpoch) setSystemClock(last, nullptr);
+  }
   api.set_persist_fail(false);
   api.set_random([](uint8_t* out, size_t n, void*) { esp_fill_random(out, n); }, nullptr);
   applySaved();

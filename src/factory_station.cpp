@@ -169,6 +169,11 @@ void FactoryStation::console(const char* line, char* out, size_t cap) {
       snprintf(out, cap, "ERR locked");
       return;
     }
+    if (strlen(key) > 128) {
+      snprintf(out, cap, "ERR api_key");
+      return;
+    }
+    snprintf(api_key, sizeof api_key, "%s", key);
     api_key_set = key[0] != 0;
     snprintf(out, cap, "OK api_key");
     return;
@@ -179,8 +184,13 @@ void FactoryStation::console(const char* line, char* out, size_t cap) {
       snprintf(out, cap, "ERR locked");
       return;
     }
-    ota_url_set = strncmp(url, "https://", 8) == 0;
-    snprintf(out, cap, "%s", ota_url_set ? "OK ota_url" : "ERR ota_url");
+    ota_url_set = strlen(url) <= 180 && strncmp(url, "https://", 8) == 0;
+    if (!ota_url_set) {
+      snprintf(out, cap, "ERR ota_url");
+      return;
+    }
+    snprintf(ota_url, sizeof ota_url, "%s", url);
+    snprintf(out, cap, "OK ota_url");
     return;
   }
   const char* ssid = arg_after(line, "SET wifi_ssid");
