@@ -5,6 +5,7 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include "config.h"
+#include "hw_pzem.h"
 #include "log.h"
 #include "pins.h"
 #include "stm32_legacy_parser.h"
@@ -145,6 +146,20 @@ void begin() {
 Protocol protocol() { return g_proto; }
 
 bool status(Stm32Status &out, uint32_t *ageMs) {
+#if POWERCELL_HW_V011
+  float v = 0, a = 0, w = 0;
+  uint32_t energy = 0, age = 0;
+  if (!hwPzemSample(&v, &a, &w, &energy, &age)) return false;
+  out = Stm32Status();
+  out.has_vout = true;
+  out.vout = v;
+  out.has_iout = true;
+  out.iout = a;
+  out.sys = pc::SysState::Inverter;
+  if (ageMs) *ageMs = age;
+  (void)energy;
+  return true;
+#else
   if (!g_stateMx) return false;
   xSemaphoreTake(g_stateMx, portMAX_DELAY);
   bool have = g_have;
@@ -152,6 +167,7 @@ bool status(Stm32Status &out, uint32_t *ageMs) {
   if (ageMs) *ageMs = millis() - g_statusAt;
   xSemaphoreGive(g_stateMx);
   return have;
+#endif
 }
 
 bool online() { Stm32Status s; uint32_t age; return status(s, &age) && age < STM32_STALE_MS; }

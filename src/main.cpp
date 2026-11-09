@@ -22,6 +22,7 @@
 #include "periph.h"
 #include "settings.h"
 #include "sockets/sockets.h"
+#include "hw_pzem.h"
 #include "stm32_link.h"
 #include "stm32_updater.h"
 #include "web_local.h"
@@ -51,6 +52,9 @@ void setup() {
   leds::begin();
 #if FEATURE_STM32
   stm32link::begin();
+#endif
+#if POWERCELL_HW_V011
+  hwPzemBegin();
 #endif
   battery::begin();
   bms::begin();

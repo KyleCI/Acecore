@@ -16,6 +16,7 @@
 #include "settings.h"
 #include "sockets/sockets.h"
 #include "solar.h"
+#include "hw_pzem.h"
 #include "stm32_link.h"
 #include "factory_id.h"
 #include "live.h"
@@ -48,6 +49,11 @@ void inverterBlock(JsonObject inv) {
   num("output_voltage", s.has_vout, s.vout);
   num("output_current", s.has_iout, s.iout);  // AC load current (CT)
   num("output_power", s.has_vout && s.has_iout, s.vout * s.iout);  // apparent, V x I
+#if POWERCELL_HW_V011
+  if (fresh && s.has_vout && s.has_iout) inv["output_power_quantity"] = "apparent_va";
+  else inv["output_power_quantity"] = nullptr;
+  inv["stm32_online"] = false;
+#endif
   num("grid_voltage", s.has_grid, s.grid_v);
   num("temperature", s.has_temp, s.temp_c);
   num("battery_voltage", s.has_bat, s.bat_v);  // STM32 PA3 (cross-check)
@@ -186,6 +192,20 @@ void liveToJson(JsonObject o) {
   pc::live::PowerSrc ps = pc::live::outputPowerW(in, w);
   num("output_power_w", ps != pc::live::PowerSrc::None, w);
   if (const char *n = pc::live::powerSrcName(ps)) o["output_power_source"] = n; else o["output_power_source"] = nullptr;
+#if POWERCELL_HW_V011
+  float pz_v = 0, pz_a = 0, pz_w = 0;
+  uint32_t pz_wh = 0, pz_age = 0;
+  if (hwPzemSample(&pz_v, &pz_a, &pz_w, &pz_wh, &pz_age)) {
+    w = pz_w;
+    o["output_power_w"] = pz_w;
+    o["output_power_source"] = "pzem004t_v3_active";
+    o["lifetime_wh"] = pz_wh;
+  } else {
+    o["output_power_w"] = nullptr;
+    o["output_power_source"] = nullptr;
+    o["lifetime_wh"] = nullptr;
+  }
+#endif
   float pct = 0;
   num("load_pct", ps != pc::live::PowerSrc::None && pc::live::loadPct(w, unitmodel::get(), pct), pct);
   num("inverter_temperature", in.stmFresh && s.has_temp, s.temp_c);
@@ -284,6 +304,10 @@ void buildMetrics(JsonDocument &doc) {
   uint32_t age = 0;
   bool fresh = stm32link::status(s, &age) && age < STM32_STALE_MS;
   doc["stm32_online"] = fresh;
+#if POWERCELL_HW_V011
+  doc["stm32_online"] = false;
+  if (fresh && s.has_vout && s.has_iout) doc["output_power_quantity"] = "apparent_va";
+#endif
   num("inverterLoad", fresh && s.has_vout && s.has_iout, s.vout * s.iout);
   num("inverterVoltage", fresh && s.has_vout, s.vout);
   num("inverterCurrent", fresh && s.has_iout, s.iout);
