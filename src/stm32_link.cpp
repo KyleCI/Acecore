@@ -118,6 +118,9 @@ const char *resultName(Result r) {
 }
 
 void begin() {
+#if !FEATURE_STM32
+  return;
+#else
   g_stateMx = xSemaphoreCreateMutex();
   g_cmdMx = xSemaphoreCreateMutex();
   g_respQ = xQueueCreate(1, sizeof(fr::Frame));
@@ -136,6 +139,7 @@ void begin() {
   if (g_proto == Protocol::Framed) xTaskCreatePinnedToCore(pollTask, "stm32_poll", 3072, nullptr, 1, nullptr, 1);
   LOGI("STM32", "LINK", "protocol=%s baud=%lu rx=%d tx=%d", g_proto == Protocol::Framed ? "framed" : "legacy_text",
        (unsigned long)baud, PIN_STM32_RX, PIN_STM32_TX);
+#endif
 }
 
 Protocol protocol() { return g_proto; }

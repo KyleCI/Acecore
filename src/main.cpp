@@ -49,7 +49,9 @@ void setup() {
   onboarding::begin();  // per-unit passcode/claim state (after settings, before net/web)
   gateway::begin();
   leds::begin();
+#if FEATURE_STM32
   stm32link::begin();
+#endif
   battery::begin();
   bms::begin();
   unitmodel::begin();  // 2.5.4 PC3K/PC5K/PC10K from NVS
@@ -80,7 +82,9 @@ void loop() {
   web::service();
   onboarding::service();
   ota::service(backend::healthy());
+#if FEATURE_STM32
   stm32update::service();
+#endif
   leds::service();
   backend::appUnlock();
   heapguard::sample();
