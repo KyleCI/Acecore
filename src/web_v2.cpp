@@ -107,6 +107,10 @@ void registerRoutes(AsyncWebServer &s) {
     if (const pc::live::Model *m = unitmodel::get()) d["powercell_model"] = m->code; else d["powercell_model"] = nullptr;
     if (const pc::live::Model *m = unitmodel::get()) { d["rated_kva"] = m->ratedKva; d["usable_kw"] = m->usableKw; }
     else { d["rated_kva"] = nullptr; d["usable_kw"] = nullptr; }
+    JsonObject units = d["units"].to<JsonObject>();
+    units["power"] = "W";
+    units["energy"] = "Wh";
+    d["data_format_version"] = 1;
     send(r, 200, d);
   });
   // v15: first passcode, no factory default. Only while none is set and only from a phone
