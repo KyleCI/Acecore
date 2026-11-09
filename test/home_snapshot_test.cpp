@@ -75,6 +75,13 @@ int main() {
   stm32.amps = 1.5;
   const powercell::NormalizedOutput stm = powercell::normalize_output(stm32);
   check(!stm.have_active && stm.have_apparent && stm.apparent_va == 345, "STM32 has VA and no active watts");
+  powercell::OutputSample placeholder = watts;
+  placeholder.active = -1;
+  check(!powercell::normalize_output(placeholder).have_active, "-1 is not published");
+  placeholder.active = 99999;
+  check(!powercell::normalize_output(placeholder).have_active, "99999 is not published");
+  check(!powercell::power_publishable(-1) && !powercell::power_publishable(99999), "sentinels rejected");
+  check(powercell::power_publishable(15), "15 W is a real reading");
 
   check(powercell::bms_sample_fresh(true, 5000, 20000), "bms 15s inclusive");
   check(!powercell::bms_sample_fresh(true, 4999, 20000), "bms older than 15s");
@@ -134,6 +141,23 @@ int main() {
   text.active_w = stm.active_w;
   check(powercell::home_snapshot_write(text, nullptr, nullptr, body, sizeof body) > 0, "stm32 write");
   printf("SNAP stm32 %s\n", body);
+
+  powercell::HomeMeters bad;
+  bad.have_active = true;
+  bad.active_w = -1;
+  bad.active_source = "pzem004t_v3_active";
+  bad.have_voltage = true;
+  bad.have_current = true;
+  bad.volts = 99999;
+  bad.amps = 1;
+  bad.bms_valid = true;
+  bad.bat_w = 99999;
+  bad.pv_valid = true;
+  bad.pv_w = -1;
+  bad.meter_present = true;
+  bad.ac_valid = true;
+  check(powercell::home_snapshot_write(bad, nullptr, nullptr, body, sizeof body) > 0, "sentinel write");
+  printf("SNAP sentinel %s\n", body);
 
   check(powercell::home_snapshot_write(meters, nullptr, nullptr, body, 8) < 0, "short buffer fails");
   if (failures) {

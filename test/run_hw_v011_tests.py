@@ -321,5 +321,17 @@ with tempfile.TemporaryDirectory(prefix="hw-v011-") as directory:
         sys.exit("STM32 V*I must stay flagged as apparent VA")
     if stm32["inverter"]["stm32_online"] is not True:
         sys.exit("STM32 profile with a reading reports stm32_online")
+    if stm32["last_data"]["power"] is not None or stm32["battery"]["power"] is not None:
+        sys.exit("STM32 watt keys stay null when the text frame has no watts")
+    marker = snaps["sentinel"]
+    encoded_marker = json.dumps(marker)
+    if "-1" in encoded_marker or "99999" in encoded_marker:
+        sys.exit("power sentinels must be null")
+    if marker["last_data"]["power"] is not None or marker["metrics"]["output_power_w"] is not None:
+        sys.exit("sentinel active watts must be null")
+    if marker["inverter"].get("output_power") is not None or marker["metrics"]["inverterLoad"] is not None:
+        sys.exit("sentinel apparent power must be null")
+    if marker["battery"]["power"] is not None or marker["solar"]["power"] is not None:
+        sys.exit("sentinel battery and solar power must be null")
 
 print("profile pin checks passed")
