@@ -148,8 +148,8 @@ int main() {
   bad.active_source = "pzem004t_v3_active";
   bad.have_voltage = true;
   bad.have_current = true;
-  bad.volts = 99999;
-  bad.amps = 1;
+  bad.volts = 100;
+  bad.amps = 999.99;
   bad.bms_valid = true;
   bad.bat_w = 99999;
   bad.pv_valid = true;
