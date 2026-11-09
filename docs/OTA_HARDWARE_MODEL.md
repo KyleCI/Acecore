@@ -14,8 +14,8 @@ The model is the OTA hardware identity. It is not the serial number and it is no
 
 | Model | Hardware | In this tree |
 |---|---|---|
-| `pc-dsp011-5kw` | DSP, usable 4500 W, `PC5K` | `esp32dev_hw_v011_5kw` |
-| `pc-dsp011-35kw` | DSP, usable 3150 W, no `PC3K` | `esp32dev_hw_v011_35kw` |
+| `pc-dsp011-5kw` | DSP, usable 4500 W, `PC5K` | `esp32dev_dsp011_5kw` |
+| `pc-dsp011-35kw` | DSP, usable 3150 W, no `PC3K` | `esp32dev_dsp011_35kw` |
 | `pc-stm01-5kw` | STM32, 2.5.11 code paths | `esp32dev_stm01_5kw` |
 | `pc-stm01-35kw` | STM32, 2.5.11 code paths | `esp32dev_stm01_35kw` |
 

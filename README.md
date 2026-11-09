@@ -10,8 +10,8 @@ The new firmware still works with the existing backend, the socket firmware 1.0.
 ```
 pio run -e esp32dev_stm01_5kw      # STM32, model pc-stm01-5kw
 pio run -e esp32dev_stm01_35kw     # STM32, model pc-stm01-35kw
-pio run -e esp32dev_hw_v011_5kw    # DSP, model pc-dsp011-5kw
-pio run -e esp32dev_hw_v011_35kw   # DSP, model pc-dsp011-35kw
+pio run -e esp32dev_dsp011_5kw     # DSP, model pc-dsp011-5kw
+pio run -e esp32dev_dsp011_35kw    # DSP, model pc-dsp011-35kw
 make -C test/host                  # host unit tests
 pio run -t upload && pio device monitor
 ```
@@ -261,7 +261,7 @@ INFO; each transfer is bounded by a 20 ms Wire timeout and runs in its own task.
 ## Status
 | Area | Status |
 |---|---|
-| Builds (esp32dev_stm01_5kw, esp32dev_stm01_35kw, esp32dev_hw_v011_5kw, esp32dev_hw_v011_35kw) | Product images. Live host api-dev.acecore.tech |
+| Builds (esp32dev_stm01_5kw, esp32dev_stm01_35kw, esp32dev_dsp011_5kw, esp32dev_dsp011_35kw) | Product images. Live host api-dev.acecore.tech |
 | Host tests | Done (154 checks) |
 | STM32 legacy parser, framed protocol and commands | Done. Bench test against real STM32 output is pending |
 | Backend WS, OTA with rollback, offline queue, local API, provisioning | Done. On-device testing is pending |

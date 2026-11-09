@@ -1,6 +1,6 @@
 # Power and energy units
 
-`GET /v2/setup/info` declares the units of keys that do not name a unit. The declaration is the same on `esp32dev`, `esp32dev_hw_v011_5kw`, and `esp32dev_hw_v011_35kw`:
+`GET /v2/setup/info` declares the units of keys that do not name a unit. The declaration is the same on `esp32dev_stm01_5kw`, `esp32dev_stm01_35kw`, `esp32dev_dsp011_5kw`, and `esp32dev_dsp011_35kw`:
 
 ```json
 "units": { "power": "W", "energy": "Wh" },

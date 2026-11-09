@@ -12,14 +12,14 @@ login store, or the boot path.
 
 | Environment | `firmware.bin` directory | Embedded `factory_variant` | Rated active W | Usable W | Overload |
 | --- | --- | --- | --- | --- | --- |
-| `esp32dev` | `.pio/build/esp32dev/` | `unrated` | none | none | off |
-| `esp32dev_hw_v011` | `.pio/build/esp32dev_hw_v011/` | `unrated` | none | none | off |
-| `esp32dev_hw_v011_5kw` | `.pio/build/esp32dev_hw_v011_5kw/` | `hw-v0.1.1-5kw` | 5000 | 4500 | armed |
-| `esp32dev_hw_v011_35kw` | `.pio/build/esp32dev_hw_v011_35kw/` | `hw-v0.1.1-3.5kw` | 3500 | 3150 | armed |
+| `esp32dev_stm01_5kw` | `.pio/build/esp32dev_stm01_5kw/` | `unrated` | none | none | off |
+| `esp32dev_stm01_35kw` | `.pio/build/esp32dev_stm01_35kw/` | `unrated` | none | none | off |
+| `esp32dev_dsp011_5kw` | `.pio/build/esp32dev_dsp011_5kw/` | `hw-v0.1.1-5kw` | 5000 | 4500 | armed |
+| `esp32dev_dsp011_35kw` | `.pio/build/esp32dev_dsp011_35kw/` | `hw-v0.1.1-3.5kw` | 3500 | 3150 | armed |
 
 Usable watts are 90 percent of those two rated values only. A 5 kW unit gets
-the `5kw` image. A 3.5 kW unit gets the `35kw` image. The original collector
-and the unrated v0.1.1 image do not guess a rating.
+the `esp32dev_dsp011_5kw` image. A 3.5 kW unit gets the `esp32dev_dsp011_35kw`
+image. The STM32 images do not guess a rating.
 
 After a build, `strings firmware.bin` on a rated image contains that image's
 `factory_variant` and does not contain the other product's variant string.
