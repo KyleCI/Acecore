@@ -13,7 +13,9 @@ What it does (real console commands from src/console.cpp):
   ROTATE_SECRET only if the unit has no factory secret (the board normally generates it itself)
   SET api_key / SET ota_url from factory_state/factory.env
   SERIAL ACE-NNNNNN from factory_state/serial_counter.json (counter bumps only after "OK serial set")
-  --register: SECRET (read once, never printed) -> POST {API}/api/devices/register (X-Admin-Key)
+  --register: INFO hardware_model must be one of the four pc-* OTA models
+              SECRET (read once, never printed) -> POST {API}/api/devices/register (X-Admin-Key)
+              body adds "model" from that INFO line, not from --model
               -> SET local_tok <token from the response>
   REBOOT -> INFO -> capture LABEL lines -> factory_state/labels/<serial>.txt
   --lock: LOCK (firmware requires serial + secret reported, i.e. --register) -> REBOOT
@@ -37,7 +39,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_STATE = os.path.join(HERE, "factory_state")
 DEFAULT_OTA = "https://api-dev.acecore.tech"
 SERIAL_RE = re.compile(r"^ACE-\d{6}$")  # fid::validSerial
-CSV_FIELDS = ["serial", "device_id", "mac", "gw_name", "ap_ssid", "fw", "registered", "locked", "timestamp"]
+CSV_FIELDS = ["serial", "device_id", "mac", "gw_name", "ap_ssid", "fw", "registered", "locked",
+              "timestamp", "hardware_model"]
+# Compile-time OTA models. Not the NVS --model values PC3K/PC5K/PC10K.
+OTA_MODELS = ("pc-dsp011-5kw", "pc-dsp011-35kw", "pc-stm01-5kw", "pc-stm01-35kw")
 
 
 # ---------- pure helpers (unit tested) ----------
@@ -134,6 +139,42 @@ def serial_in_log(csv_path, serial):
 MODELS = ("PC3K", "PC5K", "PC10K")  # firmware pc::live::findModel (2.5.4)
 
 
+def require_ota_model(info):
+    """The OTA model is read from INFO hardware_model=. Missing or anything else refuses registration."""
+    m = str((info or {}).get("hardware_model") or "")
+    if m not in OTA_MODELS:
+        raise ValueError(
+            "hardware_model %r is not one of %s; refusing to register "
+            "(this is the image model from INFO, not --model)" % (m, ", ".join(OTA_MODELS)))
+    return m
+
+
+def register_payload(device_id, device_secret, mac, gateway_id, firmware_version, hardware_model):
+    """POST /api/devices/register body. model is the OTA hardware model."""
+    if hardware_model not in OTA_MODELS:
+        raise ValueError("refusing to register hardware_model %r" % (hardware_model,))
+    return {
+        "device_id": device_id,
+        "device_secret": device_secret,
+        "mac": mac or "",
+        "gateway_id": gateway_id,
+        "firmware_version": firmware_version,
+        "device_kind": "collector",
+        "model": hardware_model,
+    }
+
+
+def label_file_text(label, extra_lines, hardware_model):
+    """Label printer line, then the OTA model, then any LABEL_QR lines."""
+    parts = [label]
+    if hardware_model:
+        parts.append("hardware_model=" + hardware_model)
+    for line in extra_lines or []:
+        if str(line).startswith("LABEL_QR"):
+            parts.append(line)
+    return "\n".join(parts) + "\n"
+
+
 def normalize_model(m):
     """'pc5k', '5K', '5kva' -> 'PC5K'; raises ValueError for anything else."""
     s = "".join(str(m).split()).upper()
@@ -147,13 +188,26 @@ def normalize_model(m):
 
 
 def append_csv(csv_path, row):
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-    new = not os.path.exists(csv_path)
-    with open(csv_path, "a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-        if new:
-            w.writeheader()
-        w.writerow({k: row.get(k, "") for k in CSV_FIELDS})
+    os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+    existing = None
+    if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            if list(reader.fieldnames or []) == list(CSV_FIELDS):
+                existing = False
+            else:
+                existing = list(reader)
+    out_row = {k: row.get(k, "") for k in CSV_FIELDS}
+    if existing is False:
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            csv.DictWriter(f, fieldnames=CSV_FIELDS).writerow(out_row)
+        return
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        for old in existing or []:
+            w.writerow({k: old.get(k, "") for k in CSV_FIELDS})
+        w.writerow(out_row)
 
 
 def pick_label(labels):
@@ -266,7 +320,14 @@ def main(argv=None):
     if "device_id" not in st:
         die("no INFO reply; close the Serial Monitor and check the port")
     print(f"unit device_id={st.get('device_id')} fw={st.get('fw')} serial={st.get('serial')} "
-          f"secret={st.get('secret')} api_key={st.get('api_key')} locked={st.get('locked')}")
+          f"hardware_model={st.get('hardware_model')} secret={st.get('secret')} "
+          f"api_key={st.get('api_key')} locked={st.get('locked')}")
+    ota_model = ""
+    if a.register:
+        try:
+            ota_model = require_ota_model(st)
+        except ValueError as e:
+            die(str(e))
     if st.get("locked") == "1":
         die("unit is LOCKED; nothing to do (FACTORY_WIPE first to re-provision)")
 
@@ -321,8 +382,8 @@ def main(argv=None):
             if not r.startswith("SECRET "):
                 die("SECRET: " + r + " (already reported: the backend has it; use ROTATE_SECRET + rerun to re-register)")
             secret = r.split(" ", 1)[1].strip()
-            payload = {"device_id": st["device_id"], "device_secret": secret, "mac": st.get("mac", ""),
-                       "gateway_id": serial, "firmware_version": st.get("fw"), "device_kind": "collector"}
+            payload = register_payload(st["device_id"], secret, st.get("mac", ""), serial,
+                                       st.get("fw"), ota_model)
             try:
                 resp = register_backend(api, env["ADMIN_KEY"], payload)
             except Exception as e:
@@ -360,20 +421,20 @@ def main(argv=None):
     if a.dry_run:
         print("\nDRY RUN: nothing written to the unit, counter or log.")
         return 0
+    recorded_model = st2.get("hardware_model") or ota_model
     row = {"serial": serial, "device_id": st2.get("device_id"), "mac": st2.get("mac"), "gw_name": st2.get("gateway"),
            "ap_ssid": st2.get("ap_ssid"), "fw": st2.get("fw"), "registered": int(registered), "locked": int(locked),
-           "timestamp": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
+           "timestamp": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+           "hardware_model": recorded_model}
     append_csv(csv_path, row)
     os.makedirs(os.path.join(a.state, "labels"), exist_ok=True)
     with open(os.path.join(a.state, "labels", serial + ".txt"), "w", encoding="utf-8") as f:
-        f.write(label + "\n")
-        for l in st2.get("labels", []):
-            if l.startswith("LABEL_QR"):
-                f.write(l + "\n")
+        f.write(label_file_text(label, st2.get("labels", []), recorded_model))
     print("\n" + "=" * 60)
     print(f"  {label}")
     print("=" * 60)
-    print(f"serial={serial} hotspot={st2.get('ap_ssid')} registered={registered} locked={locked}")
+    print(f"serial={serial} hotspot={st2.get('ap_ssid')} hardware_model={recorded_model} "
+          f"registered={registered} locked={locked}")
     if not registered:
         print("NOT registered on the backend: rerun later with --reuse --register, or add it in the admin.")
     return 0

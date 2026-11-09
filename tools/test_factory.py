@@ -1,4 +1,4 @@
-import os, sys, tempfile, unittest
+import csv, os, sys, tempfile, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 import factory as f
 
@@ -17,12 +17,60 @@ class T(unittest.TestCase):
         cnt = f.load_counter(p); self.assertEqual(cnt["next"], 1); cnt["next"] = 5; f.save_counter(p, cnt)
         self.assertEqual(f.load_counter(p)["next"], 5)
         f.append_csv(c, {"serial": "ACE-000005"}); self.assertTrue(f.serial_in_log(c, "ACE-000005"))
+        with open(c, newline="", encoding="utf-8") as fh:
+            self.assertEqual(next(csv.reader(fh)), f.CSV_FIELDS)
+
+    def test_csv_adds_hardware_model_column(self):
+        d = tempfile.mkdtemp(); c = os.path.join(d, "u.csv")
+        with open(c, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=["serial", "device_id"])
+            w.writeheader(); w.writerow({"serial": "ACE-000001", "device_id": "AABBCCDDEEFF"})
+        f.append_csv(c, {"serial": "ACE-000002", "device_id": "001122334455", "hardware_model": "pc-stm01-5kw"})
+        with open(c, newline="", encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(rows[0]["serial"], "ACE-000001")
+        self.assertEqual(rows[0]["hardware_model"], "")
+        self.assertEqual(rows[1]["hardware_model"], "pc-stm01-5kw")
 
     def test_model(self):
         for v in ("PC5K", "pc5k", "5K", "5kva", " PC5KVA "): self.assertEqual(f.normalize_model(v), "PC5K")
         self.assertEqual(f.normalize_model("10k"), "PC10K"); self.assertEqual(f.normalize_model("PC3K"), "PC3K")
         for v in ("PC7K", "", "5"):
             with self.assertRaises(ValueError): f.normalize_model(v)
+
+    def test_ota_model_from_info(self):
+        text = ("device_id=F42DC9C090A8 mac=F4:2D:C9:C0:90:A8 gateway=ACE-000001 fw=2.5.13\n"
+                "model=PC5K rated_kva=5.0 usable_kw=4.5\n"
+                "hardware_model=pc-dsp011-5kw\n")
+        st = f.parse_info(text)
+        self.assertEqual(st["model"], "PC5K")
+        self.assertEqual(f.require_ota_model(st), "pc-dsp011-5kw")
+        for m in f.OTA_MODELS:
+            self.assertEqual(f.require_ota_model({"hardware_model": m}), m)
+        for bad in ("", "esp32dev", "PC5K", "pc-dsp011-5kW", "hw-v0.1.1-5kw"):
+            with self.assertRaises(ValueError):
+                f.require_ota_model({"hardware_model": bad})
+        with self.assertRaises(ValueError):
+            f.require_ota_model({})
+        body = f.register_payload("F42DC9C090A8", "ab" * 32, "F4:2D:C9:C0:90:A8",
+                                  "ACE-000001", "2.5.13", "pc-dsp011-5kw")
+        self.assertEqual(body, {
+            "device_id": "F42DC9C090A8",
+            "device_secret": "ab" * 32,
+            "mac": "F4:2D:C9:C0:90:A8",
+            "gateway_id": "ACE-000001",
+            "firmware_version": "2.5.13",
+            "device_kind": "collector",
+            "model": "pc-dsp011-5kw",
+        })
+        with self.assertRaises(ValueError):
+            f.register_payload("F42DC9C090A8", "secret", "", "ACE-000001", "2.5.13", "PC5K")
+        label = f.label_file_text("PWC2;S=Powercell-000001;P=abc;D=ACE-000001",
+                                  ["LABEL ap_pass=abc", "LABEL_QR WIFI:T:WPA;S:x;P:y;;"],
+                                  "pc-stm01-35kw")
+        self.assertEqual(label, "PWC2;S=Powercell-000001;P=abc;D=ACE-000001\n"
+                                "hardware_model=pc-stm01-35kw\n"
+                                "LABEL_QR WIFI:T:WPA;S:x;P:y;;\n")
 
 class R(unittest.TestCase):
     def test_reprovision(self):

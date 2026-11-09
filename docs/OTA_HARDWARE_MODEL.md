@@ -32,8 +32,22 @@ An offer is refused when:
 
 A wrong or missing model is refused before download. The reason is logged as `MODEL_REJECTED`.
 
+## Factory registration
+
+`INFO` prints `hardware_model=<POWERCELL_HARDWARE_MODEL>` on its own line. The existing `model=` line is still the NVS unit model (`PC3K`, `PC5K`, `PC10K`, or `unset`). `tools/factory.py --model PC5K` only sends `SET model` and does not choose the OTA model.
+
+`--register` reads `hardware_model` from the unit. It refuses to register when the value is missing or is not one of the four models above. The POST body is:
+
+```json
+{"device_id":"<12 hex>","device_secret":"<64 hex>","mac":"<colon mac>","gateway_id":"ACE-NNNNNN","firmware_version":"2.5.13","device_kind":"collector","model":"pc-dsp011-5kw"}
+```
+
+`model` is the only new field. The same value is stored on the `units.csv` row as `hardware_model` and written into `labels/<serial>.txt`.
+
 ## What the backend has to do
 
-Register `pc-dsp011-5kw`, `pc-dsp011-35kw`, `pc-stm01-5kw`, and `pc-stm01-35kw`. Publish each image only under its own model, using the release file name above. Do not publish any of them as `esp32dev`.
+`POST /api/devices/register` must accept `model` and store it on the device record the control station displays. If the handler drops unknown JSON fields, the station will still show an empty model. The stored value is one of `pc-dsp011-5kw`, `pc-dsp011-35kw`, `pc-stm01-5kw`, or `pc-stm01-35kw`.
+
+Also register those four models for OTA. Publish each image only under its own model, using the release file name above. Do not publish any of them as `esp32dev`.
 
 Until a model is registered, a unit of that model gets no OTA offer.

@@ -49,6 +49,8 @@ void info() {
                 settings::wifiSsid().c_str(), locked);
   { const pc::live::Model *m = unitmodel::get();
     Serial.printf("model=%s rated_kva=%.1f usable_kw=%.1f\n", m ? m->code : "unset", m ? m->ratedKva : 0.0f, m ? m->usableKw : 0.0f); }
+  // OTA identity. Separate from model= above, which is the NVS PC3K/PC5K/PC10K setting.
+  Serial.printf("hardware_model=%s\n", POWERCELL_HARDWARE_MODEL);
   Serial.printf("ap_ssid=%s wifi_state=%s hotspot=%d\n", id.apSsid, net::stateName(), net::apActive());
   String ofp = onboarding::fingerprint();
   Serial.printf("onboarding=2 passcode=%s default=%d claimed=%d fingerprint=%s\n", onboarding::passcodeSet() ? "set" : "unset",

@@ -186,11 +186,16 @@ python tools\factory.py COM11 --dry-run           # read-only plan
   serial is refused unless `--reuse`.
 - The device secret and hotspot password are generated on the board (`ROTATE_SECRET` only if missing). Secrets are never printed.
 - `gw_name` is not set: with a serial the firmware uses the serial as gateway name and `Powercell-NNNNNN` as SSID.
-- `--register` reads `SECRET` once and POSTs `{device_id, device_secret, mac, gateway_id, firmware_version}` to
-  `POST /api/devices/register` (header `X-Admin-Key`, the real backend route in `public/index.php`), then sets the returned `local_tok`.
-  Without it the unit is not in the backend; `LOCK` is refused by firmware until the secret is reported, so `--lock` requires `--register`.
+- `--register` reads `hardware_model=` from `INFO` (the image's `POWERCELL_HARDWARE_MODEL`). It refuses to register
+  if that line is missing or is not `pc-dsp011-5kw`, `pc-dsp011-35kw`, `pc-stm01-5kw`, or `pc-stm01-35kw`.
+  It then reads `SECRET` once and POSTs this body to `POST /api/devices/register` (header `X-Admin-Key`):
+  `{device_id, device_secret, mac, gateway_id, firmware_version, device_kind, model}`.
+  `model` is that hardware model. `--model PC5K` is a different setting: it only runs `SET model` for the NVS unit model.
+  The response's `local_tok` is then stored. Without `--register` the unit is not in the backend; `LOCK` is refused
+  by firmware until the secret is reported, so `--lock` requires `--register`.
 - Output: the label line (`PWC2;S=Powercell-NNNNNN;P=<hotspot pass>;D=ACE-NNNNNN`) printed and saved to
-  `factory_state/labels/<serial>.txt` (with the `LABEL_QR` Wi-Fi QR string); a row in `factory_state/units.csv`.
+  `factory_state/labels/<serial>.txt` (with `hardware_model=` and the `LABEL_QR` Wi-Fi QR string); a row in
+  `factory_state/units.csv`, including `hardware_model`.
 
 ## Provisioning (factory, USB console 115200)
 ```
