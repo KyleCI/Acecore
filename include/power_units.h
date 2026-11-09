@@ -8,13 +8,31 @@
 namespace powercell {
 
 // Fixed for this firmware build. GET /v2/setup/info publishes both.
-// They describe unit-less keys only (last_data.power, inverter.output_power,
-// inverter_energy). A name that already carries a unit is unchanged:
-// usable_kw is kW, rated_kva is kVA, *_w is watts, *_wh is watt-hours.
-// inverter.output_power stays V*I and keeps output_power_quantity apparent_va.
+// App contract: letambari/official-powercell-app PR 8,
+// powercell-app/docs/setup_info_units.md.
+// units.power is W for unit-less power keys: last_data.power, inverter.output_power
+// when it is not apparent_va, battery.power, and solar.power.
+// units.energy is Wh for unit-less energy such as inverter_energy.
+// Names that already carry a unit stay as named: usable_kw, *_w, lifetime_wh,
+// energy_today_kwh, rated_kva. apparent_va values stay volt-amps.
+// STM32 has no watt measurement, so those watt keys are JSON null.
 constexpr int kDataFormatVersion = 1;
 constexpr char kUnitlessPower[] = "W";
 constexpr char kUnitlessEnergy[] = "Wh";
+
+// The app treats a negative power, or a power above 1.5 times usable, as
+// unavailable. Placeholder sentinels must be JSON null, not a number.
+inline bool power_publishable(double watts) {
+  if (watts != watts) return false;
+  if (watts > 1.0e12 || watts < -1.0e12) return false;
+  const double sentinels[] = {-1.0, 99999.0};
+  for (int i = 0; i < 2; ++i) {
+    double delta = watts - sentinels[i];
+    if (delta < 0) delta = -delta;
+    if (delta < 0.001) return false;
+  }
+  return true;
+}
 
 enum class PowerScale : unsigned char { Watts = 0, Kilowatts = 1 };
 
@@ -46,12 +64,18 @@ inline NormalizedOutput normalize_output(const OutputSample& in) {
   out.volts = in.voltage_present ? in.volts : 0;
   out.amps = in.current_present ? in.amps : 0;
   if (in.active_present) {
-    out.have_active = true;
-    out.active_w = in.active_scale == PowerScale::Kilowatts ? in.active * 1000.0 : in.active;
+    const double watts = in.active_scale == PowerScale::Kilowatts ? in.active * 1000.0 : in.active;
+    if (power_publishable(watts)) {
+      out.have_active = true;
+      out.active_w = watts;
+    }
   }
   if (in.voltage_present && in.current_present) {
-    out.have_apparent = true;
-    out.apparent_va = in.volts * in.amps;
+    const double va = in.volts * in.amps;
+    if (power_publishable(va)) {
+      out.have_apparent = true;
+      out.apparent_va = va;
+    }
   }
   return out;
 }

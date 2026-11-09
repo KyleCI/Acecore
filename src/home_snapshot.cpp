@@ -1,4 +1,5 @@
 #include "home_snapshot.h"
+#include "power_units.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -71,6 +72,10 @@ struct Buf {
     else null_value();
   }
 
+  void key_power(const char* name, bool present, double watts) {
+    key_num(name, present && power_publishable(watts), watts);
+  }
+
   void key_str_or_null(const char* name, const char* value) {
     key(name);
     if (value && value[0]) quoted(value);
@@ -101,20 +106,22 @@ double apparent_va(const HomeMeters& meters) { return meters.volts * meters.amps
 void output_block(Buf& buf, const HomeMeters& meters, bool include_apparent) {
   buf.key_num("output_voltage", meters.have_voltage, meters.volts);
   buf.key_num("output_current", meters.have_current, meters.amps);
-  buf.key_num("output_power_w", meters.have_active, meters.active_w);
-  buf.key_str_or_null("output_power_source", meters.have_active ? meters.active_source : nullptr);
+  const bool active_ok = meters.have_active && power_publishable(meters.active_w);
+  buf.key_power("output_power_w", active_ok, meters.active_w);
+  buf.key_str_or_null("output_power_source", active_ok ? meters.active_source : nullptr);
   if (include_apparent && apparent(meters)) {
-    buf.key("output_power");
-    buf.number(apparent_va(meters));
-    buf.key("output_power_quantity");
-    buf.quoted("apparent_va");
+    buf.key_power("output_power", power_publishable(apparent_va(meters)), apparent_va(meters));
+    if (power_publishable(apparent_va(meters))) {
+      buf.key("output_power_quantity");
+      buf.quoted("apparent_va");
+    }
   }
   buf.key_usable("usable_kw", meters);
   buf.key_str_or_null("powercell_model", meters.powercell_model);
   buf.key_null("inverter_temperature");
   buf.key_num("battery_voltage", meters.bms_valid, meters.bat_v);
   buf.key_num("battery_current_a", meters.bms_valid, meters.bat_a);
-  buf.key_num("battery_power_w", meters.bms_valid, meters.bat_w);
+  buf.key_power("battery_power_w", meters.bms_valid, meters.bat_w);
   buf.key_num("remaining_ah", meters.bms_valid, meters.remain_ah);
   buf.key_num("full_capacity_ah", meters.bms_valid, meters.full_ah);
   buf.key_num("cycle_count", meters.bms_valid, static_cast<double>(meters.cycles));
@@ -122,7 +129,7 @@ void output_block(Buf& buf, const HomeMeters& meters, bool include_apparent) {
   buf.key_bool("solar_valid", meters.pv_valid);
   buf.key_num("solar_voltage", meters.pv_valid, meters.pv_v);
   buf.key_num("solar_current", meters.pv_valid, meters.pv_a);
-  buf.key_num("solar_power_w", meters.pv_valid, meters.pv_w);
+  buf.key_power("solar_power_w", meters.pv_valid, meters.pv_w);
 }
 
 }  // namespace
@@ -149,7 +156,7 @@ int home_snapshot_write(const HomeMeters& meters, const char* note_a, const char
   buf.key("last_data");
   buf.add("{");
   buf.comma = false;
-  buf.key_num("power", meters.have_active, meters.active_w);
+  buf.key_power("power", meters.have_active, meters.active_w);
   buf.add("}");
 
   buf.comma = true;
@@ -160,10 +167,11 @@ int home_snapshot_write(const HomeMeters& meters, const char* note_a, const char
   buf.key_num("output_voltage", meters.have_voltage, meters.volts);
   buf.key_num("output_current", meters.have_current, meters.amps);
   if (apparent(meters)) {
-    buf.key("output_power");
-    buf.number(apparent_va(meters));
-    buf.key("output_power_quantity");
-    buf.quoted("apparent_va");
+    buf.key_power("output_power", power_publishable(apparent_va(meters)), apparent_va(meters));
+    if (power_publishable(apparent_va(meters))) {
+      buf.key("output_power_quantity");
+      buf.quoted("apparent_va");
+    }
   }
   buf.add("}");
 
@@ -174,7 +182,7 @@ int home_snapshot_write(const HomeMeters& meters, const char* note_a, const char
   output_block(buf, meters, false);
   buf.key_num("inverterVoltage", meters.have_voltage, meters.volts);
   buf.key_num("inverterCurrent", meters.have_current, meters.amps);
-  buf.key_num("inverterLoad", apparent(meters), apparent_va(meters));
+  buf.key_power("inverterLoad", apparent(meters), apparent_va(meters));
   buf.add("}");
 
   buf.comma = true;
@@ -198,8 +206,8 @@ int home_snapshot_write(const HomeMeters& meters, const char* note_a, const char
   buf.key_num("soc", meters.bms_valid, meters.soc);
   buf.key_num("voltage", meters.bms_valid, meters.bat_v);
   buf.key_num("current", meters.bms_valid, meters.bat_a);
-  buf.key_num("power", meters.bms_valid, meters.bat_w);
-  buf.key_num("battery_power_w", meters.bms_valid, meters.bat_w);
+  buf.key_power("power", meters.bms_valid, meters.bat_w);
+  buf.key_power("battery_power_w", meters.bms_valid, meters.bat_w);
   buf.key_num("remaining_ah", meters.bms_valid, meters.remain_ah);
   buf.key_num("full_ah", meters.bms_valid, meters.full_ah);
   buf.key_num("full_capacity_ah", meters.bms_valid, meters.full_ah);
@@ -217,8 +225,8 @@ int home_snapshot_write(const HomeMeters& meters, const char* note_a, const char
   if (meters.pv_valid) {
     buf.key_num("voltage", true, meters.pv_v);
     buf.key_num("current", true, meters.pv_a);
-    buf.key_num("power", true, meters.pv_w);
-    buf.key_num("power_w", true, meters.pv_w);
+    buf.key_power("power", true, meters.pv_w);
+    buf.key_power("power_w", true, meters.pv_w);
   }
   buf.add("}");
 
@@ -236,7 +244,7 @@ int home_snapshot_write(const HomeMeters& meters, const char* note_a, const char
     buf.key_bool("valid", meters.ac_valid);
     buf.key_bool("stale_is_zero", false);
     buf.key_num("lifetime_wh", meters.ac_valid && meters.has_lifetime_wh, meters.lifetime_wh);
-    buf.key_num("active_power_w", meters.ac_valid, meters.active_w);
+    buf.key_power("active_power_w", meters.ac_valid, meters.active_w);
     buf.key_num("voltage_v", meters.ac_valid, meters.volts);
     buf.key_num("current_a", meters.ac_valid, meters.amps);
     buf.add("}");
