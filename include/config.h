@@ -15,8 +15,7 @@
 
 // ---- Backend ---------------------------------------------------------------
 // Defaults = live cloud api-dev (Caleb 2026-10-26). Override via platformio.ini:
-//   esp32dev / framed / nolora / esp32dev_dev → api-dev.acecore.tech
-//   esp32dev_prod (opt-in) → api.acecore.tech
+//   the four product images → api-dev.acecore.tech
 // Product images set POWERCELL_HARDWARE_MODEL to pc-stm01-* or pc-dsp011-*.
 #ifndef POWERCELL_WS_HOST
 #define POWERCELL_WS_HOST "api-dev.acecore.tech"
@@ -36,7 +35,7 @@
 
 // ---- Dev build guard ---------------------------------------------------------
 // Cleartext ws:// and http:// OTA exist only when POWERCELL_DEV_INSECURE=1
-// (allowed only with POWERCELL_DEV_BUILD=1, i.e. env esp32dev_dev). Every
+// (allowed only with POWERCELL_DEV_BUILD=1). Every
 // other env — including default Upload to api-dev — is TLS-only.
 #ifndef POWERCELL_DEV_BUILD
 #define POWERCELL_DEV_BUILD 0
@@ -45,10 +44,10 @@
 #define POWERCELL_DEV_INSECURE 0
 #endif
 #if POWERCELL_DEV_INSECURE && !POWERCELL_DEV_BUILD
-#error "POWERCELL_DEV_INSECURE is only allowed in the esp32dev_dev env"
+#error "POWERCELL_DEV_INSECURE is only allowed with POWERCELL_DEV_BUILD"
 #endif
 #if !POWERCELL_WS_TLS && !POWERCELL_DEV_INSECURE
-#error "Cleartext WebSocket (POWERCELL_WS_TLS=0) needs the dev env (POWERCELL_DEV_INSECURE=1)"
+#error "Cleartext WebSocket (POWERCELL_WS_TLS=0) needs POWERCELL_DEV_INSECURE=1"
 #endif
 #define POWERCELL_OTA_ALLOW_HTTP POWERCELL_DEV_INSECURE
 

@@ -68,7 +68,7 @@ void saveStatus(const char *st, const String &err = "") {
 // Backend PR #3 (FirmwareService): the hardware key is the shared API_KEY as
 // "Authorization: Bearer <API_KEY>"; device secret optional (X-Device-Secret).
 #if POWERCELL_OTA_ALLOW_HTTP
-// esp32dev_dev only: the dev server has no TLS. Never compiled into other envs.
+// Cleartext HTTP exists only when POWERCELL_OTA_ALLOW_HTTP is set. The product images are TLS.
 using OtaClient = WiFiClient;
 void prepareClient(OtaClient &) {}
 #else

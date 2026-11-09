@@ -8,23 +8,19 @@ The new firmware still works with the existing backend, the socket firmware 1.0.
 
 ## Build, test, flash
 ```
-pio run                      # env esp32dev — live cloud api-dev (Caleb 2026-10-26); OTA model "esp32dev"
-pio run -e esp32dev_framed   # STM32 binary protocol at 115200 (once the STM32 side ships it)
-pio run -e esp32dev_nolora   # bench build without the LoRa radio (frees IO26 for the STM32 NRST bodge)
-pio run -e esp32dev_prod     # opt-in production Destiny cloud api.acecore.tech (TLS)
-pio run -e esp32dev_dev      # bare-board bench on api-dev (DEV_BUILD, BAT_SENSE off)
-make -C test/host            # host unit tests: CRC, frame codec, legacy parser, ring queue, JK-BMS frames, identity
+pio run -e esp32dev_stm01_5kw      # STM32, model pc-stm01-5kw
+pio run -e esp32dev_stm01_35kw     # STM32, model pc-stm01-35kw
+pio run -e esp32dev_hw_v011_5kw    # DSP, model pc-dsp011-5kw
+pio run -e esp32dev_hw_v011_35kw   # DSP, model pc-dsp011-35kw
+make -C test/host                  # host unit tests
 pio run -t upload && pio device monitor
 ```
 Toolchain: espressif32@7.0.1, Arduino-ESP32 2.0.17 (IDF 4.4), the same as 1.0.x.
 
-**Cloud mapping (Upload):** default `esp32dev` / `framed` / `nolora` / `esp32dev_dev` → `wss://api-dev.acecore.tech` + OTA `https://api-dev.acecore.tech`. Opt-in `esp32dev_prod` → `wss://api.acecore.tech` + OTA `https://api.acecore.tech`. OTA hardware model string is always `esp32dev`.
+**Cloud:** the four product images use `wss://api-dev.acecore.tech` and OTA `https://api-dev.acecore.tech`. Each image's OTA model is its own `pc-stm01-*` or `pc-dsp011-*` string. See `docs/OTA_HARDWARE_MODEL.md`.
 
-## Dev bench build (esp32dev_dev)
-- Same live host as default Upload: `wss://api-dev.acecore.tech/ws/device` and OTA base `https://api-dev.acecore.tech` (the firmware appends `/api/...`). Differs only by `POWERCELL_DEV_BUILD=1` and BAT_SENSE ADC off for bare boards.
-- Cleartext (`ws://` / `http://`) is not enabled by default. `POWERCELL_DEV_INSECURE` is the only way to get cleartext; `config.h` fails the build if `POWERCELL_WS_TLS=0` or `POWERCELL_DEV_INSECURE=1` appear in any other env.
-- IO34 battery sense is off (bare board). The backend's `set_local_token` is refused over ws://, so the dev local token is provisioned over USB.
-- No secrets are compiled in. `tools/provision.py --port COMx --file <KEY=VALUE file>` sends `SET api_key`, `wifi_ssid`, `wifi_pass`, `gw_name`, `device_secret`, `ota_url`, `local_tok` over the USB console and prints only OK/ERR and the token fingerprint. Provisioning files are gitignored. (v17: one factory identity secret; `DEV_SECRET` / `SET dev_secret` removed.)
+## Provisioning
+- No secrets are compiled in. `tools/provision.py --port COMx --file <KEY=VALUE file>` sends `SET api_key`, `wifi_ssid`, `wifi_pass`, `gw_name`, `device_secret`, `ota_url`, `local_tok` over the USB console and prints only OK/ERR and the token fingerprint. Provisioning files are gitignored. (v17: one factory identity secret; `DEV_SECRET` / `SET dev_secret` removed.) See `docs/API_KEY_ROTATION.md`.
 - WebSocket keepalive: client ping every 15 s, pong timeout 10 s, disconnect after 2 misses; server pings are answered in `ws.loop()`. The periodic OTA check runs alongside the socket; only an actual install pauses it (`lib/pc_core/src/ota_gate.h`). A main-loop pass over 500 ms logs `LOOP SLOW`, and `LOOP STATS` reports the worst pass each minute.
 - Bare-board behaviour: missing ADS1115/LoRa/SD/STM32/BMS are logged once; battery `source` is `none`; an ON command without a live STM32 is rejected at once with `stm32_timeout` and IO15 stays LOW (`lib/pc_core/src/power_policy.h`, host-tested).
 
@@ -140,7 +136,7 @@ When the BMS is silent for 10 s, every BMS field is `null` (never 0) and voltage
 - **Commands in:** `command` (PR #3 wire name) and `set_state` (legacy) are handled the same way: `{"type":"command","command_id","target_type":"gateway"|"socket","target_id":null|"<socket>","desired_state":"on"|"off"}`. A gateway command with `target_id` null targets this unit.
 - **Command ack out:** `{"type":"command_result","command_id","status":"confirmed"|"rejected","command_status":same,"error_message"?, ...}`. `status`/`command_status` is what the backend reads; `result`, `reason` stay for older servers. A repeated command id answers with the earlier outcome.
 - **Also in:** `ping`, `socket_lifecycle`, `offline_sync_ack`, `set_local_token` (below).
-- **OTA:** `POST {ota_url}/api/ota/check` with `Authorization: Bearer <API_KEY>`, `X-Device-ID`, optional `X-Device-Secret`, body `{"device_id":"AABBCCDDEEFF","firmware_version":"2.1.0",...}`. The response must have `update_available`; when true, `version`, `url`, `sha256` (top level or in `firmware`; they must agree). `sha256` is required (64 hex). The `url` is followed only if it is on the configured `ota_url` host and is one of `/api/ota/download`, `/api/firmware/download`, `/api/firmware.bin`; otherwise `{ota_url}/api/ota/download?device_id=<12 hex>` is used. The download must send `Content-Length`. The image is checked for SHA-256, the ESP32 image magic and the embedded identity `POWERCELL_FW|collector|esp32dev|<version>|END`, then boots in rollback-protected PENDING_VERIFY.
+- **OTA:** `POST {ota_url}/api/ota/check` with `Authorization: Bearer <API_KEY>`, `X-Device-ID`, optional `X-Device-Secret`, body `{"device_id":"AABBCCDDEEFF","firmware_version":"2.1.0",...}`. The response must have `update_available`; when true, `version`, `url`, `sha256` (top level or in `firmware`; they must agree). `sha256` is required (64 hex). The `url` is followed only if it is on the configured `ota_url` host and is one of `/api/ota/download`, `/api/firmware/download`, `/api/firmware.bin`; otherwise `{ota_url}/api/ota/download?device_id=<12 hex>` is used. The download must send `Content-Length`. The image is checked for SHA-256, the ESP32 image magic and the embedded identity `POWERCELL_FW|collector|<model>|<version>|END` (`docs/OTA_HARDWARE_MODEL.md`), then boots in rollback-protected PENDING_VERIFY.
 
 ## Local API (port 80, PR #3 "Local device web server")
 Credential: HTTP Basic `powercell:<local_access_token>`. The token comes from the backend (see "Local token handoff"). The label `admin_tok` is a **setup credential only**: Basic `powercell:<label token>` works only from a client on the setup AP, and only for `GET /`, `POST /login`, `POST /provision`.
@@ -221,7 +217,7 @@ REBOOT
 - **Gateway name:** it changes from `ACE4447` / `ACE9678` to `ACE-XXXXXX` unless you `SET gw_name ACE9678` on that unit. The backend should accept MAC-based gateway targets, which 2.0 accepts.
 - **Network:** the static IP from 1.0.x is replaced by DHCP. The setup AP SSID changes to `Powercell-XXXXXX`.
 - **Not migrated:** the old `energy_wh`, and the 2.0.0 ESP energy counter (`pc_energy` NVS) is no longer used; the old offline queue (JSON in `offline_sync/events`).
-- **Version:** 2.0.0 is reported as `firmware_version`. Publish it under kind `collector`, model `esp32dev`.
+- **Version:** the four product images report `2.5.13`. Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
 - **STM32 link:** the STM32 still sends 9600 text, so the default `legacy_text` works with today's STM32 firmware. Switch both sides to framed together.
 
 ## Telemetry fields (WS `telemetry`, additive to 1.0.x)
@@ -265,7 +261,7 @@ INFO; each transfer is bounded by a 20 ms Wire timeout and runs in its own task.
 ## Status
 | Area | Status |
 |---|---|
-| Builds (esp32dev, esp32dev_framed, esp32dev_nolora, esp32dev_prod, esp32dev_dev) | Done. Default Upload = api-dev live; esp32dev_prod = Destiny opt-in |
+| Builds (esp32dev_stm01_5kw, esp32dev_stm01_35kw, esp32dev_hw_v011_5kw, esp32dev_hw_v011_35kw) | Product images. Live host api-dev.acecore.tech |
 | Host tests | Done (154 checks) |
 | STM32 legacy parser, framed protocol and commands | Done. Bench test against real STM32 output is pending |
 | Backend WS, OTA with rollback, offline queue, local API, provisioning | Done. On-device testing is pending |
