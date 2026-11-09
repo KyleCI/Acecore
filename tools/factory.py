@@ -188,6 +188,9 @@ def register_payload(device_id, device_secret, mac, gateway_id, firmware_version
         "firmware_version": firmware_version,
         "device_kind": "collector",
         "model": hardware_model,
+        "onboarding_version": 2,
+        # No factory passcode. Firmware v15 sets passcode_fingerprint during app setup.
+        "passcode_is_default": True,
     }
 
 

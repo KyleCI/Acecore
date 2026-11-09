@@ -71,6 +71,9 @@ class T(unittest.TestCase):
             f.require_ota_model({})
         body = f.register_payload("F42DC9C090A8", "ab" * 32, "F4:2D:C9:C0:90:A8",
                                   "ACE-000001", "2.5.13", "pc-dsp011-5kw")
+        self.assertEqual(body["onboarding_version"], 2)
+        self.assertIs(body["passcode_is_default"], True)
+        self.assertNotIn("passcode_fingerprint", body)
         self.assertEqual(body, {
             "device_id": "F42DC9C090A8",
             "device_secret": "ab" * 32,
@@ -79,6 +82,8 @@ class T(unittest.TestCase):
             "firmware_version": "2.5.13",
             "device_kind": "collector",
             "model": "pc-dsp011-5kw",
+            "onboarding_version": 2,
+            "passcode_is_default": True,
         })
         with self.assertRaises(ValueError):
             f.register_payload("F42DC9C090A8", "secret", "", "ACE-000001", "2.5.13", "PC5K")
