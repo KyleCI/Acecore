@@ -1,0 +1,40 @@
+#pragma once
+#include <stdint.h>
+// 2.5.8: PV energy integrated from the ADS1115 power readings.
+//  - today: resets when the local day (epoch + phone tz) changes; the day is only
+//    known with a trusted clock (NTP or phone POST /v2/time). Without one, today
+//    keeps counting on the last known day.
+//  - total: lifetime, never resets except FACTORY_WIPE of the namespace.
+//  - integration: trapezoid-free rectangle P x dt on valid samples; a gap over
+//    kMaxGapMs (I2C back-off, invalid reads) is not integrated. Negative P
+//    (shunt offset at night) counts as 0.
+//  - NVS: saveDue() when total grew >= kSaveWh and kSaveMinMs passed, or on a day
+//    change. Worst case ~48 writes a day on a big array, about 1 on a quiet day.
+namespace pc {
+namespace solar {
+constexpr uint32_t kMaxGapMs = 10000;
+constexpr double kSaveWh = 50.0;
+constexpr uint32_t kSaveMinMs = 30UL * 60UL * 1000UL;
+constexpr int32_t kNoDay = -1;
+
+// Local day number (days since 1970 in local time) or kNoDay when epoch untrusted.
+int32_t localDay(int64_t epoch, bool trusted, int tzOffsetMin);
+
+class Energy {
+ public:
+  void restore(double totalWh, double todayWh, int32_t day);
+  void update(bool valid, float powerW, uint32_t nowMs, int32_t day);
+  bool saveDue(uint32_t nowMs) const;
+  void markSaved(uint32_t nowMs);
+  double totalWh() const { return total_; }
+  double todayWh() const { return today_; }
+  int32_t day() const { return day_; }
+
+ private:
+  double total_ = 0, today_ = 0, savedTotal_ = 0;
+  int32_t day_ = kNoDay;
+  bool havePrev_ = false, dayChanged_ = false, everSaved_ = false;
+  uint32_t prevMs_ = 0, savedMs_ = 0;
+};
+}  // namespace solar
+}  // namespace pc

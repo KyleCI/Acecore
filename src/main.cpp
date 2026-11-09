@@ -1,114 +1,92 @@
-#include <housekeeping.h>
-#include "offline_sync.h"
-#include "offline_battery_notifications.h"
-#include "local_http.h"
-#include <PowercellOTA.h>
-#include <energy.h>
-#ifdef POWERCELL_HW_V011
-#include "board_pins.h"
-#include "hw_v011.h"
-#include "i2c_bus.h"
-#include "sd_cs_config.h"
-#endif
+// Acecore Powercell collector firmware 2.x (ESP32, Arduino).
+// See README.md for the architecture, pin map and decisions.
+#include "events.h"
+#include "clock.h"
+#include "power_guard.h"
+#include "socket_cfg.h"
+#include <Arduino.h>
+#include "backend_ws.h"
+#include "battery.h"
+#include "bms.h"
+#include "unit_model.h"
+#include "config.h"
+#include "console.h"
+#include "gateway.h"
+#include "leds.h"
+#include "log.h"
+#include "net.h"
+#include "offline_queue.h"
+#include "onboarding.h"
+#include "ota.h"
+#include "heapguard.h"
+#include "periph.h"
+#include "settings.h"
+#include "sockets/sockets.h"
+#include "stm32_link.h"
+#include "stm32_updater.h"
+#include "web_local.h"
 
+namespace {
+// Before an OTA download: make the output safe and persist counters.
+bool prepareForUpdate() {
+  gateway::set(false, "ota");
+  return true;
+}
+}  // namespace
 
+void setup() {
+  gateway::earlyInit();  // IO15 (PWR_KEY, strapping pin) LOW: inverter not requested
+  Serial.begin(115200);
+  delay(50);
+  esp_reset_reason_t why = esp_reset_reason();
+  LOGI("BOOT", "START", "fw=%s kind=%s reset_reason=%d free_heap=%lu", POWERCELL_FIRMWARE_VERSION, POWERCELL_FIRMWARE_KIND,
+       int(why), (unsigned long)ESP.getFreeHeap());
+  if (why == ESP_RST_BROWNOUT) LOGE("BOOT", "BROWNOUT", "supply dipped; check the 5 V rail");
+  if (why == ESP_RST_TASK_WDT || why == ESP_RST_INT_WDT || why == ESP_RST_WDT) LOGE("BOOT", "WATCHDOG", "previous run stalled");
 
-
-void setup()
-{
-    Serial.begin(115200);
-    JK_UART.begin(JK_BAUD, SERIAL_8N1, 17, 16);
-#ifdef POWERCELL_HW_V011
-    // UART1 is free of the STM32 link and becomes the PZEM hardware UART.
-    Serial1.begin(9600, SERIAL_8N1, PZEM_RX_GPIO, PZEM_TX_GPIO);
-    // Active-low DSP: off is HIGH. Set that latch before enabling the output
-    // so setup does not drive low (on). The boot ROM still samples GPIO15.
-    digitalWrite(powercell::kDspEnableV011, powercell::v011_dsp_level(false));
-    pinMode(powercell::kDspEnableV011, OUTPUT);
-#else
-    INVERTER_UART.begin(INVERTER_BAUD, SERIAL_8N1, INVERTER_RX, INVERTER_TX);
-    initInverterParser(INVERTER_RX, INVERTER_TX, INVERTER_BAUD);
-    pinMode(RELAY, OUTPUT);
-    digitalWrite(RELAY, LOW);
-#endif
-    delay(500);
-
-    if (!SPIFFS.begin(true)) // true = format on mount failure
-    {
-        Serial.println("[SPIFFS] Mount failed!");
-    }
-    else
-    {
-        Serial.println("[SPIFFS] Mounted.");
-    }
-
-    firmwareOTA.begin(false, WEBSOCKET_CA_CERT, []() { applyDeviceState(false, "ota"); return true; });
-
-#ifndef POWERCELL_HW_V011
-    // ---- LoRa register checks: the first line that differs from
-    //      freq=915.00MHz sync=0xF1 cfg1=0x72 cfg2=0x74 points at the culprit ----
-    loraInit();
-    loraDiag("after loraInit");
-#endif
-
-    initLights();
-#ifndef POWERCELL_HW_V011
-    loraDiag("after lights");
-#endif
-
-    initOfflineSync();
-#ifndef POWERCELL_HW_V011
-    loraDiag("after offlineSync");
-
-    startLoraTask();
-    loraDiag("after loraTask");
-#endif
-
-    startBmsTask();
-#ifndef POWERCELL_HW_V011
-    loraDiag("after bms");
-#endif
-
-    // main.cpp or setup file — call before startBmsTask()
-    energy_init();      // restores persisted Wh from NVS
-#ifndef POWERCELL_HW_V011
-    loraDiag("after energy");
-#endif
-
-    mppt_init();        // begins accumulating discharge energy from BMS samples
-#ifdef POWERCELL_HW_V011
-    i2c_bus_init();
-    hwV011Start();
-#endif
-#ifndef POWERCELL_HW_V011
-    loraDiag("after mppt");
-#endif
-
-    initOfflineBatteryNotifications(server);
-    loraDiag("after notif");
-
-    manualApiBegin();
-    httpRoutes();
-    loraDiag("after routes");
-    server.begin();
-    Serial.println("[HTTP] App server started");
-    // STA association continues in loop(). Local AP comes up 30s after
-    // confirmed loss, or immediately when no router credentials are saved.
-    beginWifiService();
+  settings::begin();
+  clock_::begin();     // tz + last good time from NVS
+  onboarding::begin();  // per-unit passcode/claim state (after settings, before net/web)
+  gateway::begin();
+  leds::begin();
+  stm32link::begin();
+  battery::begin();
+  bms::begin();
+  unitmodel::begin();  // 2.5.4 PC3K/PC5K/PC10K from NVS
+  periph::begin();     // SPI bus, ADS1115 solar, LoRa, optional SD
+  offlineq::begin();
+  events::begin();
+  socketsInit();
+  socketcfg::begin();
+  powerguard::begin();  // after gateway/sockets: a latched shutdown is re-applied from NVS
+  net::begin();
+  socketsStart();     // ESP-NOW follows the STA/AP channel; retries until the radio is up
+  web::begin();
+  backend::begin();
+  ota::begin(prepareForUpdate, backend::pauseForOta);
 }
 
-void loop()
-{
-  handleSerialProvisioning();
-  serviceWifiFallback();
-  serviceOfflineBatteryNotifications();
-  serviceWebSocketCommands();
-  serviceOfflineSync();
-  lightUpStatus();
-  firmwareOTA.service(true);
-  if (shouldRestart) {
-    delay(250);
-    ESP.restart();
-  }
-  delay(10);
+void loop() {
+  static uint32_t worst = 0, lastReport = 0;
+  uint32_t t0 = millis();
+  backend::appLock();
+  console::service();
+  net::service();
+  offlineq::service(backend::connected());
+  gateway::service();
+  powerguard::service();
+  clock_::service();
+  events::service();
+  web::service();
+  onboarding::service();
+  ota::service(backend::healthy());
+  stm32update::service();
+  leds::service();
+  backend::appUnlock();
+  heapguard::sample();
+  uint32_t dt = millis() - t0;
+  if (dt > worst) worst = dt;
+  if (dt > LOOP_SLOW_MS) LOGW("LOOP", "SLOW", "pass took %lu ms", (unsigned long)dt);
+  if (millis() - lastReport > 60000) { lastReport = millis(); LOGI("LOOP", "STATS", "worst pass %lu ms in the last minute heap_free=%lu heap_min=%lu heap_largest=%lu largest_min=%lu", (unsigned long)worst, (unsigned long)ESP.getFreeHeap(), (unsigned long)heapguard::heapMin(), (unsigned long)heapguard::heapLargest(), (unsigned long)heapguard::heapLargestMin()); worst = 0; }
+  delay(2);
 }
