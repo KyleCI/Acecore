@@ -155,6 +155,7 @@ with tempfile.TemporaryDirectory(prefix="hw-v011-") as directory:
         str(root / "src/factory_station.cpp"),
         str(root / "src/local_manual_api.cpp"),
         str(root / "src/wall_clock.cpp"),
+        str(root / "src/home_snapshot.cpp"),
         str(root / "test/local_manual_api_test.cpp"),
         "-o", str(manual_bin),
     ], "manual api tests")

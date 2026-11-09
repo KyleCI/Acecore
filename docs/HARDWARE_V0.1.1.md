@@ -62,7 +62,9 @@ real DSP protocol is supplied.
 
 The collector fills existing power keys in watts. A source that reports
 kilowatts is multiplied by 1000 first. Apparent VA stays on the apparent keys.
-The named `usable_kw` field stays in kilowatts. See [POWER_UNITS.md](POWER_UNITS.md).
+The named `usable_kw` field stays in kilowatts. `GET /v2/setup/info` publishes
+`units.power` `W`, `units.energy` `Wh`, and `data_format_version` 1 on every
+image. See [POWER_UNITS.md](POWER_UNITS.md).
 
 PZEM support is the V3 Modbus-RTU map: active power and a cumulative integer
 watt-hour register at 1 Wh. Address `0x01` is the manual's example; `0xF8` is

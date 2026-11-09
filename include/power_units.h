@@ -7,6 +7,15 @@
 
 namespace powercell {
 
+// Fixed for this firmware build. GET /v2/setup/info publishes both.
+// They describe unit-less keys only (last_data.power, inverter.output_power,
+// inverter_energy). A name that already carries a unit is unchanged:
+// usable_kw is kW, rated_kva is kVA, *_w is watts, *_wh is watt-hours.
+// inverter.output_power stays V*I and keeps output_power_quantity apparent_va.
+constexpr int kDataFormatVersion = 1;
+constexpr char kUnitlessPower[] = "W";
+constexpr char kUnitlessEnergy[] = "Wh";
+
 enum class PowerScale : unsigned char { Watts = 0, Kilowatts = 1 };
 
 struct OutputSample {

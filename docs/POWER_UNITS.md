@@ -16,6 +16,23 @@ STM32 text path has `VOUT` and `IOUT` in volts and amps and no watt or kilowatt
 field, so its active-watt keys stay null. Energy counters that are already
 watt-hours stay watt-hours. `energy_get_kwh()` is not published.
 
+`GET /v2/setup/info` adds two fixed fields on every image, original and both
+rated v0.1.1 builds:
+
+```json
+"units": {"power": "W", "energy": "Wh"},
+"data_format_version": 1
+```
+
+`data_format_version` is 1 for this firmware. A collector that omits it,
+including deployed 2.5.11, is the legacy case and the app applies its own
+version rule. These two fields do not rename or rescale any existing key.
+
+`units` covers unit-less keys only. `last_data.power` is active watts.
+`inverter.output_power` is the same numeric scale and stays V times I, with
+`output_power_quantity` `apparent_va`. `inverter_energy` is watt-hours.
+A key whose name already states the unit is outside this declaration:
+
 Keys whose names already say kilowatts stay kilowatts. They are not watt keys:
 
 | Key | Unit | Where |

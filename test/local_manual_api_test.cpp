@@ -1,5 +1,7 @@
+#include "home_snapshot.h"
 #include "local_manual_api.h"
 #include "output_gate.h"
+#include "power_units.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -124,6 +126,60 @@ int main() {
   CHECK(strstr(info.body, "\"powercell_model\":\"PC5K\""));
   CHECK(strstr(info.body, "\"rated_kva\":null"));
   CHECK(strstr(info.body, "\"usable_kw\":4.5"));
+  CHECK(strstr(info.body, "\"units\":{\"power\":\"W\",\"energy\":\"Wh\"}"));
+  CHECK(strstr(info.body, "\"data_format_version\":1"));
+  CHECK(strlen(info.body) < 600);
+
+  auto expect_format = [&](int rated, const char* variant, const char* usable, const char* model_field) {
+    ManualApi image(rated, variant);
+    HttpReply body = image.setup_info(device, facts);
+    CHECK(body.status == 200);
+    char units[80];
+    snprintf(units, sizeof units, "\"units\":{\"power\":\"%s\",\"energy\":\"%s\"}", powercell::kUnitlessPower,
+             powercell::kUnitlessEnergy);
+    char version[40];
+    snprintf(version, sizeof version, "\"data_format_version\":%d", powercell::kDataFormatVersion);
+    CHECK(strstr(body.body, units));
+    CHECK(strstr(body.body, version));
+    CHECK(strstr(body.body, "\"model\":\"esp32dev\""));
+    CHECK(strstr(body.body, "\"onboarding_version\":2"));
+    CHECK(strstr(body.body, "\"rated_kva\":null"));
+    CHECK(strstr(body.body, usable));
+    CHECK(strstr(body.body, model_field));
+    CHECK(strlen(body.body) < 600);
+  };
+  expect_format(5000, "hw-v0.1.1-5kw", "\"usable_kw\":4.5", "\"powercell_model\":\"PC5K\"");
+  expect_format(3500, "hw-v0.1.1-3.5kw", "\"usable_kw\":3.15", "\"powercell_model\":null");
+  expect_format(0, "unrated", "\"usable_kw\":null", "\"powercell_model\":null");
+
+  powercell::HomeMeters meters;
+  meters.have_voltage = true;
+  meters.have_current = true;
+  meters.have_active = true;
+  meters.active_source = "pzem004t_v3_active";
+  meters.volts = 230;
+  meters.amps = 0.1;
+  meters.active_w = 15;
+  meters.meter_present = true;
+  meters.ac_valid = true;
+  meters.has_lifetime_wh = true;
+  meters.lifetime_wh = 1200;
+  meters.has_usable = true;
+  meters.usable_kw = 4.5;
+  meters.powercell_model = "PC5K";
+  char snapshot[2048];
+  CHECK(powercell::home_snapshot_write(meters, nullptr, nullptr, snapshot, sizeof snapshot) > 0);
+  CHECK(strcmp(powercell::kUnitlessPower, "W") == 0);
+  CHECK(strcmp(powercell::kUnitlessEnergy, "Wh") == 0);
+  CHECK(powercell::kDataFormatVersion == 1);
+  CHECK(strstr(snapshot, "\"power\":15.0000"));
+  CHECK(strstr(snapshot, "\"output_power_w\":15.0000"));
+  CHECK(strstr(snapshot, "\"output_power\":23.0000"));
+  CHECK(strstr(snapshot, "\"output_power_quantity\":\"apparent_va\""));
+  CHECK(strstr(snapshot, "\"lifetime_wh\":1200.0000"));
+  CHECK(strstr(snapshot, "\"usable_kw\":4.5000"));
+  CHECK(strstr(snapshot, "\"power\":0.015") == nullptr);
+  CHECK(strstr(snapshot, "\"lifetime_wh\":1.2") == nullptr);
   HttpReply mac = api.login(
       "{\"device_id\":\"aa:bb:cc:dd:ee:ff\",\"passcode\":\"135790\","
       "\"phone_id\":\"11111111-2222-3333-4444-555555555555\",\"phone_name\":\"Powercore\"}",

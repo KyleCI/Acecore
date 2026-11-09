@@ -1,4 +1,5 @@
 #include "local_manual_api.h"
+#include "power_units.h"
 #include "display_identity.h"
 
 #include <stdio.h>
@@ -191,11 +192,13 @@ HttpReply ManualApi::setup_info(const DeviceNames& device, const UnitFacts& fact
   snprintf(out.body, sizeof out.body,
            "{\"device_id\":%s,\"model\":\"esp32dev\",\"fw\":\"%s\",\"state\":\"%s\","
            "\"claimed\":%s,\"passcode_default\":%s,\"passcode_set\":%s,\"hotspot\":%s,"
-           "\"onboarding_version\":2,\"powercell_model\":%s,\"rated_kva\":null,\"usable_kw\":%s}",
+           "\"onboarding_version\":2,\"powercell_model\":%s,\"rated_kva\":null,\"usable_kw\":%s,"
+           "\"units\":{\"power\":\"%s\",\"energy\":\"%s\"},\"data_format_version\":%d}",
            id_json, facts.firmware ? facts.firmware : "1.0.1",
            facts.wifi_configured ? "configured" : "unconfigured", facts.claimed ? "true" : "false",
            lan_.passcode_default() ? "true" : "false", lan_.has_passcode() ? "true" : "false",
-           facts.hotspot ? "true" : "false", powercell, usable_kw);
+           facts.hotspot ? "true" : "false", powercell, usable_kw, kUnitlessPower, kUnitlessEnergy,
+           kDataFormatVersion);
   out.status = 200;
   return out;
 }
