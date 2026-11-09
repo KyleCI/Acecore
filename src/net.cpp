@@ -97,7 +97,12 @@ void begin() {
   WiFi.setAutoReconnect(true);
   WiFi.setHostname(settings::id().gatewayName);
   WiFi.onEvent(onWifiEvent);
+#if POWERCELL_HW_V011
+  g_policy.fallbackMs = 30000;   // loss to hotspot. No saved network still starts it at once.
+  g_policy.graceMs = 120000;     // hold the hotspot after the station returns
+#else
   g_policy.fallbackMs = uint32_t(AP_FALLBACK_MIN) * 60000UL;
+#endif
   g_policy.begin(millis());
   g_ssid = settings::wifiSsid();
   g_mode = pc::onb::netModeFromStored(settings::getString("net_mode").c_str());
@@ -149,7 +154,12 @@ void service() {
     }
   }
   if (g_ssid.isEmpty() || testing || g_test == Test::Ok) return;
-  if (!up && now - g_lastRetry >= WIFI_CONNECT_TIMEOUT_MS) { g_lastRetry = now; WiFi.reconnect(); }
+#if POWERCELL_HW_V011
+  const uint32_t retryMs = 5000;  // WiFi.begin ran once; reconnect on this interval
+#else
+  const uint32_t retryMs = WIFI_CONNECT_TIMEOUT_MS;
+#endif
+  if (!up && now - g_lastRetry >= retryMs) { g_lastRetry = now; WiFi.reconnect(); }
 }
 
 bool staConnected() { return WiFi.status() == WL_CONNECTED; }

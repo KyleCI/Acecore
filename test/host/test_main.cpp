@@ -476,6 +476,12 @@ static void test_wifi_ap_policy() {
   { ApPolicy g; g.begin(0); CHECK(g.update(false, false, false, 1000));  // unprovisioned: AP on
     g.restartGrace(10000); CHECK(g.update(true, true, false, 60000));      // +50 s after save: still grace, no fallback
     CHECK(!g.update(true, true, false, 130000)); CHECK(!g.update(true, true, false, 200000)); }
+  ApPolicy none; none.fallbackMs = 30000; none.graceMs = 120000; none.begin(0);
+  CHECK(none.update(false, false, false, 0));  // no credentials: hotspot immediately
+  ApPolicy loss; loss.fallbackMs = 30000; loss.graceMs = 120000; loss.begin(0);
+  CHECK(!loss.update(true, false, false, 29999) && loss.update(true, false, false, 30000));
+  CHECK(loss.update(true, true, false, 30000) && loss.update(true, true, false, 149999));
+  CHECK(!loss.update(true, true, false, 150000));  // 120 s after the station returns
 }
 
 static void test_ws_rules() {
