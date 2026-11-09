@@ -11,17 +11,18 @@
 namespace powercell {
 
 struct FactoryStation {
-  char serial[16];
+  char serial[16] = {};
+  char mac_hex[13] = {};
   uint8_t secret[32];
   bool secret_set = false;
   bool secret_reported = false;
   bool locked = false;
-  char ap_pass[16];
+  char ap_pass[16] = {};
   bool api_key_set = false;
   bool ota_url_set = false;
-  char wifi_ssid[33];
+  char wifi_ssid[33] = {};
   bool payment_locked = false;
-  char payment_reason[65];
+  char payment_reason[65] = {};
   uint32_t payment_last = 0;
   char payment_ids[8][65];
   uint8_t payment_next = 0;

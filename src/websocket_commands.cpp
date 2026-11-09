@@ -7,6 +7,11 @@
 #include "websocket_ca.h"
 #include "offline_sync.h"
 #include "output_gate.h"
+#include "cloud_protocol.h"
+#include "display_identity.h"
+#include "factory_station.h"
+#include "provisioning.h"
+#include <Preferences.h>
 #ifdef POWERCELL_HW_V011
 #include "hw_v011.h"
 #endif
@@ -108,13 +113,27 @@ void telemetry() {
   doc["type"] = "telemetry";
   identity(doc);
   JKPacketData bms;
-  if (getBmsData(bms)) {
+  const bool bms_fresh = getBmsData(bms) && (millis() - bms.receivedAtMs) <= 15000;
+  if (bms_fresh) {
     JsonObject battery = doc["battery"].to<JsonObject>();
     battery["voltage"] = bms.packVoltage;
     battery["current"] = bms.packCurrent;
     battery["power"] = bms.packPower;
     battery["soc"] = bms.SOC;
     battery["temperature"] = bms.tempBat1;
+    doc["battery_voltage"] = bms.packVoltage;
+    doc["battery_current_a"] = bms.packCurrent;
+    doc["battery_power_w"] = bms.packPower;
+    doc["remaining_ah"] = bms.remainCapacity;
+    doc["cycle_count"] = bms.cycleCount;
+    doc["soh"] = bms.SOH;
+  } else {
+    doc["battery_voltage"] = nullptr;
+    doc["battery_current_a"] = nullptr;
+    doc["battery_power_w"] = nullptr;
+    doc["remaining_ah"] = nullptr;
+    doc["cycle_count"] = nullptr;
+    doc["soh"] = nullptr;
   }
 #ifdef POWERCELL_HW_V011
   hwV011AppendTelemetry(doc);
@@ -135,6 +154,12 @@ void telemetry() {
     solar["voltage"] = mppt.v_bus_V;
     solar["current"] = mppt.current_A;
     solar["power"] = mppt.power_W;
+    solar["valid"] = true;
+  } else {
+    solar["valid"] = false;
+    solar["voltage"] = nullptr;
+    solar["current"] = nullptr;
+    solar["power"] = nullptr;
   }
   JsonArray sockets = doc["sockets"].to<JsonArray>();
   populateDeviceArray(sockets);
@@ -152,6 +177,52 @@ void incoming(uint8_t *payload, size_t length) {
   JsonDocument doc;
   if (deserializeJson(doc, payload, length) || !doc.is<JsonObject>()) return;
   String type = doc["type"] | "";
+  if (type == "claim_result" || type == "cmd" || type == "device_hello") {
+    // device_hello is outbound. Inbound claim and signed commands are handled below.
+  }
+  if (type == "claim_result") {
+    powercell::CloudState cloud;
+    cloud.claimed = false;
+    cloud.owner[0] = 0;
+    Preferences prefs;
+    if (prefs.begin("pc_onb", true)) {
+      String owner = prefs.getString("owner", "");
+      snprintf(cloud.owner, sizeof cloud.owner, "%s", owner.c_str());
+      cloud.claimed = owner.length() > 0;
+      prefs.end();
+    }
+    const char* status = doc["status"] | "";
+    const char* owner = doc["owner_id"] | "";
+    if (powercell::claim_result(&cloud, status, owner) && prefs.begin("pc_onb", false)) {
+      prefs.putString("owner", cloud.owner);
+      prefs.end();
+    }
+    return;
+  }
+  if (type == "cmd" && String(doc["cmd"] | "") == "payment_lock") {
+    powercell::FactoryStation station;
+    Preferences ident;
+    if (ident.begin("pc_ident", true)) {
+      station.secret_set = ident.getBytesLength("secret") == 32;
+      if (station.secret_set) ident.getBytes("secret", station.secret, 32);
+      station.payment_locked = ident.getBool("pay_lock", false);
+      station.payment_last = ident.getUInt("pay_last", 0);
+      ident.end();
+    }
+    const char* id = doc["cmd_id"] | "";
+    const char* reason = doc["reason"] | "";
+    const char* sig = doc["sig"] | "";
+    const bool lock = doc["locked"] | false;
+    const uint32_t issued = doc["issued_at"] | 0;
+    if (station.apply_payment(id, lock, reason, issued, sig) && ident.begin("pc_ident", false)) {
+      ident.putBool("pay_lock", station.payment_locked);
+      ident.putUInt("pay_last", station.payment_last);
+      if (station.payment_locked) ident.putString("pay_rsn", station.payment_reason);
+      ident.end();
+      if (station.payment_locked) applyDeviceState(false, "payment_lock");
+    }
+    return;
+  }
   if (type == "ping") {
     JsonDocument pong; pong["type"] = "pong"; identity(pong); sendJson(pong); return;
   }
@@ -216,6 +287,30 @@ void event(WStype_t type, uint8_t *payload, size_t length) {
   if (type == WStype_CONNECTED) {
     connected = true;
     Serial.println("[WS] Secure WebSocket connected");
+    char serial[16] = {0};
+    char owner[65] = {0};
+    Preferences prefs;
+    if (prefs.begin("pc_ident", true)) {
+      String stored = prefs.getString("serial", "");
+      snprintf(serial, sizeof serial, "%s", stored.c_str());
+      prefs.end();
+    }
+    bool claimed = false;
+    if (prefs.begin("pc_onb", true)) {
+      String stored = prefs.getString("owner", "");
+      snprintf(owner, sizeof owner, "%s", stored.c_str());
+      claimed = stored.length() > 0;
+      prefs.end();
+    }
+    if (factory_serial_valid(serial)) {
+      powercell::CloudState cloud;
+      cloud.claimed = claimed;
+      snprintf(cloud.owner, sizeof cloud.owner, "%s", owner);
+      char hello[400];
+      powercell::device_hello(cloud, serial, false, hello, sizeof hello);
+      JsonDocument hello_doc;
+      if (!deserializeJson(hello_doc, hello)) sendJson(hello_doc);
+    }
     snapshot(); telemetry();
   } else if (type == WStype_DISCONNECTED) {
     connected = false;

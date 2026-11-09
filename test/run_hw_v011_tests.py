@@ -102,10 +102,44 @@ with tempfile.TemporaryDirectory(prefix="hw-v011-") as directory:
         "-I", str(root / "lib/pc_onb/src"),
         str(root / "lib/pc_onb/src/sha256.cpp"),
         str(root / "src/factory_station.cpp"),
+        str(root / "src/cloud_protocol.cpp"),
         str(root / "test/factory_contract_test.cpp"),
         "-o", str(factory_bin),
     ], "factory contract tests")
     subprocess.run([str(factory_bin)], check=True)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("factory_tool", root / "tools" / "factory.py")
+    factory_tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(factory_tool)
+    proc = subprocess.Popen([str(factory_bin), "repl"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    def station(line):
+        proc.stdin.write(line + "\n")
+        proc.stdin.flush()
+        lines = []
+        while True:
+            got = proc.stdout.readline()
+            if got.strip() == ".":
+                break
+            lines.append(got)
+        return "".join(lines)
+    info = station("INFO")
+    assert "LABEL" not in info
+    assert station("SERIAL ACE-000123").startswith("OK serial set")
+    assert station("SET model PC5K").startswith("OK model=")
+    assert station("SET model PC3K").startswith("ERR")
+    assert station("SET api_key test-key").startswith("OK")
+    assert station("SET ota_url https://api.acecore.tech").startswith("OK")
+    secret = station("SECRET")
+    assert secret.startswith("SECRET ")
+    labeled = station("INFO")
+    parsed = factory_tool.parse_info(labeled)
+    assert parsed.get("serial") == "ACE-000123"
+    assert factory_tool.pick_label(parsed["labels"]).startswith("PWC2;S=Powercell-000123;")
+    assert "LABEL_QR WIFI:T:WPA;S:Powercell-000123;" in labeled
+    assert station("LOCK").startswith("OK locked")
+    assert "LABEL" not in station("INFO")
+    proc.stdin.close()
+    proc.wait(timeout=5)
 
     manual_bin = pathlib.Path(directory) / "manual-api-tests"
     compile_one([

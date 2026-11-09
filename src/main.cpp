@@ -105,7 +105,7 @@ void loop()
   serviceWebSocketCommands();
   serviceOfflineSync();
   lightUpStatus();
-  // firmwareOTA.service(loraRadioReady());
+  firmwareOTA.service(true);
   if (shouldRestart) {
     delay(250);
     ESP.restart();

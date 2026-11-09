@@ -1,4 +1,6 @@
 #include "factory_station.h"
+#include "cloud_protocol.h"
+#include "time_policy.h"
 #include "sha256.h"
 
 #include <stdio.h>
@@ -7,7 +9,28 @@
 static int g_failures = 0;
 #define CHECK(cond) do { if (!(cond)) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #cond); ++g_failures; } } while (0)
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc > 1 && strcmp(argv[1], "repl") == 0) {
+    powercell::FactoryStation station;
+    station.usable_w = 4500;
+    uint8_t secret[32];
+    memset(secret, 7, sizeof secret);
+    station.set_secret(secret);
+    snprintf(station.ap_pass, sizeof station.ap_pass, "LabelPass99");
+    snprintf(station.mac_hex, sizeof station.mac_hex, "AABBCCDDEEFF");
+    char line[200];
+    while (fgets(line, sizeof line, stdin)) {
+      size_t n = strlen(line);
+      while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+      char reply[800];
+      station.console(line, reply, sizeof reply);
+      fputs(reply, stdout);
+      if (!n || reply[strlen(reply) - 1] != '\n') fputc('\n', stdout);
+      fputs(".\n", stdout);
+      fflush(stdout);
+    }
+    return 0;
+  }
   CHECK(factory_serial_valid("ACE-000123"));
   CHECK(!factory_serial_valid("ACE-DDEEFF"));
   CHECK(!display_serial_match("aa:bb:cc:dd:ee:ff", "ACE-000123"));
@@ -83,6 +106,32 @@ int main() {
   CHECK(strstr(reply, "ERR"));
   station.console("SET model PC3K", reply, sizeof reply);
   CHECK(strstr(reply, "ERR"));
+
+  powercell::CloudState cloud;
+  CHECK(powercell::claim_result(&cloud, "bound", "owner-1"));
+  CHECK(cloud.claimed && strcmp(cloud.owner, "owner-1") == 0);
+  CHECK(!powercell::claim_result(&cloud, "nope", "owner-2"));
+  char hello[300];
+  powercell::device_hello(cloud, "ACE-000123", false, hello, sizeof hello);
+  CHECK(strstr(hello, "\"type\":\"device_hello\""));
+  CHECK(strstr(hello, "\"display_id\":\"ACE-000123\""));
+  CHECK(strstr(hello, "\"owner_id\":\"owner-1\""));
+  uint8_t ota_secret[32];
+  memset(ota_secret, 3, sizeof ota_secret);
+  char ota_sig[65];
+  CHECK(powercell::ota_signature(ota_secret, "POST", "/api/ota/check", "1700001111", "aa", "{}", ota_sig));
+  CHECK(strlen(ota_sig) == 64);
+  powercell::OtaSchedule schedule;
+  schedule.begin(0);
+  CHECK(!schedule.due(1000, true, false, true, 300000));
+  CHECK(schedule.due(35000, true, false, true, 300000));
+  CHECK(!schedule.due(36000, true, false, false, 300000));
+  CHECK(pc::clk::judge(1700002000, 0, pc::clk::Source::None, false) == pc::clk::Verdict::Accept);
+  CHECK(pc::clk::judge(1700002000, 1700001000, pc::clk::Source::Ntp, true) == pc::clk::Verdict::NtpAuthoritative);
+  CHECK(pc::clk::judge(1700002000, 1700001000, pc::clk::Source::Nvs, false) == pc::clk::Verdict::Accept);
+  powercell::OutputMap mapped = powercell::map_outputs(true, 230, 1.5f, 300, true, 52, -4, -200, 80, 12, 97, false, 0, 0, 0);
+  CHECK(mapped.have_ac && mapped.output_power_w == 300 && mapped.output_power_apparent_va == 345);
+  CHECK(mapped.have_bms && mapped.battery_voltage == 52 && !mapped.have_pv);
 
   if (g_failures) {
     fprintf(stderr, "%d factory contract checks failed\n", g_failures);

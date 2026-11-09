@@ -698,17 +698,45 @@ HttpReply ManualApi::claim_code(const char* authorization, const ClientHeaders& 
   return out;
 }
 
+void ManualApi::observe_clock(int64_t now_s, int source, bool ntp_fresh) {
+  clock_now_ = now_s;
+  clock_src_ = source;
+  ntp_fresh_ = ntp_fresh;
+}
+
 HttpReply ManualApi::set_time(const char* authorization, const char* json, const ClientHeaders& headers,
                               uint32_t now_ms) {
   HttpReply out;
   if (!post_headers_ok(headers, &out)) return out;
   if (!bearer_ok(bearer_kind(authorization, now_ms), false, &out)) return out;
   int epoch = 0;
-  if (!json_int(json, "epoch", &epoch) || epoch < 1700000000) {
+  if (!json_int(json, "epoch", &epoch)) {
+    login_error(&out, 400, "invalid_request", 0);
+    return out;
+  }
+  int tz = 0;
+  bool has_tz = json_int(json, "tz_offset_min", &tz);
+  if (has_tz && !pc::clk::validTz(tz)) {
+    login_error(&out, 400, "invalid_tz_offset", 0);
+    return out;
+  }
+  pc::clk::Source src = clock_src_ == 3 ? pc::clk::Source::Ntp
+                        : clock_src_ == 2 ? pc::clk::Source::Phone
+                        : clock_src_ == 1 ? pc::clk::Source::Nvs
+                                          : pc::clk::Source::None;
+  pc::clk::Verdict verdict = pc::clk::judge(epoch, clock_now_, src, ntp_fresh_);
+  if (verdict == pc::clk::Verdict::Invalid) {
     login_error(&out, 400, "invalid_epoch", 0);
     return out;
   }
-  reply_set(&out, 200, "{\"ok\":true,\"applied\":false,\"reason\":\"phone_clock_not_applied\"}");
+  if (verdict == pc::clk::Verdict::Accept) {
+    clock_now_ = epoch;
+    clock_src_ = 2;
+    reply_set(&out, 200, "{\"ok\":true,\"applied\":true}");
+    return out;
+  }
+  snprintf(out.body, sizeof out.body, "{\"ok\":true,\"applied\":false,\"reason\":\"%s\"}", pc::clk::verdictName(verdict));
+  out.status = 200;
   return out;
 }
 

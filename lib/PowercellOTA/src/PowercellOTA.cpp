@@ -10,6 +10,10 @@
 #include <algorithm>
 #include <time.h>
 
+extern bool powercell_ota_signature(const uint8_t secret[32], const char* method, const char* path,
+                                    const char* timestamp, const char* nonce, const char* body, char sig_hex[65]);
+extern bool powercell_factory_serial(const char* serial);
+
 PowercellOTA firmwareOTA;
 // Arduino otherwise accepts an OTA image before application setup runs.
 extern "C" bool verifyRollbackLater() { return true; }
@@ -123,9 +127,20 @@ bool PowercellOTA::exchange(const char *status, const String &error, String *res
   WiFiClientSecure client; client.setCACert(ca); client.setHandshakeTimeout(12);
   HTTPClient http; http.setConnectTimeout(12000); http.setTimeout(12000);
   http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-  if (!http.begin(client, baseUrl + "/api/ota/check")) return false;
-  http.addHeader("Authorization", "Bearer " + token);
-  http.addHeader("Content-Type", "application/json");
+  uint8_t secret[32];
+  bool have_secret = false;
+  char serial[16] = {0};
+  Preferences ident;
+  if (ident.begin("pc_ident", true)) {
+    have_secret = ident.getBytesLength("secret") == 32 && ident.getBytes("secret", secret, 32) == 32;
+    String stored = ident.getString("serial", "");
+    snprintf(serial, sizeof serial, "%s", stored.c_str());
+    ident.end();
+  }
+  if (!have_secret || time(nullptr) < 1700000000) {
+    Serial.println("[OTA] check skipped: secret or trusted clock missing");
+    return false;
+  }
   JsonDocument doc;
   doc["device_id"] = deviceId;
   doc["firmware_version"] = version();
@@ -135,6 +150,24 @@ bool PowercellOTA::exchange(const char *status, const String &error, String *res
   doc["last_status"] = status;
   doc["last_error"] = error;
   String body; serializeJson(doc, body);
+  char nonce[33], ts[16], sig[65];
+  uint8_t raw[16];
+  esp_fill_random(raw, sizeof raw);
+  static const char* hexd = "0123456789abcdef";
+  for (int i = 0; i < 16; ++i) {
+    nonce[i * 2] = hexd[raw[i] >> 4];
+    nonce[i * 2 + 1] = hexd[raw[i] & 15];
+  }
+  nonce[32] = 0;
+  snprintf(ts, sizeof ts, "%lu", (unsigned long)time(nullptr));
+  if (!powercell_ota_signature(secret, "POST", "/api/ota/check", ts, nonce, body.c_str(), sig)) return false;
+  if (!http.begin(client, baseUrl + "/api/ota/check")) return false;
+  http.addHeader("Authorization", "Bearer " + token);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Device-ID", powercell_factory_serial(serial) ? serial : deviceId.c_str());
+  http.addHeader("X-Timestamp", ts);
+  http.addHeader("X-Nonce", nonce);
+  http.addHeader("X-Signature", sig);
   int code = http.POST(body);
   bool ok = code == 200 && http.getSize() > 0 && http.getSize() <= 4096;
   if (ok && response) *response = http.getString();

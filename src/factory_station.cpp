@@ -85,12 +85,17 @@ void FactoryStation::console(const char* line, char* out, size_t cap) {
     char ap[24];
     label_hotspot(serial, ap);
     snprintf(out, cap,
-             "serial=%s ap_ssid=%s secret=%s secret_reported=%d locked=%d api_key=%s\n"
+             "device_id=%s\nserial=%s ap_ssid=%s secret=%s secret_reported=%d locked=%d api_key=%s\n"
              "model=%s usable_kw=%s rated_kva=null\n",
-             factory_serial_valid(serial) ? serial : "unset", ap[0] ? ap : "unset",
-             secret_set ? "set" : "MISSING", secret_reported ? 1 : 0, locked ? 1 : 0,
+             mac_hex[0] ? mac_hex : "unset", factory_serial_valid(serial) ? serial : "unset",
+             ap[0] ? ap : "unset", secret_set ? "set" : "MISSING", secret_reported ? 1 : 0, locked ? 1 : 0,
              api_key_set ? "set" : "MISSING", usable_w == 4500 ? "PC5K" : "unset",
              usable_w == 4500 ? "4.5" : usable_w == 3150 ? "3.15" : "unset");
+    if (!locked && factory_serial_valid(serial) && ap_pass[0]) {
+      size_t used = strlen(out);
+      snprintf(out + used, cap - used, "LABEL PWC2;S=%s;P=%s;D=%s\nLABEL_QR WIFI:T:WPA;S:%s;P:%s;;\n", ap,
+               ap_pass, serial, ap, ap_pass);
+    }
     return;
   }
   if (strcmp(line, "SECRET") == 0) {

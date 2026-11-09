@@ -555,15 +555,25 @@ void hwV011AppendTelemetry(JsonDocument& doc) {
   ac["retained_allocated_wh"] = snap.allocated_wh;
   ac["retained_unallocated_wh"] = snap.unallocated_wh;
   ac["store_full"] = snap.store_full;
-  doc["output_voltage_v"] = nullptr;
-  doc["output_current_a"] = nullptr;
-  doc["output_power"] = nullptr;
-  doc["grid_voltage_v"] = nullptr;
-  doc["temperature_c"] = nullptr;
-  doc["battery_voltage_v"] = nullptr;
-  doc["pv_voltage_v"] = nullptr;
-  doc["pv_current_a"] = nullptr;
-  doc["pv_power_w"] = nullptr;
+  doc["grid_voltage"] = nullptr;
+  doc["inverter_temperature"] = nullptr;
+  if (snap.valid) {
+    const float volts = snap.voltage_dV / 10.0f;
+    const float amps = snap.current_mA / 1000.0f;
+    const float active = snap.power_dW / 10.0f;
+    doc["output_voltage"] = volts;
+    doc["output_current"] = amps;
+    doc["output_power"] = volts * amps;
+    doc["output_power_quantity"] = "apparent_va";
+    doc["output_power_w"] = active;
+    doc["output_power_source"] = "pzem004t_v3_active";
+  } else {
+    doc["output_voltage"] = nullptr;
+    doc["output_current"] = nullptr;
+    doc["output_power"] = nullptr;
+    doc["output_power_w"] = nullptr;
+    doc["output_power_source"] = nullptr;
+  }
   JsonObject dsp = doc["dsp"].to<JsonObject>();
   dsp["present"] = false;
   dsp["protocol"] = "none";
