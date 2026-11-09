@@ -11,6 +11,7 @@ namespace bms {
 struct Stats { uint32_t frames = 0, ok = 0, setupFrames = 0, checksumErrors = 0, badFrames = 0, timeouts = 0; };
 void begin();
 bool read(pc::jk::Data &out, uint32_t *ageMs = nullptr);  // latest reading if fresh
+bool sample(pc::jk::Data &out, uint32_t *ageMs, uint32_t maxAgeMs);  // same frame, caller picks the age limit
 size_t rawDump(Print &out, size_t n, uint32_t timeoutMs);  // TEMPORARY: BMS RAW console
 bool online();
 Stats stats();

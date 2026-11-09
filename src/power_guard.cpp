@@ -4,9 +4,11 @@
 #include <WiFi.h>
 #include <map>
 #include "battery.h"
+#include "battery_alert_policy.h"
 #include "bms.h"
 #include "config.h"
 #include "gateway.h"
+#include "hw_output.h"
 #include "log.h"
 #include "events_core.h"
 #include "soc_guard.h"
@@ -26,6 +28,26 @@ float g_soc = 0; bool g_socValid = false;
 bool g_gridDown = true;   // STM32 grid < 160 V (restore 170 V); unknown/stale = down
 bool g_overload = false;  // inverter overload (STM32 bit16 or iout >= 19 A, clear 17 A)
 const char *NS = "pwr_guard";
+#if POWERCELL_HW_V011
+powercell::BatteryAlertPolicy g_cutoff;
+bool g_cutoffOff = false;
+const char *kCutoffNs = "battery_guard";
+
+void saveCutoff() {
+  Preferences p;
+  if (!p.begin(kCutoffNs, false)) { g_cutoff.ackLatchSave(false); return; }
+  p.putUChar("latch", g_cutoff.outputLatched() ? 1 : 0);
+  p.end();
+  g_cutoff.ackLatchSave(true);
+}
+void holdAcOff() {
+  if (!powercell::battery_ac_output_auto_off(powercell::HardwareProfile::V011)) return;
+  if (gateway::state() || !g_cutoffOff) {
+    gateway::Result r = gateway::set(false, "battery_critical");
+    g_cutoffOff = r == gateway::Result::Ok;
+  }
+}
+#endif
 
 // Estimated ESP-side draw at 3.3 V (datasheet averages; excludes STM32, BMS, inverter board).
 constexpr float kPackAh = 230, kPackV = 51.2f, kIdleW = 6.2f;
@@ -52,11 +74,27 @@ void setLowPower(bool on) {
 void shedPass() { socketcfg::pass(g_socValid, g_soc, g_gridDown, latched(), g_overload); }
 }  // namespace
 
-bool espLatched() { return g_guard.latched(); }
+bool espLatched() {
+#if POWERCELL_HW_V011
+  return g_cutoff.outputLatched() || !g_cutoff.outputOnAllowed();
+#else
+  return g_guard.latched();
+#endif
+}
 bool stmReserve() { return g_stmRsv; }
-bool latched() { return g_guard.latched() || g_stmRsv; }
+bool latched() {
+#if POWERCELL_HW_V011
+  return !g_cutoff.outputOnAllowed();
+#else
+  return g_guard.latched() || g_stmRsv;
+#endif
+}
 bool lowPower() { return g_low; }
 bool refuseOn(const char *origin) {
+#if POWERCELL_HW_V011
+  (void)origin;
+  return !g_cutoff.outputOnAllowed();
+#else
   if (!strcmp(origin ? origin : "", "soc_restore")) return false;  // guard's own restore
   // 2.5.5: battery percentage gate (BMS SoC > 10 %), 48.0 V fallback without the BMS.
   OnGateIn in; in.espLatched = g_guard.latched(); in.stmReserve = g_stmRsv;
@@ -90,20 +128,56 @@ bool refuseOn(const char *origin) {
     }
   }
   return false;
+#endif
 }
 
 void setPriority(const String &id, bool essential) { socketcfg::setPriority(id, essential); }  // console PRIO fallback
 
 void begin() {
+#if POWERCELL_HW_V011
+  g_cutoff = powercell::BatteryAlertPolicy(millis());
+  Preferences prefs;
+  bool latched = false, read_ok = false;
+  if (prefs.begin(kCutoffNs, true)) {
+    if (prefs.isKey("latch")) latched = prefs.getUChar("latch", 0) != 0;
+    read_ok = true;
+    prefs.end();
+  }
+  g_cutoff.loadLatch(read_ok, latched);
+  if (!g_cutoff.outputOnAllowed()) holdAcOff();
+  return;
+#else
   Preferences p;
   bool l = false;
   if (prefsOpenRO(p, NS)) { l = p.getBool("latched", false); g_wasOn = p.getBool("wasOn", false); p.end(); }
   g_guard.restore(l);
   g_restorePending = !l && g_wasOn;  // ESP released before a reboot, STM32 latch may still hold
   if (l) { LOGW("PWR", "LATCH_RESTORED", "battery critical latch from NVS; output held off"); setLowPower(true); }
+#endif
 }
 
 void service() {
+#if POWERCELL_HW_V011
+  uint32_t now = millis();
+  if (now - g_last < 1000) return;
+  g_last = now;
+  pc::jk::Data d;
+  uint32_t age = 0;
+  powercell::BatteryReading reading = {};
+  if (bms::sample(d, &age, powercell::BatteryAlertPolicy::FreshnessMs)) {
+    reading.valid = true;
+    reading.percent = d.soc;
+    reading.voltage = d.packMv / 1000.0f;
+    reading.receivedAtMs = now - age;
+    reading.charging = d.status == 1;  // recorded; a full or idle pack can still release
+    reading.bms_own = true;
+  }
+  g_cutoff.update(reading, now);
+  if (g_cutoff.latchDirty()) saveCutoff();
+  if (!g_cutoff.outputOnAllowed()) holdAcOff();
+  else g_cutoffOff = false;  // eligible again; do not turn the output on
+  return;
+#else
   uint32_t now = millis();
   if (now - g_last < 1000) return;
   g_last = now;
@@ -156,9 +230,19 @@ void service() {
   }
   setLowPower(latched());
   if (now - g_lastShed >= 2000) { g_lastShed = now; shedPass(); }
+#endif
 }
 
 void toJson(JsonObject o) {
+#if POWERCELL_HW_V011
+  o["critical_latched"] = g_cutoff.outputLatched();
+  o["boot_hold"] = !g_cutoff.outputOnAllowed() && !g_cutoff.outputLatched();
+  o["output_on_allowed"] = g_cutoff.outputOnAllowed();
+  o["physical_shutdown_verified"] = powercell::kPhysicalShutdownVerified;
+  o["stm32_reserve_latched"] = false;
+  o["charging_stopped"] = powercell::battery_cutoff_stops_charging();
+  return;
+#else
   o["critical_latched"] = g_guard.latched();
   o["stm32_reserve_latched"] = g_stmRsv;
   o["low_power"] = g_low;
@@ -172,6 +256,7 @@ void toJson(JsonObject o) {
   o["inverter_overload"] = g_overload;
   o["grid_down"] = g_gridDown;
   socketcfg::shedList(o["shed_sockets"].to<JsonArray>());
+#endif
 }
 
 String debugJson() { JsonDocument d; toJson(d.to<JsonObject>()); String s; serializeJson(d, s); return s; }

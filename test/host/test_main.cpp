@@ -778,6 +778,68 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
   frame[0x0E] = powercell::kDs3231ControlRun;
   frame[0x0F] = status;
 }
+#include "battery_alert_policy.h"
+static powercell::BatteryReading soc_at(float percent, uint32_t at, bool bms_own = true) {
+  return {true, percent, 51.2f, at, false, bms_own};
+}
+static void test_battery_cutoff() {
+  using P = powercell::BatteryAlertPolicy;
+  CHECK(!P::kPhysicalAutoOffEnabled);
+  CHECK(!powercell::battery_cutoff_writes_bms_fets() && !powercell::battery_cutoff_stops_charging());
+  CHECK(!powercell::battery_recovery_drives_on());
+  CHECK(powercell::battery_cutoff_pin_level(powercell::HardwareProfile::V011, true) == 1);
+  CHECK(powercell::battery_cutoff_pin_level(powercell::HardwareProfile::Original, true) == -1);
+  CHECK(!powercell::battery_ac_output_auto_off(powercell::HardwareProfile::Original));
+  CHECK(powercell::battery_ac_output_auto_off(powercell::HardwareProfile::V011));
+
+  P open;
+  open.update(soc_at(10.1f, 1), 1);
+  CHECK(!open.outputLatched() && open.outputOnAllowed());
+  CHECK(open.update(soc_at(10, 2), 2) & P::BatteryChanged);
+  CHECK(open.outputLatched() && !open.outputOnAllowed());
+  CHECK(open.latchDirty());
+  open.ackLatchSave(true);
+  CHECK(open.latchDurable() && !open.latchDirty());
+
+  P stale(0);
+  powercell::BatteryReading old = soc_at(5, 0);
+  CHECK(stale.update(old, 16000) == P::AvailabilityChanged);
+  CHECK(!stale.outputLatched());
+  stale.update(soc_at(8, 17000), 17000);
+  CHECK(stale.outputLatched());
+  powercell::BatteryReading held = soc_at(80, 18000);
+  stale.update(held, 18000 + P::FreshnessMs + 1);
+  CHECK(stale.outputLatched() && !stale.outputOnAllowed());
+
+  P recover;
+  recover.update(soc_at(9, 1000), 1000);
+  const uint32_t start = 5000;
+  recover.update(soc_at(100, start), start);
+  CHECK(recover.outputLatched() && !recover.outputOnAllowed());
+  recover.update(soc_at(100, start + P::RecoveryHoldMs), start + P::RecoveryHoldMs);
+  CHECK(!recover.outputLatched() && recover.outputOnAllowed());
+
+  P other;
+  other.update(soc_at(9, 1000), 1000);
+  const uint32_t done = 2000 + P::RecoveryHoldMs;
+  other.update(soc_at(100, 2000, false), 2000);
+  other.update(soc_at(100, done, false), done);
+  CHECK(other.outputLatched() && !other.outputOnAllowed());
+
+  P persisted(50);
+  persisted.loadLatch(true, true);
+  CHECK(persisted.outputLatched() && !persisted.outputOnAllowed());
+  CHECK(persisted.update(soc_at(12, 60), 60) == 0 || persisted.outputLatched());
+
+  P failed(50);
+  failed.loadLatch(false, false);
+  CHECK(!failed.outputOnAllowed() && !failed.outputLatched());
+  failed.update(soc_at(80, 100), 100);
+  CHECK(!failed.outputOnAllowed());
+  failed.update(soc_at(80, 100 + P::RecoveryHoldMs), 100 + P::RecoveryHoldMs);
+  CHECK(failed.outputOnAllowed() && !failed.outputLatched());
+}
+
 static void test_v011_gpio() {
   using namespace powercell;
   CHECK(v011_dsp_level(true) == 0 && v011_dsp_level(false) == 1);
@@ -1142,7 +1204,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_v011_gpio();
+  test_time_policy(); test_ds3231(); test_v011_gpio(); test_battery_cutoff();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();

@@ -50,6 +50,17 @@ void begin() {
   LOGI("BMS", "INIT", "JK-PB frames %lu 8N1 rx=%d tx=%d", (unsigned long)JK_BMS_BAUD, PIN_BMS_RX, PIN_BMS_TX);
 }
 
+bool sample(pc::jk::Data &out, uint32_t *ageMs, uint32_t maxAgeMs) {
+  if (!mx) return false;
+  xSemaphoreTake(mx, portMAX_DELAY);
+  uint32_t age = millis() - at;
+  bool ok = have && age <= maxAgeMs;
+  if (ok) out = latest;
+  xSemaphoreGive(mx);
+  if (ok && ageMs) *ageMs = age;
+  return ok;
+}
+
 bool read(pc::jk::Data &out, uint32_t *ageMs) {
   if (!mx) return false;
   xSemaphoreTake(mx, portMAX_DELAY);

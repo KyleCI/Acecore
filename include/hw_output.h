@@ -29,4 +29,18 @@ inline void v011_dsp_boot(BootStep out[2]) {
 
 inline bool battery_recovery_drives_on() { return false; }
 
+enum class HardwareProfile : uint8_t { Original = 0, V011 = 1 };
+
+// v0.1.1 maps a battery hold to GPIO15 high. The original profile does not.
+// Recovery never requests on. Charging and the BMS FET registers are not written.
+inline bool battery_ac_output_auto_off(HardwareProfile profile) {
+  return profile == HardwareProfile::V011;
+}
+inline int battery_cutoff_pin_level(HardwareProfile profile, bool hold_off) {
+  if (!hold_off || profile != HardwareProfile::V011) return -1;
+  return v011_dsp_level(false);
+}
+inline bool battery_cutoff_writes_bms_fets() { return false; }
+inline bool battery_cutoff_stops_charging() { return false; }
+
 }  // namespace powercell
