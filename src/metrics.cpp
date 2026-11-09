@@ -84,8 +84,13 @@ void registerMetricsRoute(AsyncWebServer &server)
         // Solar Panel Section
         doc["solarVoltage"] = mppt.v_bus_V;
         doc["solarCurrent"] = mppt.current_A;
-        doc["solarPower"] = mppt.power_W;
-        doc["solar_power_w"] = mppt.power_W;
+        if (powercell::power_publishable(mppt.power_W)) {
+            doc["solarPower"] = mppt.power_W;
+            doc["solar_power_w"] = mppt.power_W;
+        } else {
+            doc["solarPower"] = nullptr;
+            doc["solar_power_w"] = nullptr;
+        }
         
         // ── Smart Sockets section -- one entry per registered device ─────────
         JsonArray sockets = doc["sockets"].to<JsonArray>();

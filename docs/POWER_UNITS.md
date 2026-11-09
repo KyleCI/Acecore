@@ -16,22 +16,36 @@ STM32 text path has `VOUT` and `IOUT` in volts and amps and no watt or kilowatt
 field, so its active-watt keys stay null. Energy counters that are already
 watt-hours stay watt-hours. `energy_get_kwh()` is not published.
 
-`GET /v2/setup/info` adds two fixed fields on every image, original and both
-rated v0.1.1 builds:
+`GET /v2/setup/info` adds two fixed top-level fields on every image, next to
+`device_id`. The names and values match
+`powercell-app/docs/setup_info_units.md` on letambari/official-powercell-app
+PR 8:
 
 ```json
 "units": {"power": "W", "energy": "Wh"},
 "data_format_version": 1
 ```
 
-`data_format_version` is 1 for this firmware. A collector that omits it,
-including deployed 2.5.11, is the legacy case and the app applies its own
-version rule. These two fields do not rename or rescale any existing key.
+`data_format_version` is the integer 1 for this firmware. A collector that
+omits it, including deployed 2.5.11, is the legacy case and the app applies
+its version rule. These fields do not rename or rescale any existing key.
 
-`units` covers unit-less keys only. `last_data.power` is active watts.
-`inverter.output_power` is the same numeric scale and stays V times I, with
-`output_power_quantity` `apparent_va`. `inverter_energy` is watt-hours.
-A key whose name already states the unit is outside this declaration:
+`units.power` is `W` for unit-less power keys only: `last_data.power`,
+`inverter.output_power` when it is not flagged `apparent_va`, `battery.power`,
+and `solar.power`. `units.energy` is `Wh` for unit-less energy such as
+`inverter_energy`.
+
+`inverter.output_power` and `metrics.inverterLoad` from this collector are
+V times I and stay flagged `apparent_va`. That quantity is volt-amps, not
+active watts. The STM32 text path has no watt field, so its watt keys are
+JSON null.
+
+A key whose name already states the unit is outside `units`: `usable_kw`,
+`rated_kva`, `*_w`, `lifetime_wh`, and `energy_today_kwh`.
+
+The app treats a negative power, or a power above 1.5 times usable, as
+unavailable. This firmware does not publish placeholder sentinels such as
+`-1` or `99999` on a power key. Those values are JSON null.
 
 Keys whose names already say kilowatts stay kilowatts. They are not watt keys:
 

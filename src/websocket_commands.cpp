@@ -121,12 +121,14 @@ void telemetry() {
     JsonObject battery = doc["battery"].to<JsonObject>();
     battery["voltage"] = bms.packVoltage;
     battery["current"] = bms.packCurrent;
-    battery["power"] = bms.packPower;
+    if (powercell::power_publishable(bms.packPower)) battery["power"] = bms.packPower;
+    else battery["power"] = nullptr;
     battery["soc"] = bms.SOC;
     battery["temperature"] = bms.tempBat1;
     doc["battery_voltage"] = bms.packVoltage;
     doc["battery_current_a"] = bms.packCurrent;
-    doc["battery_power_w"] = bms.packPower;
+    if (powercell::power_publishable(bms.packPower)) doc["battery_power_w"] = bms.packPower;
+    else doc["battery_power_w"] = nullptr;
     doc["remaining_ah"] = bms.remainCapacity;
     doc["cycle_count"] = bms.cycleCount;
     doc["soh"] = bms.SOH;
@@ -175,8 +177,13 @@ void telemetry() {
   if (mppt_get_data(mppt)) {
     solar["voltage"] = mppt.v_bus_V;
     solar["current"] = mppt.current_A;
-    solar["power"] = mppt.power_W;
-    solar["power_w"] = mppt.power_W;
+    if (powercell::power_publishable(mppt.power_W)) {
+      solar["power"] = mppt.power_W;
+      solar["power_w"] = mppt.power_W;
+    } else {
+      solar["power"] = nullptr;
+      solar["power_w"] = nullptr;
+    }
     solar["valid"] = true;
   } else {
     solar["valid"] = false;

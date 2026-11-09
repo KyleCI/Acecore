@@ -66,10 +66,14 @@ are JSON null. This firmware does not invent a usable rating.
 {"device_id":"ACE-DDEEFF","model":"hw-v0.1.1","fw":"1.0.1","state":"unconfigured","claimed":false,"passcode_default":false,"passcode_set":false,"hotspot":false,"onboarding_version":2,"powercell_model":null,"rated_kva":null,"usable_kw":null,"units":{"power":"W","energy":"Wh"},"data_format_version":1}
 ```
 
-`units` and `data_format_version` are fixed for the build. `units` describes
-unit-less keys such as `last_data.power` and `inverter.output_power`.
-`apparent_va` stays the quantity flag on that power key. `usable_kw` and
-`rated_kva` keep the unit in their names. See [POWER_UNITS.md](POWER_UNITS.md).
+`units` and integer `data_format_version` are fixed for the build. They match
+`powercell-app/docs/setup_info_units.md` (official-powercell-app PR 8).
+`units.power` is `W` for unit-less keys: `last_data.power`,
+`inverter.output_power` when it is not `apparent_va`, `battery.power`, and
+`solar.power`. `units.energy` is `Wh` for unit-less energy such as
+`inverter_energy`. `apparent_va` stays volt-amps. `usable_kw`, `*_w`,
+`lifetime_wh`, and `energy_today_kwh` keep the unit in the name. See
+[POWER_UNITS.md](POWER_UNITS.md).
 
 `state` is `configured` only when a Wi-Fi SSID is saved. The first passcode
 is `POST /v2/setup/passcode` on the hotspot, the same four-string body as
