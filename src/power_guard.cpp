@@ -149,14 +149,29 @@ void setPriority(const String &id, bool essential) { socketcfg::setPriority(id, 
 void begin() {
 #if POWERCELL_DSP011
   g_cutoff = powercell::BatteryAlertPolicy(millis());
-  Preferences prefs;
-  bool latched = false, read_ok = false;
-  if (prefs.begin(kCutoffNs, true)) {
-    if (prefs.isKey("latch")) latched = prefs.getUChar("latch", 0) != 0;
-    read_ok = true;
-    prefs.end();
+  // A read-only open of a namespace that was never written returns NOT_FOUND.
+  // That is "no latch saved", not a failed read. Treating it as unreadable
+  // made outputOnAllowed() false on every boot, so cloud ON was rejected with
+  // battery_critical_latched while the pack was full. The 60s clear was also
+  // not saved, so the next reboot (the next websocket session) did it again.
+  bool opened = false, not_found = false, has_key = false, held = false;
+  nvs_handle_t h;
+  const esp_err_t err = nvs_open(kCutoffNs, NVS_READONLY, &h);
+  if (err == ESP_OK) {
+    uint8_t v = 0;
+    const esp_err_t kr = nvs_get_u8(h, "latch", &v);
+    nvs_close(h);
+    if (kr == ESP_OK) {
+      opened = true;
+      has_key = true;
+      held = v != 0;
+    } else if (kr == ESP_ERR_NVS_NOT_FOUND) {
+      opened = true;
+    }
+  } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+    not_found = true;
   }
-  g_cutoff.loadLatch(read_ok, latched);
+  g_cutoff.applyLatchStore(powercell::BatteryAlertPolicy::classifyLatchStore(opened, not_found, has_key, held));
   if (!g_cutoff.outputOnAllowed()) holdAcOff();
   return;
 #else

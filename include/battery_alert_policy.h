@@ -57,6 +57,7 @@ class BatteryAlertPolicy {
   bool latchDirty() const { return latch_dirty_; }
   bool latchDurable() const { return latch_durable_; }
   // Cold boot. A failed read blocks output-on until fresh recovery evidence.
+  // A missing record is not a failed read.
   void loadLatch(bool read_ok, bool latched);
   void ackLatchSave(bool write_ok);
   bool takeOutputOffEdge();
@@ -66,6 +67,30 @@ class BatteryAlertPolicy {
   void setThresholds(float low, float warning);
   static bool fresh(const BatteryReading& reading, uint32_t now);
   static uint32_t cooldown(BatteryAlertLevel level);
+
+  // How the saved latch was opened. Absent (namespace or key never written) is
+  // not latched. Unreadable keeps output off until fresh BMS SOC >= 15% for 60s.
+  enum class LatchStore : uint8_t { Absent = 0, Clear = 1, Held = 2, Unreadable = 3 };
+  static LatchStore classifyLatchStore(bool opened, bool not_found, bool has_key, bool held) {
+    if (!opened && not_found) return LatchStore::Absent;
+    if (!opened) return LatchStore::Unreadable;
+    if (has_key && held) return LatchStore::Held;
+    return LatchStore::Clear;
+  }
+  void applyLatchStore(LatchStore store) {
+    switch (store) {
+      case LatchStore::Absent:
+      case LatchStore::Clear:
+        loadLatch(true, false);
+        break;
+      case LatchStore::Held:
+        loadLatch(true, true);
+        break;
+      case LatchStore::Unreadable:
+        loadLatch(false, false);
+        break;
+    }
+  }
 
  private:
   static uint32_t elapsed(uint32_t now, uint32_t since) { return now - since; }

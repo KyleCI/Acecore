@@ -79,13 +79,17 @@ void BatteryAlertPolicy::considerLatch(float percent, bool bms_own, uint32_t now
       latch_hold_ = true;
       latch_hold_since_ = now;
     } else if (elapsed(now, latch_hold_since_) >= RecoveryHoldMs) {
-      if (latched_) {
-        latched_ = false;
+      // Clearing either a saved latch or an unreadable-boot hold must be
+      // written. A RAM-only clear comes back as battery_critical_latched
+      // on the next boot, which is when the websocket reconnects.
+      const bool blocking = latched_ || boot_unproven_;
+      if (latched_) latched_ = false;
+      boot_unproven_ = false;
+      latch_hold_ = false;
+      if (blocking) {
         latch_dirty_ = true;
         latch_durable_ = false;
       }
-      boot_unproven_ = false;
-      latch_hold_ = false;
     }
   } else {
     latch_hold_ = false;

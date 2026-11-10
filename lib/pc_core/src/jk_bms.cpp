@@ -70,7 +70,21 @@ Parse parseDynamic(const uint8_t *f, size_t len, Data &out) {
   r.soh = f[190];
   r.chargeMos = f[198]; r.dischargeMos = f[199]; r.balancing = f[200];
   // A zero SOC is legitimate only in a plausible, complete frame.
+  // SOC 0 with no capacity total is an unfilled byte, not an empty pack.
+  // SOC that disagrees with remaining/full capacity is not a measurement:
+  // a 0 byte beside ~96% remaining must not latch, and a high byte beside
+  // an empty remaining count must not release.
   if (r.soc > 100 || !r.cellCount || r.packMv == 0) return Parse::BadFrame;
+  if (r.fullMah == 0) {
+    if (r.soc == 0) return Parse::BadFrame;
+  } else {
+    const int32_t remain = r.remainMah > 0 ? r.remainMah : 0;
+    const uint32_t derived = remain >= static_cast<int32_t>(r.fullMah)
+                                 ? 100u
+                                 : static_cast<uint32_t>((static_cast<uint64_t>(remain) * 100ull) / r.fullMah);
+    if (r.soc <= 10 && derived >= 15u) return Parse::BadFrame;
+    if (r.soc >= 15 && derived + 20u < r.soc) return Parse::BadFrame;
+  }
   out = r;
   return Parse::Ok;
 }

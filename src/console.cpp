@@ -21,6 +21,7 @@
 #include "devauth.h"
 #include "factory_id.h"
 #include "dsp011_log.h"
+#include "dsp011_pzem.h"
 
 namespace console {
 namespace {
@@ -199,8 +200,18 @@ void selftest() {
     uint32_t ag = solar::lastGoodAgeMs();
     if (ag != UINT32_MAX) jso["last_good_age_ms"] = ag; else jso["last_good_age_ms"] = nullptr;
     double et = 0, eT = 0;  // 2.5.8
-    if (solar::energy(et, eT)) { jso["energy_today_kwh"] = et; jso["energy_total_kwh"] = eT; }
-    else { jso["energy_today_kwh"] = nullptr; jso["energy_total_kwh"] = nullptr; }
+    const bool have_pv = solar::energy(et, eT);
+#if POWERCELL_DSP011
+    (void)et;
+    double ac = 0;
+    if (hwAcEnergyTodayKwh(&ac)) jso["energy_today_kwh"] = ac;
+    else jso["energy_today_kwh"] = nullptr;
+#else
+    if (have_pv) jso["energy_today_kwh"] = et;
+    else jso["energy_today_kwh"] = nullptr;
+#endif
+    if (have_pv) jso["energy_total_kwh"] = eT;
+    else jso["energy_total_kwh"] = nullptr;
   }
   // Wi-Fi / heap / cloud
   JsonObject jw = d["wifi"].to<JsonObject>();

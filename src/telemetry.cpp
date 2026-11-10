@@ -140,8 +140,23 @@ void solarBlock(JsonObject o) {
 
 void solarEnergyKeys(JsonObject o) {  // 2.5.8
   double et = 0, eT = 0;
-  if (solar::energy(et, eT)) { o["energy_today_kwh"] = et; o["energy_total_kwh"] = eT; }
-  else { o["energy_today_kwh"] = nullptr; o["energy_total_kwh"] = nullptr; }
+  const bool pv = solar::energy(et, eT);
+#if POWERCELL_DSP011
+  // The only energy_today_kwh in the app/telemetry contract lives on this
+  // solar object (and solar_energy_today_kwh in the live block). On v0.1.1
+  // it was null, so the app showed "--". The value here is PZEM AC output
+  // energy since the local-day baseline, in kWh, not PV generation.
+  // energy_total_kwh stays the PV lifetime figure.
+  (void)et;
+  double ac = 0;
+  if (hwAcEnergyTodayKwh(&ac)) o["energy_today_kwh"] = ac;
+  else o["energy_today_kwh"] = nullptr;
+#else
+  if (pv) o["energy_today_kwh"] = et;
+  else o["energy_today_kwh"] = nullptr;
+#endif
+  if (pv) o["energy_total_kwh"] = eT;
+  else o["energy_total_kwh"] = nullptr;
 }
 }  // namespace
 
@@ -216,7 +231,14 @@ void liveToJson(JsonObject o) {
     num("solar_current", pv.valid, pv.current);
     num("solar_power_w", pv.valid, pv.powerW);
     double et = 0, eT = 0; bool he = solar::energy(et, eT);  // 2.5.8
+#if POWERCELL_DSP011
+    (void)et;
+    double ac_today = 0;
+    const bool ac_known = hwAcEnergyTodayKwh(&ac_today);
+    num("solar_energy_today_kwh", ac_known, (float)ac_today);
+#else
     num("solar_energy_today_kwh", he, (float)et);
+#endif
     num("solar_energy_total_kwh", he, (float)eT);
   }
   modelToJson(o);
