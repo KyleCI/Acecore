@@ -33,3 +33,10 @@ These apply to `esp32dev_dsp011_5kw` and `esp32dev_dsp011_35kw` only. STM images
 14. RTC. Dubem's working firmware drives a DS1307 at 0x68 (`clock_rtc.cpp`). This firmware's driver is written for a DS3231 at the same address. The time registers match, but the DS3231 status/OSF register does not exist on a DS1307, so the RTC can be reported as untrusted. Not a cause of missing data or on/off.
 
 15. Cloud host. Dubem's firmware connects to `api.acecore.tech`. This firmware connects to `api-dev.acecore.tech`. A board provisioned for production needs its api_key and registration on api-dev, or nothing reaches the app.
+
+## 16. Battery status light (GPIO12/13/14)
+
+Dubem's lighting.cpp drives red 12, blue 13, green 14 through LEDC (5 kHz, 8-bit), one lit at a time: SOC >= 70 green, 40-69 blue, < 40 red, red with no BMS data or data older than 15 s. With grid present the lit LED breathes on a 4 s triangle, otherwise solid. Our DSP build now does the same (include/dsp_status_led.h, src/leds.cpp), using our GPIO39 grid presence (170 V on, 160 V off) where Dubem used a single 160 V threshold. Caleb confirmed 2026-11-10 21:13 WAT.
+
+Replaced on DSP: the critical-latch red blink, STM32 fault red, and the blue offline / hotspot / SOC < 25 % indication. GPIO12 is still driven low before it becomes an output and has no pull-up (MTDI strap), and LEDC is attached only after boot.
+

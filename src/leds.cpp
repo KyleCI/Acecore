@@ -7,16 +7,33 @@
 #include "net.h"
 #include "pins.h"
 #include "stm32_link.h"
+#if POWERCELL_DSP011
+#include "dsp_status_led.h"
+#include "grid_sense.h"
+#endif
 
 namespace leds {
-namespace { uint32_t last = 0; }
+namespace {
+uint32_t last = 0;
+#if POWERCELL_DSP011
+// LEDC channels for red, blue, green (StatusColor order). Nothing else in this
+// firmware uses LEDC.
+constexpr uint8_t kCh[3] = {0, 1, 2};
+#endif
+}
 void begin() {
 #if POWERCELL_DSP011
   // Red is GPIO12 (MTDI). Drive it low before it becomes an output and never
-  // enable a pull-up. Blue is 13, green is 14.
+  // enable a pull-up. Blue is 13, green is 14. Then hand each pin to its own
+  // LEDC channel (5 kHz, 8-bit) at duty 0, as Dubem's initLights().
   // The front light (GPIO27) is owned by gateway: it follows the inverter.
   const int pins[] = {PIN_LED_RED, PIN_LED_BLUE, PIN_LED_GREEN};
   for (int p : pins) { digitalWrite(p, LOW); pinMode(p, OUTPUT); digitalWrite(p, LOW); }
+  for (int i = 0; i < 3; ++i) {
+    ledcSetup(kCh[i], powercell::kLedPwmFreqHz, powercell::kLedPwmBits);
+    ledcAttachPin(pins[i], kCh[i]);
+    ledcWrite(kCh[i], 0);
+  }
 #else
   const int pins[] = {PIN_LED_RED, PIN_LED_YELLOW, PIN_LED_GREEN, PIN_LED_AMBER};
   for (int p : pins) { digitalWrite(p, LOW); pinMode(p, OUTPUT); }
@@ -24,6 +41,21 @@ void begin() {
 }
 void service() {
   uint32_t now = millis();
+#if POWERCELL_DSP011
+  // Battery status light exactly as Dubem's lightUpStatus(). Replaces, on DSP
+  // only, the original profile's indications (critical-latch red blink,
+  // STM32 fault red, offline/hotspot/low-SOC blue). 20 ms steps keep the
+  // breathe smooth.
+  if (now - last < 20) return;
+  last = now;
+  pc::jk::Data d;
+  uint32_t age = 0;
+  const bool fresh = bms::sample(d, &age, powercell::kLedBmsStaleMs);
+  DspGridReading grid;
+  const bool gridPresent = dspGridRead(&grid) && grid.valid && grid.present;
+  const powercell::StatusLed out = powercell::dsp_status_led(fresh, fresh ? d.soc : 0, gridPresent, now);
+  for (int i = 0; i < 3; ++i) ledcWrite(kCh[i], i == static_cast<int>(out.color) ? out.duty : 0);
+#else
   if (powerguard::lowPower()) {  // battery critical latched: dark except a 100 ms red blink every 4 s
     if (now - last < 100) return;
     last = now;
@@ -58,5 +90,6 @@ void service() {
   bool amber = bmsOk ? (d.alarms != 0) : blink;
   digitalWrite(PIN_LED_AMBER, amber ? HIGH : LOW);
 #endif
+#endif  // POWERCELL_DSP011
 }
 }  // namespace leds

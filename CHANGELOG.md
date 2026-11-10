@@ -1,5 +1,10 @@
 # Collector firmware changelog
 
+## Unreleased (DSP battery status light)
+
+- DSP builds: the thunderbolt light now matches Dubem's lighting.cpp. Red 12, blue 13, green 14 on LEDC 5 kHz 8-bit, one lit at a time. SOC 70 % and up green, 40-69 % blue, under 40 % red. No BMS frame, or one older than 15 s, is red. With grid present (GPIO39, our 170/160 V hysteresis) the lit LED breathes on a 4 s triangle; without grid it is solid. Caleb confirmed 2026-11-10 21:13 WAT.
+- This replaces, on DSP only, the original profile's indications: the critical-latch 100 ms red blink, STM32 fault red, and blue for offline, hotspot, or SOC under 25 %. Those states are no longer shown on the light on DSP (they stay in SELFTEST and the logs). STM builds are unchanged.
+
 ## Unreleased (DSP front light)
 - DSP images: the front light on GPIO27 (HIGH = ON) follows the inverter like Dubem's firmware: on with ON, off with the boot latch and every off path. Caleb approved 2026-11-10 21:10 WAT. STM images unchanged.
 

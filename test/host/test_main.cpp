@@ -871,6 +871,7 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
 #include "jbd_bms.h"
 #include "grid_sense.h"
 #include "pzem_stats.h"
+#include "dsp_status_led.h"
 #include "hw_output.h"
 #include "config.h"
 #include "pins.h"
@@ -1238,6 +1239,31 @@ static void test_dsp_pad_steps() {
   n = v011_dsp_pad_steps(true, st);
   CHECK(n == 6 && st[n - 1].op == PadOp::SetLevel && st[n - 1].level == 1);
   for (size_t i = 0; i < n; ++i) CHECK(st[i].op != PadOp::HoldEnable);
+}
+
+static void test_dsp_status_led() {
+  using namespace powercell;
+  CHECK(kLedPwmFreqHz == 5000 && kLedPwmBits == 8 && kLedBreatheMs == 4000 && kLedBmsStaleMs == 15000);
+  // Colors (Dubem lighting.cpp): >=70 green, 40..69 blue, <40 red, no/stale BMS red.
+  CHECK(led_color(true, 100) == StatusColor::Green);
+  CHECK(led_color(true, 70) == StatusColor::Green);
+  CHECK(led_color(true, 69) == StatusColor::Blue);
+  CHECK(led_color(true, 40) == StatusColor::Blue);
+  CHECK(led_color(true, 39) == StatusColor::Red);
+  CHECK(led_color(true, 0) == StatusColor::Red);
+  CHECK(led_color(false, 100) == StatusColor::Red);
+  // Breathe: 0 -> 255 -> 0 over 4 s.
+  CHECK(led_breathe(0) == 0 && led_breathe(2000) == 255 && led_breathe(4000) == 0);
+  CHECK(led_breathe(1000) == 127 && led_breathe(3000) == 127 && led_breathe(6000) == 255);
+  // Solid without grid, breathing with grid; one LED only (color carries it).
+  StatusLed a = dsp_status_led(true, 80, false, 1000);
+  CHECK(a.color == StatusColor::Green && a.duty == 255);
+  StatusLed b = dsp_status_led(true, 50, true, 1000);
+  CHECK(b.color == StatusColor::Blue && b.duty == 127);
+  StatusLed c = dsp_status_led(false, 90, true, 2000);
+  CHECK(c.color == StatusColor::Red && c.duty == 255);
+  StatusLed e = dsp_status_led(false, 90, false, 0);
+  CHECK(e.color == StatusColor::Red && e.duty == 255);
 }
 
 static bool read_text_file(const char *path, char *buf, size_t cap);
@@ -1910,7 +1936,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
+  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_dsp_status_led(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();
