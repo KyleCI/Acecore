@@ -102,11 +102,18 @@ void setAlertThresholds(float lowPercent, float warningPercent) {
 #endif
 }
 
+bool overloadLatched() {
+#if POWERCELL_DSP011
+  return powercell::acOutputPolicy().shutdownLatched();
+#else
+  return false;
+#endif
+}
+
 bool refuseOn(const char *origin) {
 #if POWERCELL_DSP011
   (void)origin;
-  if (!g_cutoff.outputOnAllowed()) return true;
-  return powercell::acOutputPolicy().shutdownLatched();
+  return !g_cutoff.outputOnAllowed();
 #else
   if (!strcmp(origin ? origin : "", "soc_restore")) return false;  // guard's own restore
   // 2.5.5: battery percentage gate (BMS SoC > 10 %), 48.0 V fallback without the BMS.

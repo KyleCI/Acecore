@@ -49,11 +49,14 @@ inline Verdict judge(uint32_t issuedAt, uint32_t lastAppliedAt, bool cmdSeen) {
 // System origins (payment_lock force-off, battery_critical, ota) bypass at the call site.
 inline bool controlBlocked(bool locked) { return locked; }
 
-// Cloud/local set_state. Payment lock wins over the battery latch, including
-// when both are true. Battery critical refuses ON only. nullptr = not blocked.
-inline const char* setStateBlock(bool payment_locked, bool desired_on, bool battery_latched) {
+// Cloud, local, and console ON. Payment lock wins over every latch.
+// Battery critical is next. The AC-overload shutdown latch is its own code.
+// Both latches refuse ON only. nullptr = not blocked.
+inline const char* setStateBlock(bool payment_locked, bool desired_on, bool battery_latched, bool overload_latched) {
   if (payment_locked) return "payment_locked";
-  if (desired_on && battery_latched) return "battery_critical_latched";
+  if (!desired_on) return nullptr;
+  if (battery_latched) return "battery_critical_latched";
+  if (overload_latched) return "output_overload_latched";
   return nullptr;
 }
 

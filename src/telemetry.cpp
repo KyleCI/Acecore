@@ -53,6 +53,7 @@ void inverterBlock(JsonObject inv) {
   if (fresh && s.has_vout && s.has_iout) inv["output_power_quantity"] = "apparent_va";
   else inv["output_power_quantity"] = nullptr;
   inv["stm32_online"] = false;
+  acEnergyTodayToJson(inv, "energy_today_kwh");
 #endif
   num("grid_voltage", s.has_grid, s.grid_v);
   num("temperature", s.has_temp, s.temp_c);
@@ -138,27 +139,28 @@ void solarBlock(JsonObject o) {
   o["voltage"] = r.voltage; o["current"] = r.current; o["power"] = r.power;
 }
 
-void solarEnergyKeys(JsonObject o) {  // 2.5.8
+void solarEnergyKeys(JsonObject o) {  // 2.5.8 PV only. DSP AC energy is not written here.
   double et = 0, eT = 0;
-  const bool pv = solar::energy(et, eT);
-#if POWERCELL_DSP011
-  // The only energy_today_kwh in the app/telemetry contract lives on this
-  // solar object (and solar_energy_today_kwh in the live block). On v0.1.1
-  // it was null, so the app showed "--". The value here is PZEM AC output
-  // energy since the local-day baseline, in kWh, not PV generation.
-  // energy_total_kwh stays the PV lifetime figure.
-  (void)et;
-  double ac = 0;
-  if (hwAcEnergyTodayKwh(&ac)) o["energy_today_kwh"] = ac;
-  else o["energy_today_kwh"] = nullptr;
-#else
-  if (pv) o["energy_today_kwh"] = et;
-  else o["energy_today_kwh"] = nullptr;
-#endif
-  if (pv) o["energy_total_kwh"] = eT;
-  else o["energy_total_kwh"] = nullptr;
+  if (solar::energy(et, eT)) { o["energy_today_kwh"] = et; o["energy_total_kwh"] = eT; }
+  else { o["energy_today_kwh"] = nullptr; o["energy_total_kwh"] = nullptr; }
 }
 }  // namespace
+
+void acEnergyTodayToJson(JsonObject o, const char *kwhKey) {
+#if POWERCELL_DSP011
+  double ac = 0;
+  if (kwhKey && hwAcEnergyTodayKwh(&ac)) {
+    o[kwhKey] = ac;
+    o["energy_today_source"] = "pzem004t_v3_active";
+  } else {
+    if (kwhKey) o[kwhKey] = nullptr;
+    o["energy_today_source"] = nullptr;
+  }
+#else
+  (void)o;
+  (void)kwhKey;
+#endif
+}
 
 // 2.5.8: GET /data + SSE root "solar", the block the installed app's solar tile reads
 // (FirmwareSnapshot._solar: solar.online / voltage / current / power).
@@ -230,16 +232,12 @@ void liveToJson(JsonObject o) {
     num("solar_voltage", pv.valid, pv.voltage);
     num("solar_current", pv.valid, pv.current);
     num("solar_power_w", pv.valid, pv.powerW);
-    double et = 0, eT = 0; bool he = solar::energy(et, eT);  // 2.5.8
-#if POWERCELL_DSP011
-    (void)et;
-    double ac_today = 0;
-    const bool ac_known = hwAcEnergyTodayKwh(&ac_today);
-    num("solar_energy_today_kwh", ac_known, (float)ac_today);
-#else
+    double et = 0, eT = 0; bool he = solar::energy(et, eT);  // 2.5.8 PV only
     num("solar_energy_today_kwh", he, (float)et);
-#endif
     num("solar_energy_total_kwh", he, (float)eT);
+#if POWERCELL_DSP011
+    acEnergyTodayToJson(o, "load_energy_today_kwh");
+#endif
   }
   modelToJson(o);
   num("battery_current_a", in.bmsOn, in.bmsCurrentA);
@@ -269,6 +267,9 @@ void buildTelemetry(JsonDocument &doc) {
   }
   batteryBlock(doc["battery"].to<JsonObject>());
   inverterBlock(doc["inverter"].to<JsonObject>());
+#if POWERCELL_DSP011
+  acEnergyTodayToJson(doc.as<JsonObject>(), "energy_today_kwh");
+#endif
   { JsonObject so = doc["solar"].to<JsonObject>(); solarBlock(so); solarEnergyKeys(so); }
   liveToJson(doc["live"].to<JsonObject>());  // 2.5.4
   JsonArray sockets = doc["sockets"].to<JsonArray>();

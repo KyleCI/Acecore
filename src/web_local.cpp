@@ -22,6 +22,7 @@
 #include "stm32_link.h"
 #include "telemetry.h"
 #include "events.h"
+#include "payment_lock.h"
 
 namespace web {
 namespace {
@@ -285,7 +286,12 @@ void sample(bool force) {
   bs["source"] = b.source;
   if (b.valid) { bs["percentage"] = b.soc; bs["voltage"] = b.voltage; bs["age_ms"] = b.ageMs; }
   else { bs["percentage"] = nullptr; bs["voltage"] = nullptr; bs["age_ms"] = nullptr; }
-  telemetry::appSolarToJson(d["solar"].to<JsonObject>());  // 2.5.8 app solar tile
+  telemetry::appSolarToJson(d["solar"].to<JsonObject>());  // 2.5.8 app solar tile (PV energy only)
+#if POWERCELL_DSP011
+  telemetry::acEnergyTodayToJson(d.as<JsonObject>(), "energy_today_kwh");
+  telemetry::acEnergyTodayToJson(d["inverter"].to<JsonObject>(), "energy_today_kwh");
+  telemetry::acEnergyTodayToJson(d["live"].to<JsonObject>(), "load_energy_today_kwh");
+#endif
   JsonDocument m; telemetry::buildMetrics(m);
   d["metrics"] = m;
   JsonArray n = d["notifications"].to<JsonArray>();
@@ -411,7 +417,8 @@ void begin() {
     if (s != "on" && s != "off") return fail(r, 400, "state must be on|off");
     if (fid::paymentLocked()) return fail(r, 403, "payment_locked");
     if (s == "on" && ota::busy()) return fail(r, 409, "refused");
-    if (s == "on" && powerguard::latched()) return fail(r, 409, "battery_critical_latched");
+    if (const char *why = pc::paylock::setStateBlock(false, s == "on", powerguard::latched(), powerguard::overloadLatched()))
+      return fail(r, 409, why);
 #if !POWERCELL_DSP011
     if (s == "on" && !stm32link::online()) return fail(r, 503, "stm32_timeout");  // IO15 stays LOW
 #endif
@@ -437,7 +444,8 @@ void begin() {
     if (!id.length() || id.length() > 32 || (s != "on" && s != "off")) return rfail(400, "socket_id and state=on|off required");
     if (!checkRegistered(id)) return rfail(404, "unknown socket");
     if (fid::paymentLocked()) return rfail(403, "payment_locked");
-    if (s == "on" && powerguard::latched()) return rfail(409, "battery_critical_latched");
+    if (const char *why = pc::paylock::setStateBlock(false, s == "on", powerguard::latched(), powerguard::overloadLatched()))
+      return rfail(409, why);
     if (!sendRelayCommand(id, s == "on")) return rfail(409, "socket offline or busy");
     if (!backend::connected()) offlineq::queue("socket_state", id.c_str(), s.c_str());
     g_stateChanged = true;

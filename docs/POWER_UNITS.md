@@ -30,4 +30,20 @@ Stock `esp32dev` has no watt register on the STM32. `output_power` and `inverter
 
 The hardware v0.1.1 images fill `output_power_w` with PZEM-004T active watts and `lifetime_wh` with PZEM lifetime watt-hours. `output_power` remains volts times amps with `output_power_quantity` set to `apparent_va`. A missing, stale, or sentinel reading is null, not zero.
 
+`live.lifetime_wh` is that raw PZEM counter. Cloud telemetry includes it on every frame. It is JSON null only when the meter read is missing, stale, or a sentinel. It is never replaced with zero.
+
+## Today's AC output energy (hardware v0.1.1)
+
+DSP images publish consumed AC output energy since the local-day PZEM baseline, in kWh. The same number is written in cloud telemetry and in local `/data`:
+
+- top-level `energy_today_kwh`
+- `inverter.energy_today_kwh`
+- `live.load_energy_today_kwh` (also flat in `/data` `metrics`, and on `/data` `live`)
+
+Each of those objects also has `energy_today_source`. When the value is known the source is `pzem004t_v3_active`. When the day total is unknown both the kWh key and `energy_today_source` are JSON null.
+
+`solar.energy_today_kwh` and `live.solar_energy_today_kwh` stay solar-panel energy. On v0.1.1 they are null when the ADS1115 has no measurement. STM32 images do not publish the AC keys. Their `energy_today_kwh` remains PV energy.
+
+The baseline is the PZEM lifetime counter at the first trusted sample of the local day, or the baseline saved earlier that same day. A reboot keeps energy the meter counted while the ESP was off. Local midnight uses the configured timezone. The day rolls only when the clock is synced (NTP, phone time, or a coherent DS3231). An unsynced clock does not invent a midnight and does not publish a value. A missing or invalid meter sample does not publish zero. A counter reset or an implausible jump leaves the rest of that local day unknown. Energy used after a midnight power-off and before the first trusted sample is not included.
+
 Fifteen watts stays 15. If a source reports kilowatts, the collector multiplies by 1000 before writing the key. Placeholder sentinels `-1` and `99999` are not published on power keys; those keys are null. A real measurement is left as measured. The app treats a negative power reading, or one above 1.5 times usable power, as unavailable.

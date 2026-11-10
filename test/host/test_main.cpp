@@ -1360,11 +1360,13 @@ static void test_payment_lock() {
   CHECK(judge(100, 50, true) == Verdict::Duplicate);
   CHECK(judge(0, 0, false) == Verdict::Invalid);
   CHECK(controlBlocked(true) && !controlBlocked(false));
-  CHECK(!strcmp(setStateBlock(true, true, true), "payment_locked"));
-  CHECK(!strcmp(setStateBlock(true, false, false), "payment_locked"));
-  CHECK(!strcmp(setStateBlock(false, true, true), "battery_critical_latched"));
-  CHECK(setStateBlock(false, false, true) == nullptr);
-  CHECK(setStateBlock(false, true, false) == nullptr);
+  CHECK(!strcmp(setStateBlock(true, true, true, true), "payment_locked"));
+  CHECK(!strcmp(setStateBlock(true, false, false, true), "payment_locked"));
+  CHECK(!strcmp(setStateBlock(false, true, true, true), "battery_critical_latched"));
+  CHECK(!strcmp(setStateBlock(false, true, true, false), "battery_critical_latched"));
+  CHECK(!strcmp(setStateBlock(false, true, false, true), "output_overload_latched"));
+  CHECK(setStateBlock(false, false, true, true) == nullptr);
+  CHECK(setStateBlock(false, true, false, false) == nullptr);
 }
 
 
