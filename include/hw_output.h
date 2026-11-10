@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace powercell {
@@ -32,6 +33,33 @@ struct BootStep {
 inline void v011_dsp_boot(BootStep out[2]) {
   out[0] = {BootAction::SetOutputLatch, v011_dsp_level(false)};
   out[1] = {BootAction::EnableOutput, v011_dsp_level(false)};
+}
+
+// Pad operations for one GPIO15 write on the DSP board, in order.
+// GPIO15 resets into its IO_MUX JTAG function (MTDO, FUNC 0). gpio_set_level
+// and gpio_set_direction only touch the GPIO matrix, so without SelectGpio the
+// pad never follows the written level and the inverter enable cannot switch.
+// Arduino pinMode() (gpio_config) does this select; Dubem's firmware uses
+// pinMode(PWR_PIN, OUTPUT) + digitalWrite and works on the same board.
+enum class PadOp : uint8_t { HoldRelease = 0, SelectGpio, PullsOff, SetLevel, OutputEnable, HoldEnable };
+struct PadStep {
+  PadOp op;
+  int level;  // SetLevel only, else -1
+};
+constexpr size_t kDspPadSteps = 7;
+// Release any hold, select the GPIO function, set the level before and after
+// enabling the driver (no glitch), and hold the pad only at the off level.
+inline size_t v011_dsp_pad_steps(bool logical_on, PadStep out[kDspPadSteps]) {
+  const int level = v011_dsp_level(logical_on);
+  size_t n = 0;
+  out[n++] = {PadOp::HoldRelease, -1};
+  out[n++] = {PadOp::SetLevel, level};
+  out[n++] = {PadOp::SelectGpio, -1};
+  out[n++] = {PadOp::PullsOff, -1};
+  out[n++] = {PadOp::OutputEnable, -1};
+  out[n++] = {PadOp::SetLevel, level};
+  if (!logical_on) out[n++] = {PadOp::HoldEnable, -1};
+  return n;
 }
 
 inline bool battery_recovery_drives_on() { return false; }

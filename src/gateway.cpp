@@ -9,6 +9,7 @@
 #include "stm32_link.h"
 #if POWERCELL_DSP011
 #include "driver/gpio.h"
+#include "esp_rom_gpio.h"
 #endif
 
 static_assert(PIN_PWR_KEY == powercell::kDspEnableV011, "GPIO15 is the shared AC-enable pin");
@@ -23,27 +24,34 @@ const char *g_reqOrigin = "local";
 // Drive the off level, then hold the pad. Hold survives a software reset, so
 // the ROM and bootloader keep GPIO15 low after this process has run once.
 // A cold power-on clears the hold; the constructor below is the first app code.
-void latchDspEnableOff() {
+// GPIO15 resets into the MTDO (JTAG) IO_MUX function. Through cbf48bd/a1e3bad
+// the DSP path only called gpio_set_level/gpio_set_direction, which never
+// selected the GPIO function, so the pad ignored every write: ON did nothing.
+void padWrite(bool on) {
   const gpio_num_t pin = static_cast<gpio_num_t>(PIN_PWR_KEY);
-  const int level = powercell::v011_dsp_level(false);
-  gpio_set_level(pin, level);
-  gpio_set_direction(pin, GPIO_MODE_OUTPUT);
-  gpio_set_pull_mode(pin, GPIO_FLOATING);
-  gpio_set_level(pin, level);
-  gpio_hold_dis(pin);
-  gpio_set_level(pin, level);
-  gpio_hold_en(pin);
+  powercell::PadStep steps[powercell::kDspPadSteps];
+  const size_t n = powercell::v011_dsp_pad_steps(on, steps);
+  for (size_t i = 0; i < n; ++i) {
+    switch (steps[i].op) {
+      case powercell::PadOp::HoldRelease: gpio_hold_dis(pin); break;
+      case powercell::PadOp::SelectGpio: esp_rom_gpio_pad_select_gpio(PIN_PWR_KEY); break;
+      case powercell::PadOp::PullsOff: gpio_set_pull_mode(pin, GPIO_FLOATING); break;
+      case powercell::PadOp::SetLevel: gpio_set_level(pin, steps[i].level); break;
+      case powercell::PadOp::OutputEnable: gpio_set_direction(pin, GPIO_MODE_OUTPUT); break;
+      case powercell::PadOp::HoldEnable: gpio_hold_en(pin); break;
+    }
+  }
+}
+
+void latchDspEnableOff() {
+  padWrite(false);
   g_on = false;
 }
 #endif
 
 void drive(bool on) {
 #if POWERCELL_DSP011
-  const gpio_num_t pin = static_cast<gpio_num_t>(PIN_PWR_KEY);
-  gpio_hold_dis(pin);
-  gpio_set_level(pin, powercell::v011_dsp_level(on));
-  gpio_set_direction(pin, GPIO_MODE_OUTPUT);
-  if (!on) gpio_hold_en(pin);
+  padWrite(on);
 #else
   digitalWrite(PIN_PWR_KEY, on ? HIGH : LOW);
   digitalWrite(PIN_PWR_LIGHT, on ? HIGH : LOW);

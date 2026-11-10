@@ -4,6 +4,8 @@
 #include "clock.h"
 #include "prefs_safe.h"
 #include "pzem_v3.h"
+#include "pzem_stats.h"
+#include "log.h"
 #include "solar_energy.h"
 #include "time_policy.h"
 #include "pins.h"
@@ -26,6 +28,7 @@ uint32_t wh = 0, at_ms = 0;
 powercell::AcEnergyToday today;
 bool today_known = false;
 double today_kwh = 0;
+powercell::PzemStats stats;
 
 void loadToday() {
   Preferences p;
@@ -77,7 +80,10 @@ void poll() {
   uint8_t request[8];
   const size_t n = powercell::pzem_build_read(cfg, request, sizeof request);
   while (port.available()) port.read();
-  if (n) port.write(request, n);
+  if (n) {
+    port.write(request, n);
+    port.flush();  // as Dubem pzem.cpp: start the reply timeout after the request is on the wire
+  }
   uint8_t response[32];
   size_t got = 0;
   const uint32_t start = millis();
@@ -92,6 +98,9 @@ void poll() {
   const bool sample_ok = ok && publishable(w);
   const powercell::TodayInput day = todayInput(sample_ok, energy);
   bool write_baseline = false;
+  powercell::PzemStats::Log log_kind = powercell::PzemStats::Log::None;
+  powercell::PzemPollOutcome log_outcome = powercell::PzemPollOutcome::Ok;
+  powercell::PzemStats log_stats;
   if (mu && xSemaphoreTake(mu, pdMS_TO_TICKS(10)) == pdTRUE) {
     if (!sample_ok) {
       valid = false;
@@ -103,6 +112,10 @@ void poll() {
       wh = energy;
       at_ms = millis();
     }
+    const powercell::PzemPollOutcome outcome = powercell::pzem_classify(got, reading.status, sample_ok);
+    log_kind = stats.record(outcome, millis());
+    log_outcome = outcome;
+    log_stats = stats;
     const powercell::TodayOutput out = today.observe(day);
     today_known = today.known();
     today_kwh = today.kwh();
@@ -110,6 +123,14 @@ void poll() {
     xSemaphoreGive(mu);
   }
   if (write_baseline) saveToday();
+  if (log_kind == powercell::PzemStats::Log::Warn)
+    LOGW("PZEM", "NO_DATA", "%s rx=%d tx=%d baud=9600 polls=%lu ok=%lu no_reply=%lu short=%lu bad=%lu fail_run=%lu%s",
+         powercell::pzem_outcome_name(log_outcome), kRx, kTx, (unsigned long)log_stats.polls, (unsigned long)log_stats.ok,
+         (unsigned long)log_stats.no_reply, (unsigned long)log_stats.short_frames, (unsigned long)log_stats.bad_frames,
+         (unsigned long)log_stats.consecutive_fail,
+         log_outcome == powercell::PzemPollOutcome::NoReply ? " (check PZEM 5V, TX->GPIO35 pull-up to 3.3V, RX<-GPIO32)" : "");
+  else if (log_kind == powercell::PzemStats::Log::Recovered)
+    LOGI("PZEM", "RECOVERED", "polls=%lu ok=%lu", (unsigned long)log_stats.polls, (unsigned long)log_stats.ok);
 }
 
 void task(void*) {
@@ -124,7 +145,22 @@ void hwPzemBegin() {
   mu = xSemaphoreCreateMutex();
   loadToday();
   port.begin(9600, SERIAL_8N1, kRx, kTx);
+  LOGI("PZEM", "INIT", "UART1 9600 8N1 rx=%d tx=%d addr=0xF8", kRx, kTx);
   xTaskCreatePinnedToCore(task, "pzem", 6144, nullptr, 1, nullptr, 1);
+}
+
+bool hwPzemStats(HwPzemStats* out) {
+  if (!out || !mu || xSemaphoreTake(mu, pdMS_TO_TICKS(10)) != pdTRUE) return false;
+  out->polls = stats.polls;
+  out->ok = stats.ok;
+  out->no_reply = stats.no_reply;
+  out->short_frames = stats.short_frames;
+  out->bad_frames = stats.bad_frames;
+  out->consecutive_fail = stats.consecutive_fail;
+  out->ever_ok = stats.ever_ok;
+  out->last_ok_age_ms = stats.ever_ok ? millis() - stats.last_ok_ms : UINT32_MAX;
+  xSemaphoreGive(mu);
+  return true;
 }
 
 bool hwAcEnergyTodayKwh(double* kwh) {

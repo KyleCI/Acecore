@@ -11,4 +11,7 @@ bool hwPzemSample(float* volts, float* amps, float* active_w, uint32_t* lifetime
 // Today's AC output energy in kWh from the PZEM lifetime counter.
 // False means the value is unknown: omit it, do not send 0.
 bool hwAcEnergyTodayKwh(double* kwh);
+// Poll counters for SELFTEST. False before hwPzemBegin().
+struct HwPzemStats { uint32_t polls, ok, no_reply, short_frames, bad_frames, consecutive_fail; bool ever_ok; uint32_t last_ok_age_ms; };
+bool hwPzemStats(HwPzemStats* out);
 #endif

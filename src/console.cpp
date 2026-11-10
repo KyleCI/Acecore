@@ -24,6 +24,7 @@
 #include "dsp011_log.h"
 #include "payment_lock.h"
 #include "grid_sense.h"
+#include "dsp011_pzem.h"
 #include "telemetry.h"
 
 namespace console {
@@ -211,6 +212,21 @@ void selftest() {
     else { jso["energy_today_kwh"] = nullptr; jso["energy_total_kwh"] = nullptr; }
   }
 #if POWERCELL_DSP011
+  {
+    JsonObject jp = d["pzem"].to<JsonObject>();
+    jp["rx"] = PIN_PZEM_RX; jp["tx"] = PIN_PZEM_TX; jp["baud"] = 9600;
+    HwPzemStats ps;
+    if (hwPzemStats(&ps)) {
+      jp["polls"] = ps.polls; jp["ok"] = ps.ok; jp["timeouts"] = ps.no_reply;
+      jp["short_frames"] = ps.short_frames; jp["bad_frames"] = ps.bad_frames; jp["fail_run"] = ps.consecutive_fail;
+      if (ps.ever_ok) jp["last_ok_age_ms"] = ps.last_ok_age_ms; else jp["last_ok_age_ms"] = nullptr;
+    }
+    float v = 0, a = 0, w = 0; uint32_t wh = 0, age = 0;
+    const bool pv = hwPzemSample(&v, &a, &w, &wh, &age);
+    jp["valid"] = pv;
+    if (pv) { jp["voltage"] = v; jp["current"] = a; jp["power_w"] = w; jp["energy_wh"] = wh; jp["age_ms"] = age; }
+    else { jp["voltage"] = nullptr; jp["current"] = nullptr; jp["power_w"] = nullptr; }
+  }
   {
     DspGridReading grid;
     JsonObject gv = d["grid"].to<JsonObject>();

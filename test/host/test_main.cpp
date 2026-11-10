@@ -870,6 +870,8 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
 #include "stm_energy.h"
 #include "jbd_bms.h"
 #include "grid_sense.h"
+#include "pzem_stats.h"
+#include "hw_output.h"
 #include "config.h"
 #include "pins.h"
 static powercell::BatteryReading soc_at(float percent, uint32_t at, bool bms_own = true) {
@@ -1177,6 +1179,85 @@ static void test_v011_gpio() {
     CHECK(off_origin_level(HardwareProfile::V011, origin) == 0);
     CHECK(off_origin_level(HardwareProfile::Original, origin) == 0);
   }
+}
+
+// Model of one ESP32 pad: IO_MUX function, hold latch, GPIO-matrix level and enable.
+struct PadSim {
+  bool gpio_func = false;  // GPIO15 resets into MTDO (JTAG)
+  bool held = false;
+  bool out_en = false;
+  int reg = 0;
+  int pad = -1;  // -1 = not driven by the GPIO matrix (floating / JTAG)
+  void settle() {
+    if (held) return;  // frozen
+    pad = (gpio_func && out_en) ? reg : -1;
+  }
+  void apply(const powercell::PadStep& st) {
+    using powercell::PadOp;
+    switch (st.op) {
+      case PadOp::HoldRelease: held = false; break;
+      case PadOp::SelectGpio: gpio_func = true; break;
+      case PadOp::PullsOff: break;
+      case PadOp::SetLevel: reg = st.level; break;
+      case PadOp::OutputEnable: out_en = true; break;
+      case PadOp::HoldEnable: settle(); held = true; return;
+    }
+    settle();
+  }
+  void run(bool on) {
+    powercell::PadStep steps[powercell::kDspPadSteps];
+    const size_t n = powercell::v011_dsp_pad_steps(on, steps);
+    for (size_t i = 0; i < n; ++i) apply(steps[i]);
+  }
+};
+
+static void test_dsp_pad_steps() {
+  using namespace powercell;
+  // The cbf48bd sequence: level + direction + hold, no IO_MUX select. The pad never follows.
+  PadSim old;
+  old.apply({PadOp::SetLevel, 1});
+  old.apply({PadOp::OutputEnable, -1});
+  CHECK(old.pad == -1);
+  // Fixed sequence: boot latch OFF, then ON, then OFF, then ON again.
+  PadSim p;
+  p.run(false);
+  CHECK(p.gpio_func && p.pad == 0 && p.held);
+  p.run(true);
+  CHECK(p.pad == 1 && !p.held);  // the hold is released, so ON reaches the pad
+  p.run(false);
+  CHECK(p.pad == 0 && p.held);
+  p.run(true);
+  CHECK(p.pad == 1);
+  // SelectGpio comes before the driver is enabled, and the level is set first (no high glitch on off).
+  PadStep st[kDspPadSteps];
+  size_t n = v011_dsp_pad_steps(false, st);
+  CHECK(n == 7 && st[0].op == PadOp::HoldRelease && st[1].op == PadOp::SetLevel && st[1].level == 0);
+  size_t sel = 99, en = 99;
+  for (size_t i = 0; i < n; ++i) { if (st[i].op == PadOp::SelectGpio) sel = i; if (st[i].op == PadOp::OutputEnable) en = i; }
+  CHECK(sel < en && st[n - 1].op == PadOp::HoldEnable);
+  n = v011_dsp_pad_steps(true, st);
+  CHECK(n == 6 && st[n - 1].op == PadOp::SetLevel && st[n - 1].level == 1);
+  for (size_t i = 0; i < n; ++i) CHECK(st[i].op != PadOp::HoldEnable);
+}
+
+static void test_pzem_stats() {
+  using namespace powercell;
+  CHECK(pzem_classify(25, PzemStatus::Ok, true) == PzemPollOutcome::Ok);
+  CHECK(pzem_classify(0, PzemStatus::Timeout, false) == PzemPollOutcome::NoReply);
+  CHECK(pzem_classify(7, PzemStatus::Short, false) == PzemPollOutcome::Short);
+  CHECK(pzem_classify(25, PzemStatus::BadCrc, false) == PzemPollOutcome::Bad);
+  CHECK(pzem_classify(25, PzemStatus::Ok, false) == PzemPollOutcome::Bad);  // sentinel power
+  PzemStats s;
+  CHECK(s.record(PzemPollOutcome::NoReply, 1000) == PzemStats::Log::Warn);  // first failure logs at once
+  for (uint32_t t = 2000; t < 31000; t += 1000) CHECK(s.record(PzemPollOutcome::NoReply, t) == PzemStats::Log::None);
+  CHECK(s.record(PzemPollOutcome::Short, 31000) == PzemStats::Log::Warn);  // 30 s later
+  CHECK(s.no_reply == 30 && s.short_frames == 1 && s.ok == 0 && s.consecutive_fail == 31 && !s.ever_ok);
+  CHECK(s.record(PzemPollOutcome::Ok, 32000) == PzemStats::Log::Recovered);
+  CHECK(s.record(PzemPollOutcome::Ok, 33000) == PzemStats::Log::None);
+  CHECK(s.ok == 2 && s.consecutive_fail == 0 && s.ever_ok && s.last_ok_ms == 33000 && s.polls == 33);
+  CHECK(s.record(PzemPollOutcome::Bad, 34000) == PzemStats::Log::Warn);  // new episode logs at once
+  CHECK(s.bad_frames == 1);
+  CHECK(!strcmp(pzem_outcome_name(PzemPollOutcome::NoReply), "no_reply"));
 }
 
 static void test_ds3231() {
@@ -1779,7 +1860,7 @@ static void test_dsp_bms_select() {
   CHECK(got);
   if (!got) return;
   CHECK(flag_in_env(buf, "esp32dev_dsp011_5kw", "DSP_BMS_JKPB=1"));
-  CHECK(!flag_in_env(buf, "esp32dev_dsp011_35kw", "DSP_BMS_JKPB=1"));
+  CHECK(flag_in_env(buf, "esp32dev_dsp011_35kw", "DSP_BMS_JKPB=1"));  // Dubem working firmware: JK-PB on both
   CHECK(!flag_in_env(buf, "esp32dev_stm01_5kw", "DSP_BMS_JKPB"));
   CHECK(!flag_in_env(buf, "esp32dev_stm01_35kw", "DSP_BMS_JKPB"));
 }
@@ -1799,7 +1880,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
+  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();

@@ -12,16 +12,18 @@ CFGFLAGS := -std=c++17 -Wall -Wextra -Werror -I../../include
 all: run
 host_tests: test_main.cpp $(wildcard $(SRC)/*.cpp) $(wildcard $(SRC)/*.h) $(CODEC)
 	$(CXX) $(CXXFLAGS) $(INC) test_main.cpp $(wildcard $(SRC)/*.cpp) $(CODEC) -o $@
-# Compile-only: 5 kW DSP must select JK-PB 115200 on RX16/TX17; 3.5 kW stays JBD 9600; STM stays JK-PB.
+# Compile-only: both DSP ratings select JK-PB 115200 on RX17/TX16; JBD 9600 RX16/TX17 stays buildable; STM stays JK-PB.
 check_dsp_bms:
 	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DDSP_BMS_JKPB=1 -DPOWERCELL_FACTORY_RATED_ACTIVE_W=5000 -DEXPECT_DSP_JKPB test_dsp_bms_config.cpp -o check_dsp_bms_5kw
-	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DPOWERCELL_FACTORY_RATED_ACTIVE_W=3500 -DEXPECT_DSP_JBD test_dsp_bms_config.cpp -o check_dsp_bms_35kw
+	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DDSP_BMS_JKPB=1 -DPOWERCELL_FACTORY_RATED_ACTIVE_W=3500 -DEXPECT_DSP_JKPB test_dsp_bms_config.cpp -o check_dsp_bms_35kw
+	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DEXPECT_DSP_JBD test_dsp_bms_config.cpp -o check_dsp_bms_jbd
 	$(CXX) $(CFGFLAGS) -DEXPECT_STM_JKPB test_dsp_bms_config.cpp -o check_dsp_bms_stm
 	./check_dsp_bms_5kw
 	./check_dsp_bms_35kw
+	./check_dsp_bms_jbd
 	./check_dsp_bms_stm
 run: host_tests check_dsp_bms
 	./host_tests
 clean:
-	rm -f host_tests check_dsp_bms_5kw check_dsp_bms_35kw check_dsp_bms_stm
+	rm -f host_tests check_dsp_bms_5kw check_dsp_bms_35kw check_dsp_bms_jbd check_dsp_bms_stm
 .PHONY: all run clean check_dsp_bms

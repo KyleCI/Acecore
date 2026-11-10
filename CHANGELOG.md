@@ -1,5 +1,10 @@
 # Collector firmware changelog
 
+## Unreleased (DSP fixes from Dubem's working firmware)
+- DSP GPIO15 now actually switches. The pad resets into its MTDO (JTAG) IO_MUX function and the DSP path never selected the GPIO function, so ON and OFF writes did not reach the pin. Each write now selects the GPIO function first (`esp_rom_gpio_pad_select_gpio`), releases the hold, sets the level, and holds only at the off level. HIGH = ON unchanged.
+- DSP BMS: both ratings listen for JK-PB at 115200 on RX GPIO17 / TX GPIO16, matching Dubem's working firmware (`JK_RX 17`, `JK_TX 16`, `JK_BAUD 115200`). The 3.5 kW image no longer polls JBD at 9600 on RX16/TX17, which returned no data.
+- PZEM: SELFTEST `pzem` block (rx, tx, baud, polls, ok, timeouts, short_frames, bad_frames, fail_run, last_ok_age_ms, live values). `PZEM NO_DATA` warning on the first failed poll and at most every 30 s while it keeps failing, `PZEM RECOVERED` once, `PZEM INIT` at boot. The request is flushed before the reply timeout starts, as Dubem's driver does.
+
 ## Unreleased (DSP 5 kW JK-PB BMS)
 - DSP 5 kW images (`esp32dev_dsp011_5kw`) listen for JK-PB 300-byte frames at 115200 on the existing DSP BMS pins (RX GPIO16 / TX GPIO17, `DSP_BMS_UART_SWAP` 0). Caleb confirmed 2026-11-10 17:47 WAT that the unit uses the same JK-PB model as the STM images, over TTL UART. Build flag `DSP_BMS_JKPB=1`. Stale aging, no-zero publish, BMS-own SOC latch policy and the BMS RAW pause/idle hook are the same as the STM JK path. INFO prints `bms=JK-PB baud=115200 rx=16 tx=17`.
 - DSP 3.5 kW images stay on the JBD 9600 polled driver (`DSP_BMS_JKPB` defaults to 0). STM images unchanged.

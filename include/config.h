@@ -71,8 +71,8 @@
 #error "hardware v0.1.1 is not fitted with LoRa"
 #endif
 // DSP BMS driver. STM images always use JK-PB and ignore this flag.
-// 0 = JBD polled at 9600 (esp32dev_dsp011_35kw).
-// 1 = JK-PB stream at 115200 on the same DSP pins (esp32dev_dsp011_5kw).
+// 1 = JK-PB stream at 115200, RX17/TX16 (both DSP images, as Dubem's working firmware).
+// 0 = optional JBD poller at 9600, RX16/TX17. No product image uses it.
 #ifndef DSP_BMS_JKPB
 #define DSP_BMS_JKPB 0
 #endif
