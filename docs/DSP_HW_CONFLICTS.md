@@ -8,9 +8,11 @@ These apply to `esp32dev_dsp011_5kw` and `esp32dev_dsp011_35kw` only. STM images
 
 3. SD chip select GPIO5 is the same pin as `PIN_SPI_CS_MPPT`. That macro was an unused MPPT chip select held high. The DSP SD card now owns GPIO5. It is driven high (idle, card deselected) before the SPI bus starts. GPIO5 is a strapping pin and must not be low at reset. STM images still use SD CS GPIO14 and still hold GPIO5 high as the unused MPPT select.
 
-4. GPIO33 was the DSP SD chip select and is also `PIN_STM32_RX` on the original map. DSP images do not start the STM32 UART. GPIO33 is now PZEM TX. SD moved to GPIO5.
+4. GPIO33 was the DSP SD chip select and is also `PIN_STM32_RX` on the original map. DSP images do not start the STM32 UART. GPIO33 was briefly PZEM TX; since 13:16 WAT it is not a PZEM pin and the DSP image leaves it unused. SD moved to GPIO5.
 
-5. GPIO32 was `PIN_LED_AMBER`. It is now PZEM RX. The DSP image has no amber LED. The warning indication uses the blue LED on GPIO13.
+5. GPIO32 was `PIN_LED_AMBER`, then PZEM RX. Caleb set the PZEM pins on 2026-11-10 at 13:16 WAT: RX GPIO35 (ESP RX from PZEM TX) and TX GPIO32 (ESP TX to PZEM RX), 9600 8N1. The DSP image has no amber LED. The warning indication uses the blue LED on GPIO13.
+
+   GPIO35 is input only and has no internal pull-up or pull-down, so the firmware cannot bias it. The PZEM-004T TX is an open-collector optocoupler output, so the board needs a pull-up to 3.3 V on GPIO35 (a few kohm, for example 4.7k to 10k). Without it the RX line floats and no frames arrive. The PZEM TTL side must also be 3.3 V safe: do not pull it up to 5 V, because the ESP32 pins are not 5 V tolerant.
 
 6. GPIO14 was the original SD chip select. On the DSP board it is the green LED. Dubem notes that GPIO14 emits a PWM burst during ROM boot, so the green LED can flicker before `setup()`. The DSP image does not use GPIO14 as a chip select.
 
@@ -20,7 +22,7 @@ These apply to `esp32dev_dsp011_5kw` and `esp32dev_dsp011_35kw` only. STM images
 
 9. DS3231 is not in Dubem's pin file. I2C stays SDA GPIO21 / SCL GPIO22. None of the new DSP pins use 21 or 22.
 
-10. Only grid voltage is read from the ADC, on GPIO39 (ADC1, 11 dB, `analogReadMilliVolts`). Output volts and current come from the PZEM. GPIO34 (Dubem's inverter VOUT) and GPIO35 (Dubem's grid pin) are not read. GPIO39 is the same input circuit as hardware v0.2. The scale is the named constant `kScale` 357.54 (`-D DSP_GRID_K=` overrides it; an existing `pc_cfg/grid_k` float is used when present). There is no remote write for that key. `grid_v_calibrated` is false. A sample above about 2450 mV or below about 150 mV sets `grid_v_clipped`.
+10. Only grid voltage is read from the ADC, on GPIO39 (ADC1, 11 dB, `analogReadMilliVolts`). Output volts and current come from the PZEM. GPIO34 (Dubem's inverter VOUT) is not read. GPIO35 (Dubem's grid pin) is not an ADC input any more; it is PZEM RX (item 5). GPIO39 is the same input circuit as hardware v0.2. The scale is the named constant `kScale` 357.54 (`-D DSP_GRID_K=` overrides it; an existing `pc_cfg/grid_k` float is used when present). There is no remote write for that key. `grid_v_calibrated` is false. A sample above about 2450 mV or below about 150 mV sets `grid_v_clipped`.
 
     Hardware caveat, no firmware fix: at 230 V the pin peaks near 2.56 V, above the ESP32 ADC's accurate range, so the reported grid voltage caps around 200 V. The LM324 output can reach about 3.5 V against a 3.6 V absolute maximum. The board change is about 2.4 Mohm per upper leg plus a clamp. Dubem still has to confirm that change.
 
