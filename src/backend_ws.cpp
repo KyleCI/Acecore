@@ -425,6 +425,7 @@ void sendResetEvent() {
   if (ri.cmdId.length()) ev["cmd_id"] = ri.cmdId; else ev["cmd_id"] = nullptr;
   ev["fw_version"] = ota::version();
   ev["reset_at"] = ri.at;
+  ev["reset_seq"] = ri.seq;
   send(ev);
 }
 
