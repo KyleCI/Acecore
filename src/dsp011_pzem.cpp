@@ -6,6 +6,7 @@
 #include "pzem_v3.h"
 #include "solar_energy.h"
 #include "time_policy.h"
+#include "pins.h"
 #include <Arduino.h>
 #include <Preferences.h>
 #include <freertos/FreeRTOS.h>
@@ -13,8 +14,8 @@
 #include <time.h>
 
 namespace {
-constexpr int kRx = 25;
-constexpr int kTx = 26;
+constexpr int kRx = PIN_PZEM_RX;
+constexpr int kTx = PIN_PZEM_TX;
 constexpr uint32_t kFreshMs = 2000;
 constexpr const char* kTodayNs = "ac_today";
 HardwareSerial& port = Serial1;

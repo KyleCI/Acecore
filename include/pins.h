@@ -12,12 +12,37 @@
 #define PIN_STM32_TX 2    // ESP TX  -> STM32 PB7 (RX). Strapping pin: only becomes TX after boot.
 #define PIN_STM32_NRST 26 // optional bodge (FEATURE_STM32_NRST): C:J16 pin 3 -> 1k -> NRST, open drain. Same net as LoRa RESET.
 
-// UART2 <-> header labelled "PZEM-004T" on the schematic. Carries the
-// auto-direction TTL-RS485 module to the JK-PB BMS (listen only). No DE/RE net.
-// Matches the Dubem firmware proven on this hardware: Serial2.begin(115200, 8N1, 17, 16)
-// (rx=17, tx=16). The old 16/17 map read nothing on ACE-000001.
-#define PIN_BMS_RX 17     // ESP RX  <- RS485 module RXD/RO
-#define PIN_BMS_TX 16     // ESP TX  -> RS485 module TXD/DI
+// UART2 BMS.
+// STM32 images: JK-PB listen-only on the RS485 header. Proven map is
+// Serial2.begin(115200, 8N1, 17, 16) (rx=17, tx=16). The swapped map read
+// nothing on ACE-000001.
+// DSP images: JBD polled at 9600. bms.h wiring is BMS TXD -> ESP RX GPIO16
+// and BMS RXD <- ESP TX GPIO17. pinDefines.h instead lists JK_RX 17 / JK_TX 16
+// at 115200. Default follows bms.h. DSP_BMS_UART_SWAP=1 selects the pinDefines pair.
+#if POWERCELL_DSP011
+#ifndef DSP_BMS_UART_SWAP
+#define DSP_BMS_UART_SWAP 0
+#endif
+#if DSP_BMS_UART_SWAP
+#define PIN_BMS_RX 17
+#define PIN_BMS_TX 16
+#else
+#define PIN_BMS_RX 16
+#define PIN_BMS_TX 17
+#endif
+#define PIN_BMS_BAUD 9600
+#define PIN_PZEM_RX 32   // ESP RX <- PZEM TX
+#define PIN_PZEM_TX 33   // ESP TX -> PZEM RX
+#define PIN_DSP_SD_CS 5  // was GPIO33; GPIO5 was the unused MPPT CS
+#define PIN_FRONT_LIGHT 27
+#define PIN_AC_VOUT 34
+#define PIN_AC_GRID 35
+#define PIN_AC_ISENSE 39
+#else
+#define PIN_BMS_RX 17
+#define PIN_BMS_TX 16
+#define PIN_BMS_BAUD 115200
+#endif
 
 // PWR_KEY: IO15 -> R57 1k -> Q7 base. Q7 is open collector onto STM32 PB4 (CONT, pulled up).
 // IO15 HIGH -> Q7 on -> PB4 LOW -> STM32 runs the inverter. IO15 LOW = inverter not requested.
@@ -35,14 +60,23 @@
 #define PIN_SPI_SCK 18
 #define PIN_SPI_MISO 19
 #define PIN_SPI_MOSI 23
-#define PIN_SPI_CS_MPPT 5 // strapping pin; not used by this firmware
+#define PIN_SPI_CS_MPPT 5 // strapping pin. STM images leave it idle-high. DSP SD CS is this pin.
 #define PIN_SD_CS 14      // CS2
 #define PIN_LORA_CS 4     // CS3, C:J16 pin 7
 #define PIN_LORA_RST 26   // C:J16 pin 3
 #define PIN_LORA_DIO0 -1  // polling mode. Never IO2: that is the STM32 TX (the Dubem map had DIO0=2).
 
-// LEDs, each through a BC337 driver (HIGH = on). IO12 is a strapping pin
-// (MTDI): the BC337 base resistor keeps it low at reset; never pulled high.
+// LEDs, each through an NPN/BC337 driver (HIGH = on). IO12 is a strapping pin
+// (MTDI): keep it low at reset and never enable a pull-up, or the flash
+// runs at 1.8 V and boot fails.
+#if POWERCELL_DSP011
+// Dubem DSP board: red 12, blue 13, green 14. No amber. GPIO32 is PZEM RX.
+// GPIO14 flickers during boot (ROM PWM). GPIO27 is the front light, not green.
+#define PIN_LED_RED 12
+#define PIN_LED_BLUE 13
+#define PIN_LED_GREEN 14
+#define PIN_PWR_LIGHT 25
+#else
 #if LED_MAP_OLD_CODE
 #define PIN_LED_RED 13
 #define PIN_LED_YELLOW 12
@@ -53,9 +87,22 @@
 #define PIN_LED_GREEN 27
 #define PIN_LED_AMBER 32
 #define PIN_PWR_LIGHT 25
+#endif
 
 // ---- Compile-time conflict checks -------------------------------------------
 #if FEATURE_LORA && FEATURE_STM32_NRST
 #error "IO26 is either the LoRa RESET or the STM32 NRST bodge, not both"
 #endif
 static_assert(PIN_STM32_RX != PIN_BMS_RX && PIN_STM32_TX != PIN_BMS_TX, "UART pin overlap");
+#if POWERCELL_DSP011
+static_assert(PIN_PZEM_RX == 32 && PIN_PZEM_TX == 33, "DSP PZEM UART1");
+static_assert(PIN_DSP_SD_CS == 5 && PIN_SPI_CS_MPPT == 5, "DSP SD CS reuses the unused MPPT CS");
+static_assert(PIN_PZEM_RX != PIN_DSP_SD_CS && PIN_PZEM_TX != PIN_DSP_SD_CS, "SD CS is not a PZEM pin");
+static_assert(PIN_BMS_RX != PIN_PZEM_RX && PIN_BMS_TX != PIN_PZEM_TX, "BMS/PZEM UART overlap");
+static_assert(PIN_LED_RED == 12 && PIN_LED_BLUE == 13 && PIN_LED_GREEN == 14, "DSP RGB");
+static_assert(PIN_FRONT_LIGHT == 27 && PIN_LED_GREEN != PIN_FRONT_LIGHT, "front light is not the green LED");
+static_assert(PIN_AC_VOUT >= 32 && PIN_AC_GRID >= 32 && PIN_AC_ISENSE >= 32, "AC sense stays on ADC1");
+static_assert(PIN_AC_VOUT != PIN_AC_GRID && PIN_AC_VOUT != PIN_AC_ISENSE && PIN_AC_GRID != PIN_AC_ISENSE,
+              "AC sense pins distinct");
+static_assert(PIN_I2C_SDA == 21 && PIN_I2C_SCL == 22, "DS3231 stays on I2C 21/22");
+#endif

@@ -868,6 +868,7 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
 #include "battery_alert_policy.h"
 #include "ac_energy_today.h"
 #include "stm_energy.h"
+#include "jbd_bms.h"
 static powercell::BatteryReading soc_at(float percent, uint32_t at, bool bms_own = true) {
   return {true, percent, 51.2f, at, false, bms_own};
 }
@@ -920,7 +921,7 @@ static void test_factory_rating() {
 
 static void test_sd_energy() {
   using namespace powercell;
-  CHECK(profile_sd_cs(HardwareProfile::V011) == 33);
+  CHECK(profile_sd_cs(HardwareProfile::V011) == 5);
   CHECK(profile_sd_cs(HardwareProfile::Original) == 14);
   CHECK(profile_sd_cs(HardwareProfile::V011) != 25 && profile_sd_cs(HardwareProfile::V011) != 26);
   CHECK(!diag_kind_allowed(HardwareProfile::V011, KindDiagStm32));
@@ -1151,6 +1152,7 @@ static void test_ac_energy_today() {
 
 static void test_v011_gpio() {
   using namespace powercell;
+  CHECK(DSP_PWR_ACTIVE_LEVEL == 0);
   CHECK(v011_dsp_level(true) == 0 && v011_dsp_level(false) == 1);
   CHECK(original_relay_level(true) == 1 && original_relay_level(false) == 0);
   CHECK(!kPhysicalShutdownVerified && kDspPolarityUserConfirmed);
@@ -1627,6 +1629,59 @@ static void test_stm_estimate() {
   CHECK(kept_today > 0);
 }
 
+static void test_jbd() {
+  using namespace powercell::jbd;
+  uint8_t req[7];
+  buildRead(kRegBasic, req);
+  CHECK(req[0] == 0xDD && req[1] == 0xA5 && req[2] == 0x03 && req[3] == 0x00);
+  CHECK(req[4] == 0xFF && req[5] == 0xFD && req[6] == 0x77);
+  buildRead(kRegCells, req);
+  CHECK(req[2] == 0x04 && req[4] == 0xFF && req[5] == 0xFC && req[6] == 0x77);
+
+  uint8_t basic[23] = {};
+  basic[0] = 0x14; basic[1] = 0x50;             // 52.00 V
+  basic[4] = 0x25; basic[5] = 0x80;             // 96.00 Ah
+  basic[6] = 0x27; basic[7] = 0x10;             // 100.00 Ah
+  basic[8] = 0x00; basic[9] = 0x0A;             // 10 cycles
+  basic[19] = 96;                               // SOC
+  basic[20] = 0x03;                             // charge + discharge MOS
+  basic[21] = 16;
+  uint8_t frame[40];
+  size_t n = wrapResponse(kRegBasic, 0, basic, 23, frame, sizeof frame);
+  const uint8_t* data = nullptr;
+  uint8_t dlen = 0;
+  CHECK(n == 30 && checkFrame(frame, n, kRegBasic, &data, &dlen) && dlen == 23);
+  Reading r;
+  CHECK(parseBasic(data, dlen, &r) && r.valid && r.soc == 96);
+  NEAR(r.packVoltage, 52.0, 0.01);
+  NEAR(r.remainAh, 96.0, 0.01);
+  CHECK(r.chargeMos && r.dischargeMos && r.cellCount == 16 && r.batStatus == 0);
+
+  frame[4 + 23] ^= 0x01;
+  CHECK(!checkFrame(frame, n, kRegBasic, &data, &dlen));
+  CHECK(!checkFrame(frame, 4, kRegBasic, &data, &dlen));
+  CHECK(!checkFrame(frame, n - 1, kRegBasic, &data, &dlen));
+
+  uint8_t badSoc[23] = {};
+  memcpy(badSoc, basic, 23);
+  badSoc[19] = 0;
+  n = wrapResponse(kRegBasic, 0, badSoc, 23, frame, sizeof frame);
+  CHECK(checkFrame(frame, n, kRegBasic, &data, &dlen));
+  Reading kept;
+  kept.soc = 55;
+  CHECK(!parseBasic(data, dlen, &kept) && kept.soc == 55);
+
+  uint8_t cells[4] = {0x0C, 0xE4, 0x0C, 0x80};  // 3300 mV, 3200 mV
+  n = wrapResponse(kRegCells, 0, cells, 4, frame, sizeof frame);
+  CHECK(checkFrame(frame, n, kRegCells, &data, &dlen));
+  CHECK(parseCells(data, dlen, &r));
+  NEAR(r.cellVoltage[0], 3.3, 0.001);
+  NEAR(r.cellVoltage[1], 3.2, 0.001);
+  NEAR(r.cellDiffMv, 100.0, 0.2);
+  CHECK(r.cellCount == 2 && r.maxCell == 0 && r.minCell == 1);
+  CHECK(!parseCells(data, 3, &r));
+}
+
 static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x/1000 : x
   auto displayKw = [](double x) { return fabs(x) > 20.0 ? x / 1000.0 : x; };
   const float ws[] = {0.0f, 5.0f, 15.0f, 20.0f, 21.0f, 127.9f, 3000.0f, 19999.0f};
@@ -1642,7 +1697,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
+  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_jbd(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();

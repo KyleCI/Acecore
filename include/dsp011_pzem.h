@@ -4,7 +4,7 @@
 
 #if POWERCELL_DSP011
 void hwPzemBegin();
-// Fresh PZEM-004T V3 100 A sample on UART1 RX25/TX26.
+// Fresh PZEM-004T V3 sample on UART1 RX GPIO32 / TX GPIO33.
 // Power is active watts. Energy is lifetime watt-hours.
 // A missing, stale, or sentinel reading returns false and does not invent zero.
 bool hwPzemSample(float* volts, float* amps, float* active_w, uint32_t* lifetime_wh, uint32_t* age_ms);

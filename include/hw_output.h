@@ -4,15 +4,21 @@
 
 namespace powercell {
 
-// GPIO15 on hardware v0.1.1 is the DSP/AC enable, active low.
-// Low is on and high is off. That polarity is user-confirmed, not a
-// measurement that charging stays up. The original collector relay is
-// active high on the same pin and is not this function.
+// GPIO15 on the DSP board drives an NPN low-side transistor.
+// Dubem's pinDefines.h comment says HIGH = ON. Caleb overruled that on
+// 2026-11-10: the shipped level stays LOW = ON. DSP_PWR_ACTIVE_LEVEL is the
+// only switch. 0 means LOW = ON. Do not change it without a new confirmation.
+#ifndef DSP_PWR_ACTIVE_LEVEL
+#define DSP_PWR_ACTIVE_LEVEL 0
+#endif
+static_assert(DSP_PWR_ACTIVE_LEVEL == 0 || DSP_PWR_ACTIVE_LEVEL == 1, "DSP_PWR_ACTIVE_LEVEL is 0 or 1");
 constexpr int kDspEnableV011 = 15;
-constexpr bool kDspPolarityUserConfirmed = true;
+constexpr bool kDspPolarityUserConfirmed = true;  // LOW=ON, confirmed 2026-11-10
 constexpr bool kPhysicalShutdownVerified = false;
 
-inline int v011_dsp_level(bool logical_on) { return logical_on ? 0 : 1; }
+inline int v011_dsp_level(bool logical_on) {
+  return logical_on ? DSP_PWR_ACTIVE_LEVEL : (DSP_PWR_ACTIVE_LEVEL ^ 1);
+}
 inline int original_relay_level(bool logical_on) { return logical_on ? 1 : 0; }
 
 enum class BootAction : uint8_t { SetOutputLatch = 0, EnableOutput = 1 };
@@ -43,10 +49,10 @@ inline int battery_cutoff_pin_level(HardwareProfile profile, bool hold_off) {
 inline bool battery_cutoff_writes_bms_fets() { return false; }
 inline bool battery_cutoff_stops_charging() { return false; }
 
-// SD chip select. v0.1.1 uses GPIO33. The original profile keeps GPIO14
-// because GPIO33 is the STM32 RX pin.
+// SD chip select. DSP hardware uses GPIO5 (Dubem). GPIO33 is PZEM TX on that
+// board. The original profile keeps GPIO14.
 inline int profile_sd_cs(HardwareProfile profile) {
-  return profile == HardwareProfile::V011 ? 33 : 14;
+  return profile == HardwareProfile::V011 ? 5 : 14;
 }
 
 inline bool diag_kind_allowed(HardwareProfile profile, uint8_t kind) {
