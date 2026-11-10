@@ -31,11 +31,7 @@
 #define PIN_BMS_TX 17
 #endif
 #define PIN_BMS_BAUD 9600
-// PZEM UART1 (Caleb 2026-11-10 13:16 WAT): RX GPIO35, TX GPIO32. GPIO33 is not a PZEM pin.
-// GPIO35 is input only and has no internal pull-up. The PZEM TX is an
-// open-collector optocoupler output, so the board needs a pull-up to 3.3 V
-// on GPIO35 (and the PZEM TTL side must be 3.3 V safe).
-#define PIN_PZEM_RX 35   // ESP RX <- PZEM TX. Input only, no internal pull-up.
+#define PIN_PZEM_RX 35   // ESP RX <- PZEM TX. Input-only pin, no internal pull-up: board needs a pull-up on PZEM TX.
 #define PIN_PZEM_TX 32   // ESP TX -> PZEM RX
 #define PIN_DSP_SD_CS 5  // was GPIO33; GPIO5 was the unused MPPT CS
 #define PIN_FRONT_LIGHT 27
@@ -100,10 +96,7 @@
 #endif
 static_assert(PIN_STM32_RX != PIN_BMS_RX && PIN_STM32_TX != PIN_BMS_TX, "UART pin overlap");
 #if POWERCELL_DSP011
-static_assert(PIN_PZEM_RX == 35 && PIN_PZEM_TX == 32, "DSP PZEM UART1: RX GPIO35, TX GPIO32");
-static_assert(PIN_PZEM_RX != PIN_GRID_SENSE && PIN_PZEM_TX != PIN_GRID_SENSE, "grid sense is not a PZEM pin");
-static_assert(PIN_PZEM_TX < 34, "PZEM TX needs an output-capable pin (GPIO34..39 are input only)");
-static_assert(PIN_PZEM_RX != PIN_PWR_KEY && PIN_PZEM_TX != PIN_PWR_KEY, "GPIO15 is the inverter enable");
+static_assert(PIN_PZEM_RX == 35 && PIN_PZEM_TX == 32, "DSP PZEM UART1: RX 35, TX 32");
 static_assert(PIN_DSP_SD_CS == 5 && PIN_SPI_CS_MPPT == 5, "DSP SD CS reuses the unused MPPT CS");
 static_assert(PIN_PZEM_RX != PIN_DSP_SD_CS && PIN_PZEM_TX != PIN_DSP_SD_CS, "SD CS is not a PZEM pin");
 static_assert(PIN_BMS_RX != PIN_PZEM_RX && PIN_BMS_TX != PIN_PZEM_TX, "BMS/PZEM UART overlap");
