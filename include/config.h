@@ -70,6 +70,21 @@
 #if POWERCELL_DSP011 && FEATURE_LORA
 #error "hardware v0.1.1 is not fitted with LoRa"
 #endif
+// DSP BMS driver. STM images always use JK-PB and ignore this flag.
+// 0 = JBD polled at 9600 (esp32dev_dsp011_35kw).
+// 1 = JK-PB stream at 115200 on the same DSP pins (esp32dev_dsp011_5kw).
+#ifndef DSP_BMS_JKPB
+#define DSP_BMS_JKPB 0
+#endif
+#if DSP_BMS_JKPB && !POWERCELL_DSP011
+#error "DSP_BMS_JKPB is only valid on POWERCELL_DSP011 builds"
+#endif
+// Unified selector: 1 = JK-PB 115200 listener (STM, or DSP 5 kW); 0 = JBD 9600 poll (DSP 3.5 kW).
+#if POWERCELL_DSP011 && !DSP_BMS_JKPB
+#define POWERCELL_BMS_JKPB 0
+#else
+#define POWERCELL_BMS_JKPB 1
+#endif
 #ifndef FEATURE_ESPNOW_SOCKETS    // legacy smart-socket path over ESP-NOW; disabled in 2.2 (sockets use LoRa)
 #define FEATURE_ESPNOW_SOCKETS 0
 #endif

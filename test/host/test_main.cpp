@@ -870,6 +870,8 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
 #include "stm_energy.h"
 #include "jbd_bms.h"
 #include "grid_sense.h"
+#include "config.h"
+#include "pins.h"
 static powercell::BatteryReading soc_at(float percent, uint32_t at, bool bms_own = true) {
   return {true, percent, 51.2f, at, false, bms_own};
 }
@@ -1739,6 +1741,49 @@ static void test_jbd() {
   CHECK(!parseCells(data, 3, &r));
 }
 
+static bool read_text_file(const char *path, char *buf, size_t cap) {
+  FILE *f = fopen(path, "r");
+  if (!f) return false;
+  size_t n = fread(buf, 1, cap - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  return n > 0;
+}
+
+static bool flag_in_env(const char *text, const char *env, const char *flag) {
+  char tag[80];
+  snprintf(tag, sizeof tag, "[env:%s]", env);
+  const char *start = strstr(text, tag);
+  if (!start) return false;
+  const char *next = strstr(start + 1, "[env:");
+  size_t n = next ? (size_t)(next - start) : strlen(start);
+  char block[4096];
+  if (n >= sizeof block) n = sizeof block - 1;
+  memcpy(block, start, n);
+  block[n] = 0;
+  return strstr(block, flag) != nullptr;
+}
+
+static void test_dsp_bms_select() {
+  // Host tests compile like an STM image: JK-PB, DSP_BMS_JKPB left at its default 0.
+  CHECK(POWERCELL_DSP011 == 0);
+  CHECK(DSP_BMS_JKPB == 0);
+  CHECK(POWERCELL_BMS_JKPB == 1);
+  CHECK(PIN_BMS_RX == 17 && PIN_BMS_TX == 16 && PIN_BMS_BAUD == 115200);
+  char buf[16384];
+  const char *paths[] = {"../../platformio.ini", "../platformio.ini", "platformio.ini"};
+  bool got = false;
+  for (const char *path : paths) {
+    if (read_text_file(path, buf, sizeof buf)) { got = true; break; }
+  }
+  CHECK(got);
+  if (!got) return;
+  CHECK(flag_in_env(buf, "esp32dev_dsp011_5kw", "DSP_BMS_JKPB=1"));
+  CHECK(!flag_in_env(buf, "esp32dev_dsp011_35kw", "DSP_BMS_JKPB=1"));
+  CHECK(!flag_in_env(buf, "esp32dev_stm01_5kw", "DSP_BMS_JKPB"));
+  CHECK(!flag_in_env(buf, "esp32dev_stm01_35kw", "DSP_BMS_JKPB"));
+}
+
 static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x/1000 : x
   auto displayKw = [](double x) { return fabs(x) > 20.0 ? x / 1000.0 : x; };
   const float ws[] = {0.0f, 5.0f, 15.0f, 20.0f, 21.0f, 127.9f, 3000.0f, 19999.0f};
@@ -1754,7 +1799,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
+  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();
