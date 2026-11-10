@@ -25,6 +25,7 @@
 #include "payment_lock.h"
 #include "grid_sense.h"
 #include "dsp011_pzem.h"
+#include "pzem_route.h"
 #include "telemetry.h"
 
 namespace console {
@@ -220,6 +221,7 @@ void selftest() {
       jp["polls"] = ps.polls; jp["ok"] = ps.ok; jp["timeouts"] = ps.no_reply;
       jp["short_frames"] = ps.short_frames; jp["bad_frames"] = ps.bad_frames; jp["fail_run"] = ps.consecutive_fail;
       if (ps.ever_ok) jp["last_ok_age_ms"] = ps.last_ok_age_ms; else jp["last_ok_age_ms"] = nullptr;
+      char rn[96]; jp["route"] = powercell::pzem_route_names(ps.route_fault, rn, sizeof rn); jp["route_heals"] = ps.route_heals;
     }
     float v = 0, a = 0, w = 0; uint32_t wh = 0, age = 0;
     const bool pv = hwPzemSample(&v, &a, &w, &wh, &age);
@@ -269,6 +271,9 @@ void handle(String cmd) {
     size_t g = bms::rawDump(Serial, 64, 2000);
     Serial.printf("BMS RAW %u/64 bytes%s\n", (unsigned)g, g < 64 ? " (timeout)" : "");
   }
+#if POWERCELL_DSP011
+  else if (cmd == "PZEM RAW") hwPzemRaw(Serial, 500);  // read-only: one read request, 500 ms hex dump
+#endif
   else if (cmd.startsWith("SET ")) {
     int sp = cmd.indexOf(' ', 4);
     if (sp < 0) { Serial.println("ERR SET <key> <value>"); return; }

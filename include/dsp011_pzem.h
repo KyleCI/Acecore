@@ -12,6 +12,9 @@ bool hwPzemSample(float* volts, float* amps, float* active_w, uint32_t* lifetime
 // False means the value is unknown: omit it, do not send 0.
 bool hwAcEnergyTodayKwh(double* kwh);
 // Poll counters for SELFTEST. False before hwPzemBegin().
-struct HwPzemStats { uint32_t polls, ok, no_reply, short_frames, bad_frames, consecutive_fail; bool ever_ok; uint32_t last_ok_age_ms; };
+struct HwPzemStats { uint32_t polls, ok, no_reply, short_frames, bad_frames, consecutive_fail; bool ever_ok; uint32_t last_ok_age_ms; uint16_t route_fault; uint32_t route_heals; };
 bool hwPzemStats(HwPzemStats* out);
+// Console "PZEM RAW": one read request, then hex-dump every reply byte for window_ms. Read-only.
+class Print;
+bool hwPzemRaw(Print& out, uint32_t window_ms);
 #endif

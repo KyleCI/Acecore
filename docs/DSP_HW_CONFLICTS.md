@@ -40,3 +40,7 @@ Dubem's lighting.cpp drives red 12, blue 13, green 14 through LEDC (5 kHz, 8-bit
 
 Replaced on DSP: the critical-latch red blink, STM32 fault red, and the blue offline / hotspot / SOC < 25 % indication. GPIO12 is still driven low before it becomes an output and has no pull-up (MTDI strap), and LEDC is attached only after boot.
 
+## 17. PZEM no reply on the bench (2026-11-10 22:34 WAT)
+
+Our UART1 setup matches Dubem's pzem.cpp: Serial1, begin(9600, SERIAL_8N1, 35, 32), same request bytes and CRC, flush, 200 ms timeout, 1 s poll. The BMS is on Serial2 in both, so the two never share a UART. Nothing in this firmware reconfigures GPIO32 or GPIO35 after begin (no pinMode, analogRead, LEDC, touch or RTC IO on those pins; the only ADC pin is GPIO39). Each poll now verifies the routing and repairs it if it changed. On the bench run PZEM RAW: route=ok with rx 0 bytes points to the meter side (AC on the PZEM input, 5 V, TX wiring); any route fault names the register that changed.
+

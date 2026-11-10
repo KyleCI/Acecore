@@ -1,5 +1,12 @@
 # Collector firmware changelog
 
+## Unreleased (DSP PZEM bench diagnosis)
+
+- Bench 2026-11-10 22:34 WAT on 701fa96: GPIO15 ON works; PZEM never replied (201 polls, 0 bytes). Dubem's firmware reads the same meter on the same board.
+- Compared byte by byte with Dubem's pzem.cpp: same UART1 (Serial1), same begin(9600, SERIAL_8N1, rx=35, tx=32), no invert, same request F8 04 00 00 00 0A + CRC, same flush, 200 ms timeout and 1 s poll, BMS on Serial2 in both (no UART sharing). No code path in this firmware calls pinMode, ADC, LEDC, gpio_reset_pin or a second begin on GPIO32/35.
+- New: every poll reads back the UART1 routing (U1RXD input select, GPIO32 output select, IO_MUX function and input enable, RTC mux of both pads). A change is logged once as PZEM ROUTE_LOST with the raw registers and repaired (uart_set_pin, rtc_gpio_deinit, begin if the driver is gone), then ROUTE_RESTORED or ROUTE_STILL_BAD. Boot logs PZEM ROUTE. SELFTEST pzem has route and route_heals.
+- New console command PZEM RAW (DSP only, read-only): prints the routing registers and the RX pin level, sends one read request and hex-dumps every byte received for 500 ms. It never sends the energy reset.
+
 ## Unreleased (DSP battery status light)
 
 - DSP builds: the thunderbolt light now matches Dubem's lighting.cpp. Red 12, blue 13, green 14 on LEDC 5 kHz 8-bit, one lit at a time. SOC 70 % and up green, 40-69 % blue, under 40 % red. No BMS frame, or one older than 15 s, is red. With grid present (GPIO39, our 170/160 V hysteresis) the lit LED breathes on a 4 s triangle; without grid it is solid. Caleb confirmed 2026-11-10 21:13 WAT.

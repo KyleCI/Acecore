@@ -871,6 +871,7 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
 #include "jbd_bms.h"
 #include "grid_sense.h"
 #include "pzem_stats.h"
+#include "pzem_route.h"
 #include "dsp_status_led.h"
 #include "hw_output.h"
 #include "config.h"
@@ -1239,6 +1240,55 @@ static void test_dsp_pad_steps() {
   n = v011_dsp_pad_steps(true, st);
   CHECK(n == 6 && st[n - 1].op == PadOp::SetLevel && st[n - 1].level == 1);
   for (size_t i = 0; i < n; ++i) CHECK(st[i].op != PadOp::HoldEnable);
+}
+
+static void test_pzem_route() {
+  using namespace powercell;
+  PzemRouteRegs ok;
+  ok.driver = true;
+  ok.rx_in_sel = (1u << 7) | 35;   // U1RXD from the matrix, GPIO35
+  ok.tx_out_sel = 17 | (1u << 10); // U1TXD on GPIO32 (OEN bit ignored)
+  ok.rx_iomux = (2u << 12) | (1u << 9);
+  ok.tx_iomux = (2u << 12);
+  CHECK(pzem_route_check(ok, 35) == kRouteOk);
+  char n[96];
+  CHECK(strcmp(pzem_route_names(0, n, sizeof n), "ok") == 0);
+  PzemRouteRegs r = ok; r.driver = false;
+  CHECK(pzem_route_check(r, 35) == kRouteNoDriver);
+  r = ok; r.rx_in_sel = 0x30;      // reset value: constant low, not the matrix
+  CHECK(pzem_route_check(r, 35) == kRouteRxNotMatrix);
+  r = ok; r.rx_in_sel = (1u << 7) | 32;  // RX swapped onto 32
+  CHECK(pzem_route_check(r, 35) == kRouteRxWrongPin);
+  r = ok; r.tx_out_sel = 256;      // plain GPIO output (pinMode / digitalWrite took GPIO32)
+  CHECK(pzem_route_check(r, 35) == kRouteTxWrongSig);
+  r = ok; r.tx_out_sel = 71;       // LEDC HS ch0 on GPIO32
+  CHECK(pzem_route_check(r, 35) == kRouteTxWrongSig);
+  r = ok; r.rx_iomux = (2u << 12); // input buffer off
+  CHECK(pzem_route_check(r, 35) == kRouteRxNoIe);
+  r = ok; r.rx_iomux = (0u << 12) | (1u << 9);
+  CHECK(pzem_route_check(r, 35) == kRouteRxMux);
+  r = ok; r.tx_iomux = (3u << 12);
+  CHECK(pzem_route_check(r, 35) == kRouteTxMux);
+  r = ok; r.rx_rtc = true; r.tx_rtc = true;  // ADC / RTC IO took both pads
+  const uint16_t f = pzem_route_check(r, 35);
+  CHECK(f == (kRouteRxRtc | kRouteTxRtc));
+  CHECK(strcmp(pzem_route_names(f, n, sizeof n), "rx_rtc,tx_rtc") == 0);
+  char tiny[8];
+  pzem_route_names(f, tiny, sizeof tiny);
+  CHECK(strlen(tiny) < sizeof tiny);
+  // Request bytes as Dubem's readAll(): F8 04 00 00 00 0A + CRC low, high.
+  PzemConfig cfg;
+  uint8_t req[8];
+  CHECK(pzem_build_read(cfg, req, sizeof req) == 8);
+  const uint8_t dubem[6] = {0xF8, 0x04, 0x00, 0x00, 0x00, 0x0A};
+  CHECK(memcmp(req, dubem, 6) == 0);
+  const uint16_t c = pzem_crc(dubem, 6);
+  CHECK(req[6] == (c & 0xFF) && req[7] == (c >> 8));
+  char hex[64];
+  CHECK(pzem_hex(req, 8, hex, sizeof hex) == 23);
+  CHECK(strncmp(hex, "F8 04 00 00 00 0A ", 18) == 0);
+  CHECK(pzem_hex(req, 8, hex, 8) < 8 && strlen(hex) < 8);
+  CHECK(pzem_hex(req, 0, hex, sizeof hex) == 0 && hex[0] == 0);
 }
 
 static void test_dsp_status_led() {
@@ -1936,7 +1986,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_dsp_status_led(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
+  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_dsp_status_led(); test_pzem_route(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();
