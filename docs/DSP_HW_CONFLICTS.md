@@ -2,7 +2,7 @@
 
 These apply to `esp32dev_dsp011_5kw` and `esp32dev_dsp011_35kw` only. STM images keep the previous pin map and the JK-PB BMS.
 
-1. GPIO15 power polarity. `pinDefines.h` says the NPN driver is HIGH = ON. Caleb overruled that on 2026-11-10. `DSP_PWR_ACTIVE_LEVEL` stays 0, so LOW = ON is the confirmed value. The off level written at the start of `setup()` is HIGH. That write is after reset, so it is not the GPIO15 strap sample.
+1. GPIO15 power polarity. Resolved: HIGH = ON. Caleb confirmed on 2026-11-10 at 11:53 WAT that the v0.1.1 transistor needs HIGH on its base, matching Dubem's `pinDefines.h` comment. That supersedes the 05:20 LOW = ON choice. `DSP_PWR_ACTIVE_LEVEL` is 1. Off is GPIO15 LOW. The boot latch drives LOW and holds it before `setup()`, and again as the first line of `setup()`, and keeps that level until an allowed ON. GPIO15 is a strapping pin (MTDO) with a default pull-up, so a cold power-on still presents HIGH until the application runs. That window is a board concern, not something the ROM lets firmware close.
 
 2. BMS UART direction and baud. Caleb confirmed on 2026-11-10: BMS TXD to ESP RX GPIO16 and BMS RXD from ESP TX GPIO17, at 9600. `pinDefines.h` lists `JK_RX 17`, `JK_TX 16`, and `JK_BAUD 115200` (the old JK stream). `DSP_BMS_UART_SWAP` stays 0. Set it to 1 only to try that other pair; the baud stays 9600. STM images stay on JK at 115200, RX 17, TX 16.
 

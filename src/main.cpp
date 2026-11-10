@@ -39,7 +39,7 @@ bool prepareForUpdate() {
 }  // namespace
 
 void setup() {
-  gateway::earlyInit();  // GPIO15 latch before pinMode. Stock holds LOW. v0.1.1 holds HIGH (AC off).
+  gateway::earlyInit();  // GPIO15 off latch. STM drives LOW. DSP drives LOW (HIGH = ON) and holds it.
   Serial.begin(115200);
   delay(50);
   esp_reset_reason_t why = esp_reset_reason();

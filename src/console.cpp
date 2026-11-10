@@ -16,6 +16,7 @@
 #include "web_local.h"
 #include <WiFi.h>
 #include "backend_ws.h"
+#include "gateway.h"
 #include "bms.h"
 #include "pins.h"
 #include "devauth.h"
@@ -286,6 +287,9 @@ void handle(String cmd) {
     const char *spaces[] = {"pc_secure", "pc_cfg", "pc_offline", "pc_ota", "registry", "forgotten", "pc_onb", "pc_factory", "sock_cfg", "sock_prio", "clock", "pc_ident"};
     for (auto ns : spaces) { Preferences p; if (p.begin(ns, false)) { p.clear(); p.end(); } }
     Serial.println("OK wiped incl. identity; rebooting");
+#if POWERCELL_DSP011
+    gateway::latchOutputOff();
+#endif
     delay(200); ESP.restart();
   } else if (cmd == "FACTORY_WIPE") {
     // Bench/factory only: erases everything incl. API key and owner (unlocks). The factory
@@ -294,6 +298,9 @@ void handle(String cmd) {
     const char *spaces[] = {"pc_secure", "pc_cfg", "pc_offline", "pc_ota", "registry", "forgotten", "pc_onb", "pc_factory", "sock_cfg", "sock_prio", "clock"};
     for (auto ns : spaces) { Preferences p; if (p.begin(ns, false)) { p.clear(); p.end(); } }
     Serial.println("OK wiped; rebooting");
+#if POWERCELL_DSP011
+    gateway::latchOutputOff();
+#endif
     delay(200); ESP.restart();
   }
   else if (cmd.startsWith("REGISTER:")) Serial.println(registerDevice(cmd.substring(9)) ? "pairing" : "Socket not found. Plug it in and try again.");

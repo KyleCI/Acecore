@@ -44,9 +44,10 @@
 #define PIN_BMS_BAUD 115200
 #endif
 
-// PWR_KEY: IO15 -> R57 1k -> Q7 base. Q7 is open collector onto STM32 PB4 (CONT, pulled up).
+// PWR_KEY: IO15. STM32 images: R57 1k -> Q7 base, open collector onto PB4 (CONT, pulled up).
 // IO15 HIGH -> Q7 on -> PB4 LOW -> STM32 runs the inverter. IO15 LOW = inverter not requested.
-// IO15 is a strapping pin (MTDO): driven LOW as the very first thing in setup().
+// DSP v0.1.1: the same pin is the inverter enable, HIGH = ON (Caleb 2026-11-10 11:53).
+// IO15 is a strapping pin (MTDO, default pull-up). DSP latches it LOW as early as the app can.
 #define PIN_PWR_KEY 15
 
 // Analog, ADC1 only (ADC2 is unusable with Wi-Fi)

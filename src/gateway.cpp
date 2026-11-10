@@ -7,6 +7,9 @@
 #include "pins.h"
 #include "power_policy.h"
 #include "stm32_link.h"
+#if POWERCELL_DSP011
+#include "driver/gpio.h"
+#endif
 
 static_assert(PIN_PWR_KEY == powercell::kDspEnableV011, "GPIO15 is the shared AC-enable pin");
 
@@ -16,9 +19,31 @@ volatile bool g_on = false;
 volatile int8_t g_req = -1;  // -1 none, 0 off, 1 on
 const char *g_reqOrigin = "local";
 
+#if POWERCELL_DSP011
+// Drive the off level, then hold the pad. Hold survives a software reset, so
+// the ROM and bootloader keep GPIO15 low after this process has run once.
+// A cold power-on clears the hold; the constructor below is the first app code.
+void latchDspEnableOff() {
+  const gpio_num_t pin = static_cast<gpio_num_t>(PIN_PWR_KEY);
+  const int level = powercell::v011_dsp_level(false);
+  gpio_set_level(pin, level);
+  gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+  gpio_set_pull_mode(pin, GPIO_FLOATING);
+  gpio_set_level(pin, level);
+  gpio_hold_dis(pin);
+  gpio_set_level(pin, level);
+  gpio_hold_en(pin);
+  g_on = false;
+}
+#endif
+
 void drive(bool on) {
 #if POWERCELL_DSP011
-  digitalWrite(PIN_PWR_KEY, powercell::v011_dsp_level(on));
+  const gpio_num_t pin = static_cast<gpio_num_t>(PIN_PWR_KEY);
+  gpio_hold_dis(pin);
+  gpio_set_level(pin, powercell::v011_dsp_level(on));
+  gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+  if (!on) gpio_hold_en(pin);
 #else
   digitalWrite(PIN_PWR_KEY, on ? HIGH : LOW);
   digitalWrite(PIN_PWR_LIGHT, on ? HIGH : LOW);
@@ -28,12 +53,23 @@ void drive(bool on) {
 
 void earlyInit() {
 #if POWERCELL_DSP011
-  digitalWrite(PIN_PWR_KEY, powercell::v011_dsp_level(false));
+  latchDspEnableOff();
 #else
   digitalWrite(PIN_PWR_KEY, LOW);
-#endif
   pinMode(PIN_PWR_KEY, OUTPUT);
+#endif
 }
+
+void latchOutputOff() {
+#if POWERCELL_DSP011
+  latchDspEnableOff();
+#endif
+}
+
+#if POWERCELL_DSP011
+// After .bss and before setup(). Still after the ROM and the bootloader.
+__attribute__((constructor(101))) static void dspEnableBootLatch() { latchDspEnableOff(); }
+#endif
 
 void begin() {
   earlyInit();

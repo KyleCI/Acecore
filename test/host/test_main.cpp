@@ -976,7 +976,7 @@ static void test_battery_cutoff() {
   CHECK(!P::kPhysicalAutoOffEnabled);
   CHECK(!powercell::battery_cutoff_writes_bms_fets() && !powercell::battery_cutoff_stops_charging());
   CHECK(!powercell::battery_recovery_drives_on());
-  CHECK(powercell::battery_cutoff_pin_level(powercell::HardwareProfile::V011, true) == 1);
+  CHECK(powercell::battery_cutoff_pin_level(powercell::HardwareProfile::V011, true) == 0);
   CHECK(powercell::battery_cutoff_pin_level(powercell::HardwareProfile::Original, true) == -1);
   CHECK(!powercell::battery_ac_output_auto_off(powercell::HardwareProfile::Original));
   CHECK(powercell::battery_ac_output_auto_off(powercell::HardwareProfile::V011));
@@ -1153,15 +1153,28 @@ static void test_ac_energy_today() {
 
 static void test_v011_gpio() {
   using namespace powercell;
-  CHECK(DSP_PWR_ACTIVE_LEVEL == 0);
-  CHECK(v011_dsp_level(true) == 0 && v011_dsp_level(false) == 1);
+  CHECK(DSP_PWR_ACTIVE_LEVEL == 1);
+  CHECK(v011_dsp_level(true) == 1 && v011_dsp_level(false) == 0);
   CHECK(original_relay_level(true) == 1 && original_relay_level(false) == 0);
   CHECK(!kPhysicalShutdownVerified && kDspPolarityUserConfirmed);
   CHECK(!battery_recovery_drives_on());
   BootStep steps[2];
   v011_dsp_boot(steps);
-  CHECK(steps[0].action == BootAction::SetOutputLatch && steps[0].level == 1);
-  CHECK(steps[1].action == BootAction::EnableOutput && steps[1].level == 1);
+  CHECK(steps[0].action == BootAction::SetOutputLatch && steps[0].level == 0);
+  CHECK(steps[1].action == BootAction::EnableOutput && steps[1].level == 0);
+  CHECK(battery_cutoff_pin_level(HardwareProfile::V011, true) == 0);
+  CHECK(battery_cutoff_pin_level(HardwareProfile::V011, false) == -1);
+  CHECK(battery_cutoff_pin_level(HardwareProfile::Original, true) == -1);
+  CHECK(commanded_pin_level(HardwareProfile::Original, true) == 1);
+  CHECK(commanded_pin_level(HardwareProfile::Original, false) == 0);
+  CHECK(commanded_pin_level(HardwareProfile::V011, true) == 1);
+  const OffOrigin offs[] = {OffOrigin::BootLatch, OffOrigin::OtaSafe, OffOrigin::BatteryCutoff,
+                            OffOrigin::Overload, OffOrigin::PaymentLock, OffOrigin::RemoteOff,
+                            OffOrigin::FactoryReset};
+  for (OffOrigin origin : offs) {
+    CHECK(off_origin_level(HardwareProfile::V011, origin) == 0);
+    CHECK(off_origin_level(HardwareProfile::Original, origin) == 0);
+  }
 }
 
 static void test_ds3231() {

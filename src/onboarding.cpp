@@ -12,6 +12,7 @@
 #include "sha256.h"
 #include "clock.h"
 #include "factory_id.h"
+#include "gateway.h"
 
 namespace onboarding {
 namespace {
@@ -233,6 +234,9 @@ String newClaimCode() {
 }
 
 void factoryReset(const char *source, const String &cmdId, uint32_t issuedAt) {
+#if POWERCELL_DSP011
+  gateway::latchOutputOff();  // HIGH = ON; leave the enable low across the reboot
+#endif
   // v15 (Caleb 2026-10-23): back to as-bought. Wipes owner, passcode, phones, sessions,
   // claim, Wi-Fi/router, net_mode, local token, user hotspot password, tz, sockets, socket
   // settings and the offline queue. Keeps the factory identity (serial, secret, label
