@@ -17,4 +17,8 @@ void modelToJson(JsonObject o);           // model, rated_kva, usable_kw, rated_
 // DSP only. Writes kwhKey and energy_today_source. Both are null when today's
 // AC total is unknown. STM images leave the object unchanged.
 void acEnergyTodayToJson(JsonObject o, const char *kwhKey);
+// STM images. kwhKey and energy_today_source are null together when the day
+// total is unknown. includeLifetime writes estimated_lifetime_wh and does
+// not write lifetime_wh.
+void stmEnergyToJson(JsonObject o, const char *kwhKey, bool includeLifetime);
 }  // namespace telemetry

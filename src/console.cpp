@@ -208,6 +208,10 @@ void selftest() {
   telemetry::acEnergyTodayToJson(d.as<JsonObject>(), "energy_today_kwh");
   telemetry::acEnergyTodayToJson(d["inverter"].to<JsonObject>(), "energy_today_kwh");
   telemetry::acEnergyTodayToJson(d["live"].to<JsonObject>(), "load_energy_today_kwh");
+#else
+  telemetry::stmEnergyToJson(d.as<JsonObject>(), "energy_today_kwh", false);
+  telemetry::stmEnergyToJson(d["inverter"].to<JsonObject>(), "energy_today_kwh", false);
+  telemetry::stmEnergyToJson(d["live"].to<JsonObject>(), "load_energy_today_kwh", true);
 #endif
   // Wi-Fi / heap / cloud
   JsonObject jw = d["wifi"].to<JsonObject>();

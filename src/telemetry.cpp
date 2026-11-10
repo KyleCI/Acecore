@@ -17,6 +17,7 @@
 #include "sockets/sockets.h"
 #include "solar.h"
 #include "dsp011_pzem.h"
+#include "stm_energy.h"
 #include "stm32_link.h"
 #include "factory_id.h"
 #include "live.h"
@@ -54,6 +55,8 @@ void inverterBlock(JsonObject inv) {
   else inv["output_power_quantity"] = nullptr;
   inv["stm32_online"] = false;
   acEnergyTodayToJson(inv, "energy_today_kwh");
+#else
+  stmEnergyToJson(inv, "energy_today_kwh", false);
 #endif
   num("grid_voltage", s.has_grid, s.grid_v);
   num("temperature", s.has_temp, s.temp_c);
@@ -146,6 +149,27 @@ void solarEnergyKeys(JsonObject o) {  // 2.5.8 PV only. DSP AC energy is not wri
 }
 }  // namespace
 
+void stmEnergyToJson(JsonObject o, const char *kwhKey, bool includeLifetime) {
+#if !POWERCELL_DSP011
+  double kwh = 0;
+  if (kwhKey && stmEnergyTodayKwh(&kwh)) {
+    o[kwhKey] = kwh;
+    o["energy_today_source"] = "stm32_estimated_pf080";
+  } else if (kwhKey) {
+    o[kwhKey] = nullptr;
+    o["energy_today_source"] = nullptr;
+  }
+  if (includeLifetime) {
+    o["estimated_lifetime_wh"] = stmEnergyLifetimeWh();
+    o["estimated_lifetime_source"] = "stm32_estimated_pf080";
+  }
+#else
+  (void)o;
+  (void)kwhKey;
+  (void)includeLifetime;
+#endif
+}
+
 void acEnergyTodayToJson(JsonObject o, const char *kwhKey) {
 #if POWERCELL_DSP011
   double ac = 0;
@@ -237,6 +261,8 @@ void liveToJson(JsonObject o) {
     num("solar_energy_total_kwh", he, (float)eT);
 #if POWERCELL_DSP011
     acEnergyTodayToJson(o, "load_energy_today_kwh");
+#else
+    stmEnergyToJson(o, "load_energy_today_kwh", true);
 #endif
   }
   modelToJson(o);
@@ -269,6 +295,8 @@ void buildTelemetry(JsonDocument &doc) {
   inverterBlock(doc["inverter"].to<JsonObject>());
 #if POWERCELL_DSP011
   acEnergyTodayToJson(doc.as<JsonObject>(), "energy_today_kwh");
+#else
+  stmEnergyToJson(doc.as<JsonObject>(), "energy_today_kwh", false);
 #endif
   { JsonObject so = doc["solar"].to<JsonObject>(); solarBlock(so); solarEnergyKeys(so); }
   liveToJson(doc["live"].to<JsonObject>());  // 2.5.4

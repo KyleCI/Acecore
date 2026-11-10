@@ -25,6 +25,7 @@
 #include "dsp011_log.h"
 #include "dsp011_pzem.h"
 #include "stm32_link.h"
+#include "stm_energy.h"
 #include "stm32_updater.h"
 #include "web_local.h"
 
@@ -69,6 +70,7 @@ void setup() {
   socketsInit();
   socketcfg::begin();
   powerguard::begin();  // after gateway/sockets: a latched shutdown is re-applied from NVS
+  stmEnergyBegin();
   net::begin();
   socketsStart();     // ESP-NOW follows the STA/AP channel; retries until the radio is up
   web::begin();
@@ -85,6 +87,7 @@ void loop() {
   offlineq::service(backend::connected());
   gateway::service();
   powerguard::service();
+  stmEnergyService();
   clock_::service();
   events::service();
   web::service();

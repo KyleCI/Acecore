@@ -291,6 +291,10 @@ void sample(bool force) {
   telemetry::acEnergyTodayToJson(d.as<JsonObject>(), "energy_today_kwh");
   telemetry::acEnergyTodayToJson(d["inverter"].to<JsonObject>(), "energy_today_kwh");
   telemetry::acEnergyTodayToJson(d["live"].to<JsonObject>(), "load_energy_today_kwh");
+#else
+  telemetry::stmEnergyToJson(d.as<JsonObject>(), "energy_today_kwh", false);
+  telemetry::stmEnergyToJson(d["inverter"].to<JsonObject>(), "energy_today_kwh", false);
+  telemetry::stmEnergyToJson(d["live"].to<JsonObject>(), "load_energy_today_kwh", true);
 #endif
   JsonDocument m; telemetry::buildMetrics(m);
   d["metrics"] = m;
