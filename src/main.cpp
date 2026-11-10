@@ -59,7 +59,7 @@ void setup() {
 #endif
   battery::begin();
   bms::begin();
-  unitmodel::begin();  // 2.5.4 PC3K/PC5K/PC10K from NVS
+  unitmodel::begin();  // 2.5.4/2.5.13 PC3K/PC3_5K/PC5K/PC10K from NVS
   periph::begin();     // SPI bus, ADS1115 solar, LoRa, optional SD
 #if POWERCELL_DSP011
   hwLogStart();

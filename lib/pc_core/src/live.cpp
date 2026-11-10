@@ -9,6 +9,7 @@ namespace live {
 namespace {
 const Model kModels[] = {
   {"PC3K", 3.0f, 2.7f},
+  {"PC3_5K", 3.5f, 3.15f},  // Prime 3.5 kVA / 3150 W usable (same as 35kw builds)
   {"PC5K", 5.0f, 4.5f},
   {"PC10K", 10.0f, 9.0f},
 };
@@ -22,11 +23,19 @@ const Model *models(size_t &count) { count = sizeof kModels / sizeof kModels[0];
 
 const Model *findModel(const char *code) {
   if (!code) return nullptr;
-  char n[12] = {}; size_t k = 0;
-  for (const char *p = code; *p && k < sizeof n - 1; ++p) if (!isspace((unsigned char)*p)) n[k++] = (char)toupper((unsigned char)*p);
+  // Buffer fits PC3_5KVA and aliases (PC3.5K / PC35K / 3.5KVA).
+  char n[16] = {}; size_t k = 0;
+  for (const char *p = code; *p && k < sizeof n - 1; ++p) {
+    unsigned char c = (unsigned char)*p;
+    if (isspace(c)) continue;
+    if (c == '.') { n[k++] = '_'; continue; }  // 3.5K -> 3_5K
+    n[k++] = (char)toupper(c);
+  }
   if (!k) return nullptr;
   if (k >= 3 && !strcmp(n + k - 3, "KVA")) { n[k - 2] = 0; k -= 2; }   // 5KVA -> 5K
   const char *b = !strncmp(n, "PC", 2) ? n + 2 : n;
+  // Alias: 35K / PC35K -> 3_5K (Powercell Prime 3.5 kVA)
+  if (!strcmp(b, "35K")) b = "3_5K";
   for (const Model &m : kModels) if (!strcmp(b, m.code + 2)) return &m;
   return nullptr;
 }

@@ -1,5 +1,12 @@
 # Collector firmware changelog
 
+## 2.5.13 (NVS model)
+- NVS Powercell model adds `PC3_5K` (3.5 kVA / 3.15 kW usable, matching the 35kw
+  factory rating). Aliases `3.5K`, `PC3.5K`, `35K`, `PC35K`. `PC3K` / `PC5K` /
+  `PC10K` unchanged for 2.5.11 units. `tools/factory.py --model` accepts the new
+  code and warns when `--model` disagrees with INFO `hardware_model`.
+
+
 ## 2.5.8 (2026-11-04)
 - App solar tile offline (installed Powercore 1.0.39/1.0.40 reads GET /data root `solar.{online,voltage,current,power}` via FirmwareSnapshot._solar; /data had no root `solar`, so the tile showed `--`). GET /data + SSE now carry root `solar`: `online`, `valid`, `i2c_failing`, `voltage` (V), `current` (A), `power` (kW, so the app's displayKw >20 = W rule is right for any PV power), `power_w`, `energy_today_kwh`, `energy_total_kwh`. Null values / `online:false` when no valid ADS1115 read in 5 s.
 - PV energy: integrated from V x A on every valid read (gaps > 10 s and negative power not counted). `today` resets at local midnight (trusted clock: NTP or phone POST /v2/time, plus the phone tz); without a trusted clock it keeps counting on the last known day. `total` is lifetime. NVS namespace `solar` (tot_wh, tdy_wh, day), written when total grew >= 50 Wh and >= 30 min since the last write, or at a day change.
@@ -37,7 +44,7 @@
   (smoothed), time_to_full_min.
 - Powercell model: `SET model PC3K|PC5K|PC10K|none` (NVS pc_cfg/model, unset by default),
   factory.py `--model`. Usable kW = 90 % of kVA (assumption). Shown in INFO, SELFTEST and
-  /v2/setup/info (`powercell_model`, `rated_kva`, `usable_kw`).
+  /v2/setup/info (`powercell_model`, `rated_kva`, `usable_kw`). (`PC3_5K` added in 2.5.13.)
 - SELFTEST: stm32 temp_c/vout now null when not sent, adds iout, sys and a solar block.
 - /data snapshot: if it would exceed the 4 KB scratch, metrics.sockets and old notifications
   are dropped (one WARN) instead of sending truncated JSON.

@@ -52,8 +52,15 @@ class T(unittest.TestCase):
     def test_model(self):
         for v in ("PC5K", "pc5k", "5K", "5kva", " PC5KVA "): self.assertEqual(f.normalize_model(v), "PC5K")
         self.assertEqual(f.normalize_model("10k"), "PC10K"); self.assertEqual(f.normalize_model("PC3K"), "PC3K")
+        for v in ("PC3_5K", "pc3_5k", "3.5K", "3.5kva", "PC3.5K", "35K", "PC35K", " pc35k "):
+            self.assertEqual(f.normalize_model(v), "PC3_5K")
         for v in ("PC7K", "", "5"):
             with self.assertRaises(ValueError): f.normalize_model(v)
+        self.assertIn("PC5K", f.model_hw_mismatch_warning("PC5K", "pc-dsp011-35kw"))
+        self.assertIn("PC3_5K", f.model_hw_mismatch_warning("PC3_5K", "pc-dsp011-5kw"))
+        self.assertIsNone(f.model_hw_mismatch_warning("PC3_5K", "pc-dsp011-35kw"))
+        self.assertIsNone(f.model_hw_mismatch_warning("PC5K", "pc-dsp011-5kw"))
+        self.assertIsNone(f.model_hw_mismatch_warning("PC5K", ""))
 
     def test_ota_model_from_info(self):
         text = ("device_id=F42DC9C090A8 mac=F4:2D:C9:C0:90:A8 gateway=ACE-000001 fw=2.5.13\n"

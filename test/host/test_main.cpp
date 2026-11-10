@@ -1230,6 +1230,10 @@ static void test_live() {
   const Model *m = findModel("PC5K"); CHECK(m && m->ratedKva == 5.0f && m->usableKw == 4.5f);
   CHECK(findModel("5kva") == m && findModel(" pc5k ") == m && findModel("PC5KVA") == m);
   CHECK(findModel("PC10K") && findModel("PC10K")->usableKw == 9.0f && findModel("PC3K")->usableKw == 2.7f);
+  const Model *m35 = findModel("PC3_5K");
+  CHECK(m35 && m35->ratedKva == 3.5f && m35->usableKw == 3.15f);
+  CHECK(findModel("3.5K") == m35 && findModel("PC3.5K") == m35 && findModel("3.5kva") == m35);
+  CHECK(findModel("35K") == m35 && findModel("PC35K") == m35 && findModel(" pc3_5k ") == m35);
   CHECK(!findModel("") && !findModel("PC7K") && !findModel(nullptr));
   float pct = 0; CHECK(loadPct(320, m, pct)); NEAR(pct, 7.111, 0.01); CHECK(!loadPct(320, nullptr, pct));
   // runtime

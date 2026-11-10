@@ -196,7 +196,7 @@ python tools\factory.py COM11 --dry-run           # read-only plan
   if that line is missing or is not `pc-dsp011-5kw`, `pc-dsp011-35kw`, `pc-stm01-5kw`, or `pc-stm01-35kw`.
   It then reads `SECRET` once and POSTs this body to `POST /api/devices/register` (header `X-Admin-Key`):
   `{device_id, device_secret, mac, gateway_id, firmware_version, device_kind, model}`.
-  `model` is that hardware model. `--model PC5K` is a different setting: it only runs `SET model` for the NVS unit model.
+  `model` is that hardware model. `--model PC5K` / `--model PC3_5K` is a different setting: it only runs `SET model` for the NVS unit model.
   The response's `local_tok` is then stored. Without `--register` the unit is not in the backend; `LOCK` is refused
   by firmware until the secret is reported, so `--lock` requires `--register`.
 - Output: the label line (`PWC2;S=Powercell-NNNNNN;P=<hotspot pass>;D=ACE-NNNNNN`) printed and saved to
@@ -259,10 +259,13 @@ Same flat keys in four places: `metrics.*` of GET /data and the SSE `state` even
 | `time_to_full_min` | min | (full - remaining) / smoothed charge current; null unless charging > 0.3 A |
 
 Models (ASSUMPTION: usable = 90 % of kVA, confirm with hardware): PC3K 3 kVA / 2.7 kW,
-PC5K 5 kVA / 4.5 kW, PC10K 10 kVA / 9.0 kW. Unset by default. Set with `SET model PC5K`
-(USB console, allowed after LOCK, applies at once, `SET model none` clears) or
-`tools/factory.py COMx --model PC5K`. Also in INFO, SELFTEST and GET /v2/setup/info
-(`powercell_model`, `rated_kva`, `usable_kw`; the old `model` key is still the board id).
+PC3_5K 3.5 kVA / 3.15 kW (Powercell Prime; same usable as the 35kw builds), PC5K 5 kVA /
+4.5 kW, PC10K 10 kVA / 9.0 kW. Unset by default. Set with `SET model PC3_5K` or
+`SET model PC5K` (USB console, allowed after LOCK, applies at once, `SET model none`
+clears) or `tools/factory.py COMx --model PC3_5K`. Aliases `3.5K`, `PC3.5K`, `35K`,
+`PC35K` normalize to `PC3_5K`. Also in INFO, SELFTEST and GET /v2/setup/info
+(`powercell_model`, `rated_kva`, `usable_kw`; the old `model` key is still the board id /
+OTA hardware model).
 
 Solar: `solar.valid` / `metrics.solar_valid` is false and the PV values are null when the
 ADS1115 has no reading in the last 5 s. On I2C errors the reader backs off (3 failed

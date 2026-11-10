@@ -44,7 +44,7 @@ DEFAULT_API = DEFAULT_OTA
 SERIAL_RE = re.compile(r"^ACE-\d{6}$")  # fid::validSerial
 CSV_FIELDS = ["serial", "device_id", "mac", "gw_name", "ap_ssid", "fw", "registered", "locked",
               "timestamp", "hardware_model"]
-# Compile-time OTA models. Not the NVS --model values PC3K/PC5K/PC10K.
+# Compile-time OTA models. Not the NVS --model values PC3K/PC3_5K/PC5K/PC10K.
 OTA_MODELS = ("pc-dsp011-5kw", "pc-dsp011-35kw", "pc-stm01-5kw", "pc-stm01-35kw")
 
 
@@ -163,7 +163,7 @@ def serial_in_log(csv_path, serial):
         return any(r.get("serial") == serial for r in csv.DictReader(f))
 
 
-MODELS = ("PC3K", "PC5K", "PC10K")  # firmware pc::live::findModel (2.5.4)
+MODELS = ("PC3K", "PC3_5K", "PC5K", "PC10K")  # firmware pc::live::findModel (2.5.4/2.5.13)
 
 
 def require_ota_model(info):
@@ -206,15 +206,42 @@ def label_file_text(label, extra_lines, hardware_model):
 
 
 def normalize_model(m):
-    """'pc5k', '5K', '5kva' -> 'PC5K'; raises ValueError for anything else."""
+    """'pc5k', '5K', '5kva' -> 'PC5K'; '3.5K'/'PC35K'/'pc3_5k' -> 'PC3_5K'."""
     s = "".join(str(m).split()).upper()
     if s.endswith("KVA"):
         s = s[:-2]
     if not s.startswith("PC"):
         s = "PC" + s
+    s = s.replace(".", "_")  # PC3.5K -> PC3_5K
+    if s == "PC35K":
+        s = "PC3_5K"
     if s not in MODELS:
         raise ValueError(f"model must be one of {', '.join(MODELS)}")
     return s
+
+
+def model_hw_mismatch_warning(nvs_model, hardware_model):
+    """Warn when --model rating disagrees with INFO hardware_model. Never a hard fail."""
+    m = str(nvs_model or "")
+    hw = str(hardware_model or "")
+    if not m or not hw:
+        return None
+    if hw.endswith("-35kw") and m == "PC5K":
+        return ("WARNING: --model PC5K on a 35kw image (%s); prefer PC3_5K for "
+                "Powercell Prime 3.5 kVA" % hw)
+    if hw.endswith("-5kw") and m == "PC3_5K":
+        return ("WARNING: --model PC3_5K on a 5kw image (%s); prefer PC5K for "
+                "Powercell Prime Plus 5 kVA" % hw)
+    if hw.endswith("-35kw") and m == "PC3K":
+        return ("WARNING: --model PC3K (legacy 3 kVA) on a 35kw image (%s); "
+                "prefer PC3_5K" % hw)
+    if hw.endswith("-5kw") and m == "PC3K":
+        return ("WARNING: --model PC3K (legacy 3 kVA) on a 5kw image (%s); "
+                "prefer PC5K" % hw)
+    if hw.endswith(("-5kw", "-35kw")) and m == "PC10K":
+        return ("WARNING: --model PC10K on image %s; that NVS model is for a "
+                "10 kVA unit" % hw)
+    return None
 
 
 def append_csv(csv_path, row):
@@ -315,7 +342,7 @@ def main(argv=None):
     ap.add_argument("--reuse", action="store_true", help="unit already has a serial: keep it, redo the rest")
     ap.add_argument("--register", action="store_true", help="register on the backend (POST /api/devices/register)")
     ap.add_argument("--lock", action="store_true", help="LOCK after labelling (customer units only; needs --register)")
-    ap.add_argument("--model", help="Powercell model PC3K|PC5K|PC10K (fw 2.5.4+, SET model; stored in NVS)")
+    ap.add_argument("--model", help="Powercell model PC3K|PC3_5K|PC5K|PC10K (fw 2.5.4+, SET model; stored in NVS)")
     ap.add_argument("--serial", help="with --reprovision: restore this serial (ACE-NNNNNN) on an erased board")
     ap.add_argument("--reprovision", action="store_true",
                     help="erased board: write --serial again (no counter bump), new secret; with --register the "
@@ -360,6 +387,10 @@ def main(argv=None):
             die(str(e))
     if st.get("locked") == "1":
         die("unit is LOCKED; nothing to do (FACTORY_WIPE first to re-provision)")
+    if a.model:
+        warn = model_hw_mismatch_warning(a.model, st.get("hardware_model"))
+        if warn:
+            print(warn)
 
     cur = st.get("serial", "unset")
     if a.serial or a.reprovision:

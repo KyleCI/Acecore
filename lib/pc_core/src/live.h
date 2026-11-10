@@ -11,10 +11,10 @@ namespace live {
 
 // ---- Powercell model (factory-set, NVS pc_cfg/model) ----
 // ASSUMPTION (Caleb 2026-11-04): usable continuous power = 90 % of rated kVA
-// (5 kVA -> 4.5 kW). Confirm the derating per model with hardware.
+// (5 kVA -> 4.5 kW, 3.5 kVA -> 3.15 kW = 3150 W). Confirm the derating per model with hardware.
 struct Model { const char *code; float ratedKva; float usableKw; };
-// Accepts "PC3K", "PC5K", "PC10K" (case-insensitive; "5K", "5KVA", "PC5KVA" too).
-// Returns nullptr when unknown or empty.
+// Accepts "PC3K", "PC3_5K", "PC5K", "PC10K" (case-insensitive; "5K", "5KVA",
+// "PC5KVA", "3.5K", "PC3.5K", "35K", "PC35K" too). Returns nullptr when unknown or empty.
 const Model *findModel(const char *code);
 const Model *models(size_t &count);
 
