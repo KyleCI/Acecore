@@ -2,7 +2,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include "config.h"
+#if !POWERCELL_BMS_JKPB
 #include "jbd_bms.h"
+#endif
 #include "log.h"
 #include "pins.h"
 
@@ -17,7 +19,7 @@ Stats st;
 pc::jk::Assembler asmb;
 volatile bool paused = false, idle = false;
 
-#if POWERCELL_DSP011
+#if !POWERCELL_BMS_JKPB
 void publishJbd(const powercell::jbd::Reading& r) {
   pc::jk::Data d;
   d.cellCount = r.cellCount;
@@ -126,14 +128,18 @@ void task(void *) {
 void begin() {
   mx = xSemaphoreCreateMutex();
   uart.setRxBufferSize(1024);
-#if POWERCELL_DSP011
+#if !POWERCELL_BMS_JKPB
   uart.begin(PIN_BMS_BAUD, SERIAL_8N1, PIN_BMS_RX, PIN_BMS_TX);
   xTaskCreatePinnedToCore(task, "bms", 4096, nullptr, 1, nullptr, 1);
   LOGI("BMS", "INIT", "JBD poll %lu 8N1 rx=%d tx=%d swap=%d", (unsigned long)PIN_BMS_BAUD, PIN_BMS_RX, PIN_BMS_TX, DSP_BMS_UART_SWAP);
 #else
   uart.begin(JK_BMS_BAUD, SERIAL_8N1, PIN_BMS_RX, PIN_BMS_TX);
   xTaskCreatePinnedToCore(task, "bms", 4096, nullptr, 1, nullptr, 1);
+#if POWERCELL_DSP011
+  LOGI("BMS", "INIT", "JK-PB frames %lu 8N1 rx=%d tx=%d swap=%d", (unsigned long)JK_BMS_BAUD, PIN_BMS_RX, PIN_BMS_TX, DSP_BMS_UART_SWAP);
+#else
   LOGI("BMS", "INIT", "JK-PB frames %lu 8N1 rx=%d tx=%d", (unsigned long)JK_BMS_BAUD, PIN_BMS_RX, PIN_BMS_TX);
+#endif
 #endif
 }
 

@@ -1,5 +1,9 @@
 # Collector firmware changelog
 
+## Unreleased (DSP 5 kW JK-PB BMS)
+- DSP 5 kW images (`esp32dev_dsp011_5kw`) listen for JK-PB 300-byte frames at 115200 on the existing DSP BMS pins (RX GPIO16 / TX GPIO17, `DSP_BMS_UART_SWAP` 0). Caleb confirmed 2026-11-10 17:47 WAT that the unit uses the same JK-PB model as the STM images, over TTL UART. Build flag `DSP_BMS_JKPB=1`. Stale aging, no-zero publish, BMS-own SOC latch policy and the BMS RAW pause/idle hook are the same as the STM JK path. INFO prints `bms=JK-PB baud=115200 rx=16 tx=17`.
+- DSP 3.5 kW images stay on the JBD 9600 polled driver (`DSP_BMS_JKPB` defaults to 0). STM images unchanged.
+
 ## Unreleased (DSP v0.1.1 PZEM pins)
 - DSP images only: PZEM UART1 moves to RX GPIO35 / TX GPIO32 (was RX GPIO32 / TX GPIO33), 9600 8N1, per Caleb 2026-11-10 13:16 WAT. GPIO33 is unused on DSP. STM images unchanged.
 - GPIO35 is input only with no internal pull-up. The PZEM open-collector TX needs a board pull-up to 3.3 V on GPIO35, and the PZEM TTL side must be 3.3 V safe (no 5 V pull-up).

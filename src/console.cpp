@@ -55,6 +55,10 @@ void info() {
     Serial.printf("model=%s rated_kva=%.1f usable_kw=%.2f\n", m ? m->code : "unset", m ? m->ratedKva : 0.0f, m ? m->usableKw : 0.0f); }
   // OTA identity. Separate from model= above, which is the NVS PC3K/PC3_5K/PC5K/PC10K setting.
   Serial.printf("hardware_model=%s\n", POWERCELL_HARDWARE_MODEL);
+#if POWERCELL_DSP011
+  Serial.printf("bms=%s baud=%lu rx=%d tx=%d\n", POWERCELL_BMS_JKPB ? "JK-PB" : "JBD",
+                (unsigned long)PIN_BMS_BAUD, PIN_BMS_RX, PIN_BMS_TX);
+#endif
   Serial.printf("ap_ssid=%s wifi_state=%s hotspot=%d\n", id.apSsid, net::stateName(), net::apActive());
   String ofp = onboarding::fingerprint();
   Serial.printf("onboarding=2 passcode=%s default=%d claimed=%d fingerprint=%s\n", onboarding::passcodeSet() ? "set" : "unset",
@@ -163,7 +167,7 @@ void selftest() {
   d["secret"] = fid::hasSecret(); d["secret_reported"] = fid::secretReported();
   d["locked"] = settings::provisioningLocked();
   if (const pc::live::Model *m = unitmodel::get()) d["model"] = m->code; else d["model"] = nullptr;
-  // JK BMS over the TTL-to-RS485 link (Serial2)
+  // BMS over Serial2 (JK-PB stream or JBD poll, see POWERCELL_BMS_JKPB)
   pc::jk::Data b; uint32_t age = 0;
   bms::Stats bs = bms::stats();
   bool bok = bms::read(b, &age);
@@ -245,7 +249,7 @@ void handle(String cmd) {
   if (!cmd.length()) return;
   if (cmd == "INFO") info();
   else if (cmd == "BMS RAW") {  // TEMPORARY: next 64 raw bytes from Serial2, 2 s timeout
-    Serial.printf("BMS RAW rx=%d tx=%d baud=%lu\n", PIN_BMS_RX, PIN_BMS_TX, (unsigned long)JK_BMS_BAUD);
+    Serial.printf("BMS RAW rx=%d tx=%d baud=%lu\n", PIN_BMS_RX, PIN_BMS_TX, (unsigned long)PIN_BMS_BAUD);
     size_t g = bms::rawDump(Serial, 64, 2000);
     Serial.printf("BMS RAW %u/64 bytes%s\n", (unsigned)g, g < 64 ? " (timeout)" : "");
   }

@@ -1,6 +1,7 @@
 .pio/
 .vscode/
 test/host/host_tests
+test/host/check_dsp_bms_*
 include/secrets.h
 *.bin
 __MACOSX/

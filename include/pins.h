@@ -16,9 +16,12 @@
 // STM32 images: JK-PB listen-only on the RS485 header. Proven map is
 // Serial2.begin(115200, 8N1, 17, 16) (rx=17, tx=16). The swapped map read
 // nothing on ACE-000001.
-// DSP images: JBD polled at 9600. Caleb confirmed 2026-11-10: BMS TXD -> ESP RX
-// GPIO16 and BMS RXD <- ESP TX GPIO17. pinDefines.h lists the opposite pair at
-// 115200. DSP_BMS_UART_SWAP stays 0. Set it to 1 only to try that other pair.
+// DSP images: the UART pins are the same on both ratings. Caleb confirmed
+// 2026-11-10: BMS TXD -> ESP RX GPIO16 and BMS RXD <- ESP TX GPIO17.
+// pinDefines.h lists the opposite pair. DSP_BMS_UART_SWAP stays 0. Set it to
+// 1 only to try that other pair. The driver and baud follow DSP_BMS_JKPB:
+// 3.5 kW (flag 0) polls JBD at 9600; 5 kW (flag 1) listens for JK-PB frames
+// at 115200, the same protocol as the STM images.
 #if POWERCELL_DSP011
 #ifndef DSP_BMS_UART_SWAP
 #define DSP_BMS_UART_SWAP 0
@@ -30,7 +33,11 @@
 #define PIN_BMS_RX 16
 #define PIN_BMS_TX 17
 #endif
+#if DSP_BMS_JKPB
+#define PIN_BMS_BAUD JK_BMS_BAUD
+#else
 #define PIN_BMS_BAUD 9600
+#endif
 #define PIN_PZEM_RX 35   // ESP RX <- PZEM TX. Input-only pin, no internal pull-up: board needs a pull-up on PZEM TX.
 #define PIN_PZEM_TX 32   // ESP TX -> PZEM RX
 #define PIN_DSP_SD_CS 5  // was GPIO33; GPIO5 was the unused MPPT CS
@@ -100,6 +107,20 @@ static_assert(PIN_PZEM_RX == 35 && PIN_PZEM_TX == 32, "DSP PZEM UART1: RX 35, TX
 static_assert(PIN_DSP_SD_CS == 5 && PIN_SPI_CS_MPPT == 5, "DSP SD CS reuses the unused MPPT CS");
 static_assert(PIN_PZEM_RX != PIN_DSP_SD_CS && PIN_PZEM_TX != PIN_DSP_SD_CS, "SD CS is not a PZEM pin");
 static_assert(PIN_BMS_RX != PIN_PZEM_RX && PIN_BMS_TX != PIN_PZEM_TX, "BMS/PZEM UART overlap");
+#if !DSP_BMS_UART_SWAP
+static_assert(PIN_BMS_RX == 16 && PIN_BMS_TX == 17, "DSP BMS UART: RX 16, TX 17");
+#endif
+#if DSP_BMS_JKPB
+static_assert(PIN_BMS_BAUD == 115200, "DSP JK-PB baud is 115200");
+#else
+static_assert(PIN_BMS_BAUD == 9600, "DSP JBD baud is 9600");
+#endif
+#if defined(POWERCELL_FACTORY_RATED_ACTIVE_W) && POWERCELL_FACTORY_RATED_ACTIVE_W == 5000
+static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "5 kW DSP uses JK-PB");
+#endif
+#if defined(POWERCELL_FACTORY_RATED_ACTIVE_W) && POWERCELL_FACTORY_RATED_ACTIVE_W == 3500
+static_assert(DSP_BMS_JKPB == 0 && POWERCELL_BMS_JKPB == 0, "3.5 kW DSP uses JBD");
+#endif
 static_assert(PIN_LED_RED == 12 && PIN_LED_BLUE == 13 && PIN_LED_GREEN == 14, "DSP RGB");
 static_assert(PIN_FRONT_LIGHT == 27 && PIN_LED_GREEN != PIN_FRONT_LIGHT, "front light is not the green LED");
 static_assert(PIN_GRID_SENSE == 39, "DSP grid sense is GPIO39");
