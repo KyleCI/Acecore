@@ -62,6 +62,14 @@ inline size_t v011_dsp_pad_steps(bool logical_on, PadStep out[kDspPadSteps]) {
   return n;
 }
 
+// DSP front light on GPIO27 (NPN driver, HIGH = ON). It follows the inverter
+// exactly as Dubem's firmware does (provisioning.cpp applyDeviceState:
+// digitalWrite(FRONT_LIGHT_PIN, deviceState ? HIGH : LOW)). Caleb approved
+// 2026-11-10 21:10 WAT. GPIO27 is a plain GPIO (no JTAG function), so
+// pinMode/digitalWrite is enough. The original profile has no front light.
+constexpr int kDspFrontLightV011 = 27;
+inline int v011_front_light_level(bool inverter_on) { return inverter_on ? 1 : 0; }
+
 inline bool battery_recovery_drives_on() { return false; }
 
 enum class HardwareProfile : uint8_t { Original = 0, V011 = 1 };

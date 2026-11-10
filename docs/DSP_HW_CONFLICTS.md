@@ -14,7 +14,7 @@ These apply to `esp32dev_dsp011_5kw` and `esp32dev_dsp011_35kw` only. STM images
 
 6. GPIO14 was the original SD chip select. On the DSP board it is the green LED. Dubem notes that GPIO14 emits a PWM burst during ROM boot, so the green LED can flicker before `setup()`. The DSP image does not use GPIO14 as a chip select.
 
-7. GPIO27 was the green LED. It is now the front light (NPN, HIGH = ON). The firmware drives it low at boot and does not turn it on by itself.
+7. GPIO27 was the green LED. It is now the front light (NPN, HIGH = ON). Since 2026-11-10 21:10 WAT (Caleb approved) it follows the inverter exactly as Dubem's firmware does (`provisioning.cpp` `applyDeviceState`): HIGH with GPIO15 ON, LOW with every OFF (boot latch, battery cutoff, overload, payment lock, OTA prepare, factory reset/wipe). `gateway` owns the pin (`frontLight()` with `pinMode`/`digitalWrite`); `leds` no longer touches it.
 
 8. GPIO12 is the red LED and a strapping pin (MTDI). The firmware writes it low before `pinMode` and does not enable a pull-up.
 
@@ -28,7 +28,7 @@ These apply to `esp32dev_dsp011_5kw` and `esp32dev_dsp011_35kw` only. STM images
 
 12. `esp32dev_dsp011_35kw` was already defined next to the 5 kW DSP image. It was not added in this change.
 
-13. Front light GPIO27. Dubem's working firmware turns the front light on and off together with GPIO15 (`provisioning.cpp` `applyDeviceState`). This firmware still drives GPIO27 low at boot and never turns it on. Not changed; decide whether it should follow the inverter.
+13. Front light GPIO27. Resolved: follows the inverter (item 7).
 
 14. RTC. Dubem's working firmware drives a DS1307 at 0x68 (`clock_rtc.cpp`). This firmware's driver is written for a DS3231 at the same address. The time registers match, but the DS3231 status/OSF register does not exist on a DS1307, so the RTC can be reported as untrusted. Not a cause of missing data or on/off.
 

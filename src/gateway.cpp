@@ -13,6 +13,9 @@
 #endif
 
 static_assert(PIN_PWR_KEY == powercell::kDspEnableV011, "GPIO15 is the shared AC-enable pin");
+#if POWERCELL_DSP011
+static_assert(PIN_FRONT_LIGHT == powercell::kDspFrontLightV011, "DSP front light is GPIO27");
+#endif
 
 namespace gateway {
 namespace {
@@ -43,8 +46,17 @@ void padWrite(bool on) {
   }
 }
 
+// Front light follows the inverter: same call, same order, every on and off path.
+void frontLight(bool on) {
+  const int level = powercell::v011_front_light_level(on) ? HIGH : LOW;
+  digitalWrite(PIN_FRONT_LIGHT, level);
+  pinMode(PIN_FRONT_LIGHT, OUTPUT);
+  digitalWrite(PIN_FRONT_LIGHT, level);
+}
+
 void latchDspEnableOff() {
   padWrite(false);
+  frontLight(false);
   g_on = false;
 }
 #endif
@@ -52,6 +64,7 @@ void latchDspEnableOff() {
 void drive(bool on) {
 #if POWERCELL_DSP011
   padWrite(on);
+  frontLight(on);
 #else
   digitalWrite(PIN_PWR_KEY, on ? HIGH : LOW);
   digitalWrite(PIN_PWR_LIGHT, on ? HIGH : LOW);

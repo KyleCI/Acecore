@@ -1240,6 +1240,36 @@ static void test_dsp_pad_steps() {
   for (size_t i = 0; i < n; ++i) CHECK(st[i].op != PadOp::HoldEnable);
 }
 
+static bool read_text_file(const char *path, char *buf, size_t cap);
+static void test_front_light_follows() {
+  using namespace powercell;
+  CHECK(kDspFrontLightV011 == 27);
+  CHECK(v011_front_light_level(true) == 1 && v011_front_light_level(false) == 0);  // Dubem: HIGH = ON
+  CHECK(v011_front_light_level(false) == v011_dsp_level(false) && v011_front_light_level(true) == v011_dsp_level(true));  // same as GPIO15
+  // Every DSP pad write (boot latch, all off paths via latchOutputOff/drive, and on) also drives the light.
+  char src[16384];
+  const char *paths[] = {"../../src/gateway.cpp", "../src/gateway.cpp", "src/gateway.cpp"};
+  bool got = false;
+  for (const char *path : paths) if (read_text_file(path, src, sizeof src)) { got = true; break; }
+  CHECK(got);
+  if (!got) return;
+  const char *latch = strstr(src, "void latchDspEnableOff()");
+  const char *drv = strstr(src, "void drive(bool on)");
+  CHECK(latch && drv);
+  if (!latch || !drv) return;
+  const char *latchEnd = strstr(latch, "\n}");
+  const char *drvEnd = strstr(drv, "\n}");
+  const char *a = strstr(latch, "frontLight(false);");
+  const char *b = strstr(drv, "frontLight(on);");
+  CHECK(a && a < latchEnd);
+  CHECK(b && b < drvEnd);
+  char leds[8192];
+  const char *lpaths[] = {"../../src/leds.cpp", "../src/leds.cpp", "src/leds.cpp"};
+  got = false;
+  for (const char *path : lpaths) if (read_text_file(path, leds, sizeof leds)) { got = true; break; }
+  CHECK(got && !strstr(leds, "PIN_FRONT_LIGHT}"));  // leds no longer forces the light low
+}
+
 static void test_pzem_stats() {
   using namespace powercell;
   CHECK(pzem_classify(25, PzemStatus::Ok, true) == PzemPollOutcome::Ok);
@@ -1880,7 +1910,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
+  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();

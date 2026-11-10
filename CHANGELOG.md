@@ -1,5 +1,8 @@
 # Collector firmware changelog
 
+## Unreleased (DSP front light)
+- DSP images: the front light on GPIO27 (HIGH = ON) follows the inverter like Dubem's firmware: on with ON, off with the boot latch and every off path. Caleb approved 2026-11-10 21:10 WAT. STM images unchanged.
+
 ## Unreleased (DSP fixes from Dubem's working firmware)
 - DSP GPIO15 now actually switches. The pad resets into its MTDO (JTAG) IO_MUX function and the DSP path never selected the GPIO function, so ON and OFF writes did not reach the pin. Each write now selects the GPIO function first (`esp_rom_gpio_pad_select_gpio`), releases the hold, sets the level, and holds only at the off level. HIGH = ON unchanged.
 - DSP BMS: both ratings listen for JK-PB at 115200 on RX GPIO17 / TX GPIO16, matching Dubem's working firmware (`JK_RX 17`, `JK_TX 16`, `JK_BAUD 115200`). The 3.5 kW image no longer polls JBD at 9600 on RX16/TX17, which returned no data.
