@@ -29,7 +29,7 @@ bool hmac(const uint8_t *msg, size_t n, uint8_t out[32]);  // HMAC-SHA256 keyed 
 String apPass();                   // "" if none stored yet
 bool setApPass(const String &p);
 
-struct ResetInfo { bool pending = false; String source, cmdId; uint32_t at = 0; };
+struct ResetInfo { bool pending = false; String source, cmdId; uint32_t at = 0, seq = 0; };  // seq: resets so far on this unit
 void markReset(const char *source, const String &cmdId, uint32_t resetAt, uint32_t lastAt);
 ResetInfo resetInfo();
 void clearResetPending();

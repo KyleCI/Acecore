@@ -1796,6 +1796,24 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
   CHECK(strstr(b, "today_kwh=null total_kwh=null") != nullptr);
 }
 
+static void test_factory_reset_scope() {
+  using namespace pc::onb;
+  // Customer state goes.
+  const char *erased[] = {"pc_onb", "pc_offline", "registry", "forgotten", "sock_cfg", "sock_prio", "ac_out", "bat_set"};
+  for (auto ns : erased) CHECK(factoryResetErasesNamespace(ns));
+  const char *removed[] = {"wifi_ssid", "wifi_pass", "local_tok", "net_mode", "ap_pass", "label_pc", "gw_name"};
+  for (auto k : removed) CHECK(factoryResetRemovesKey(k));
+  // Factory identity, rating, calibration, OTA, battery protection and provisioning stay.
+  const char *kept[] = {"pc_ident", "pc_cfg", "system_cfg", "pc_ota", "pwr_guard", "battery_alerts", "solar", "clock", "pc_secure", "pc_factory"};
+  for (auto ns : kept) CHECK(!factoryResetErasesNamespace(ns));
+  const char *keptKeys[] = {"api_key", "ota_url", "admin_tok", "espnow_keys", "locked", "migrated", "serial", "secret", "model", "rated"};
+  for (auto k : keptKeys) CHECK(!factoryResetRemovesKey(k));
+  CHECK(!factoryResetErasesNamespace(nullptr));
+  CHECK(!factoryResetRemovesKey(nullptr));
+  CHECK(kFactoryResetNamespaceCount == 8);
+  CHECK(kFactoryResetUserKeyCount == 7);
+}
+
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -1805,7 +1823,7 @@ int main() {
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();
   test_ota_hardware_model();
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
-  test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_ws_rules();
+  test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock();
   printf("%d passed, %d failed\n", g_pass, g_fail);

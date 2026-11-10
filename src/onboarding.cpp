@@ -239,7 +239,7 @@ void factoryReset(const char *source, const String &cmdId, uint32_t issuedAt) {
 #endif
   // v15 (Caleb 2026-10-23): back to as-bought. Wipes owner, passcode, phones, sessions,
   // claim, Wi-Fi/router, net_mode, local token, user hotspot password, tz, sockets, socket
-  // settings and the offline queue. Keeps the factory identity (serial, secret, label
+  // settings, Manual output/battery limits and the offline queue. Keeps the factory identity (serial, secret, label
   // hotspot password) and backend provisioning (api_key, ota_url). The server is told on
   // the next connect (reset event, reset_pending until event_ack).
   {
@@ -248,8 +248,12 @@ void factoryReset(const char *source, const String &cmdId, uint32_t issuedAt) {
     g_pairs.clear(); g_sessions.clear(); g_claimActive = false; g_claimIssuedBoot = false;
     g_global.success();
     Preferences p;
-    const char *spaces[] = {NS, "pc_offline", "registry", "forgotten", "sock_cfg", "sock_prio"};
-    for (auto ns : spaces) if (nvsNsExists(ns) && p.begin(ns, false)) { p.clear(); p.end(); }
+    // Account deactivation (Caleb 2026-11-10): the Manual output and battery limits are
+    // customer settings too, so they return to the defaults with everything else.
+    for (size_t i = 0; i < pc::onb::kFactoryResetNamespaceCount; ++i) {
+      const char *ns = pc::onb::kFactoryResetNamespaces[i];
+      if (nvsNsExists(ns) && p.begin(ns, false)) { p.clear(); p.end(); }
+    }
     settings::wipeUser();
     clock_::clearUserSettings();
     uint32_t now = unixNow();
@@ -268,6 +272,7 @@ String labelLine() {
 
 void buildHello(JsonDocument &doc) {
   String fp = fingerprint();
+  fid::ResetInfo ri = fid::resetInfo();  // outside the onboarding lock
   Lock l;
   doc["type"] = "device_hello";
   doc["onboarding_version"] = 2;
@@ -285,6 +290,15 @@ void buildHello(JsonDocument &doc) {
     c["expires_at"] = u ? u + (g_claimDeadline - now) / 1000 : 0;
   } else doc["claim"] = nullptr;
   if (g_owner.length()) doc["owner_id"] = g_owner; else doc["owner_id"] = nullptr;
+  // A reset the server has not acknowledged yet. Sent in the hello so the server releases
+  // the unit before it would re-bind the old owner (the separate reset event follows).
+  if (ri.pending) {
+    JsonObject fr = doc["factory_reset"].to<JsonObject>();
+    fr["source"] = ri.source;
+    if (ri.cmdId.length()) fr["cmd_id"] = ri.cmdId; else fr["cmd_id"] = nullptr;
+    fr["reset_at"] = ri.at;
+    fr["reset_seq"] = ri.seq;
+  } else doc["factory_reset"] = nullptr;
   if (WiFi.status() == WL_CONNECTED) doc["lan_ip"] = WiFi.localIP().toString(); else doc["lan_ip"] = nullptr;
 }
 bool helloDue() { return g_helloDirty; }

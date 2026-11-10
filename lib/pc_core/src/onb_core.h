@@ -117,5 +117,17 @@ const char *setPasscodeError(const char *requestId, bool tls, uint64_t nowUnix, 
 bool validUnclaimReason(const char *r);
 bool unclaimClearsPairs(const char *r);  // transfer | support clear /v2/pair tokens; owner_request keeps them
 bool validOwnerId(const char *o);        // 1..64 printable, no quotes/backslash
+
+// ---- Factory reset (as purchased) -------------------------------------------------
+// NVS namespaces a factory reset erases whole: owner, passcode, phones, sessions, claim,
+// offline queue, AcePlug registry, socket config and the Manual output/battery limits.
+extern const char *const kFactoryResetNamespaces[];
+extern const size_t kFactoryResetNamespaceCount;
+// Customer keys removed from pc_secure: home Wi-Fi, network mode, local token, the
+// customer hotspot password (the label password in pc_ident applies again), names.
+extern const char *const kFactoryResetUserKeys[];
+extern const size_t kFactoryResetUserKeyCount;
+bool factoryResetErasesNamespace(const char *ns);
+bool factoryResetRemovesKey(const char *key);
 }  // namespace onb
 }  // namespace pc
