@@ -18,6 +18,7 @@
 #include "solar.h"
 #include "dsp011_pzem.h"
 #include "stm_energy.h"
+#include "grid_sense.h"
 #include "stm32_link.h"
 #include "factory_id.h"
 #include "live.h"
@@ -25,6 +26,9 @@
 
 namespace telemetry {
 namespace {
+#if POWERCELL_DSP011
+void dspGridKeys(JsonObject o);
+#endif
 void faultList(JsonArray arr, uint32_t bits) {
   static const char *names[8] = {"overcurrent", "short_circuit", "dc_overvoltage", "dc_undervoltage",
                                  "output_overvoltage", "thermal", "ntc_open", "no_feedback"};
@@ -59,6 +63,9 @@ void inverterBlock(JsonObject inv) {
   stmEnergyToJson(inv, "energy_today_kwh", false);
 #endif
   num("grid_voltage", s.has_grid, s.grid_v);
+#if POWERCELL_DSP011
+  dspGridKeys(inv);
+#endif
   num("temperature", s.has_temp, s.temp_c);
   num("battery_voltage", s.has_bat, s.bat_v);  // STM32 PA3 (cross-check)
   if (!fresh) return;
@@ -132,6 +139,23 @@ void batteryBlock(JsonObject b) {
   b["alarm_bits"] = d.alarms;
   bmsAlarms(b["alarms"].to<JsonArray>(), d.alarms);
 }
+
+#if POWERCELL_DSP011
+void dspGridKeys(JsonObject o) {
+  DspGridReading g;
+  o["grid_v_calibrated"] = false;
+  o["grid_v_source"] = "adc_gpio39_k357";
+  if (dspGridRead(&g) && g.valid) {
+    o["grid_voltage"] = g.vrms;
+    o["grid_available"] = g.present;
+    o["grid_v_clipped"] = g.clipped;
+  } else {
+    o["grid_voltage"] = nullptr;
+    o["grid_available"] = nullptr;
+    o["grid_v_clipped"] = nullptr;
+  }
+}
+#endif
 
 void solarBlock(JsonObject o) {
   solar::Reading r = solar::read();
@@ -286,9 +310,15 @@ void buildTelemetry(JsonDocument &doc) {
   {  // 2.2 top-level fields, every cycle, null when unknown
     battery::Reading b = battery::read();
     if (b.valid) doc["soc"] = b.soc; else doc["soc"] = nullptr;
+#if POWERCELL_DSP011
+    DspGridReading grid;
+    if (dspGridRead(&grid) && grid.valid) doc["grid_available"] = grid.present;
+    else doc["grid_available"] = nullptr;
+#else
     pc::Stm32Status s; uint32_t age = 0;
     if (stm32link::status(s, &age) && age < STM32_STALE_MS && s.has_grid) doc["grid_available"] = s.grid_v >= 160.0f;
     else doc["grid_available"] = nullptr;
+#endif
     events::activeToJson(doc["active_events"].to<JsonArray>());
   }
   batteryBlock(doc["battery"].to<JsonObject>());
@@ -363,7 +393,24 @@ void buildMetrics(JsonDocument &doc) {
   num("inverterVoltage", fresh && s.has_vout, s.vout);
   num("inverterCurrent", fresh && s.has_iout, s.iout);
   num("inverter_temperature", fresh && s.has_temp, s.temp_c);
+#if POWERCELL_DSP011
+  {
+    DspGridReading grid;
+    doc["grid_v_calibrated"] = false;
+    doc["grid_v_source"] = "adc_gpio39_k357";
+    if (dspGridRead(&grid) && grid.valid) {
+      doc["gridVoltage"] = grid.vrms;
+      doc["grid_available"] = grid.present;
+      doc["grid_v_clipped"] = grid.clipped;
+    } else {
+      doc["gridVoltage"] = nullptr;
+      doc["grid_available"] = nullptr;
+      doc["grid_v_clipped"] = nullptr;
+    }
+  }
+#else
   num("gridVoltage", fresh && s.has_grid, s.grid_v);
+#endif
   if (fresh) { doc["inverter_mode"] = pc::sysStateName(s.sys); doc["fault_code"] = s.fault; }
   solar::Reading sr = solar::read();
   num("solarVoltage", sr.ok, sr.voltage);

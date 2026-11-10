@@ -19,6 +19,8 @@ Toolchain: espressif32@7.0.1, Arduino-ESP32 2.0.17 (IDF 4.4), the same as 1.0.x.
 
 **Cloud:** the four product images use `wss://api-dev.acecore.tech` and OTA `https://api-dev.acecore.tech`. Each image's OTA model is its own `pc-stm01-*` or `pc-dsp011-*` string. See `docs/OTA_HARDWARE_MODEL.md`.
 
+**DSP board (Caleb, 2026-11-10):** JBD BMS UART is RX GPIO16 / TX GPIO17 at 9600 (`DSP_BMS_UART_SWAP` stays 0). PZEM is UART1 RX GPIO32 / TX GPIO33 and is the only output V/I source. Grid voltage is ADC1 GPIO39 only; GPIO34 and GPIO35 are not read. GPIO15 power is LOW = ON (`DSP_PWR_ACTIVE_LEVEL` 0). Details and the ADC headroom caveat are in `docs/DSP_HW_CONFLICTS.md`.
+
 ## Provisioning
 - No secrets are compiled in. `tools/provision.py --port COMx --file <KEY=VALUE file>` sends `SET api_key`, `wifi_ssid`, `wifi_pass`, `gw_name`, `device_secret`, `ota_url`, `local_tok` over the USB console and prints only OK/ERR and the token fingerprint. Provisioning files are gitignored. (v17: one factory identity secret; `DEV_SECRET` / `SET dev_secret` removed.) See `docs/API_KEY_ROTATION.md`.
 - WebSocket keepalive: client ping every 15 s, pong timeout 10 s, disconnect after 2 misses; server pings are answered in `ws.loop()`. The periodic OTA check runs alongside the socket; only an actual install pauses it (`lib/pc_core/src/ota_gate.h`). A main-loop pass over 500 ms logs `LOOP SLOW`, and `LOOP STATS` reports the worst pass each minute.

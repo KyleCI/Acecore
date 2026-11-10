@@ -16,9 +16,9 @@
 // STM32 images: JK-PB listen-only on the RS485 header. Proven map is
 // Serial2.begin(115200, 8N1, 17, 16) (rx=17, tx=16). The swapped map read
 // nothing on ACE-000001.
-// DSP images: JBD polled at 9600. bms.h wiring is BMS TXD -> ESP RX GPIO16
-// and BMS RXD <- ESP TX GPIO17. pinDefines.h instead lists JK_RX 17 / JK_TX 16
-// at 115200. Default follows bms.h. DSP_BMS_UART_SWAP=1 selects the pinDefines pair.
+// DSP images: JBD polled at 9600. Caleb confirmed 2026-11-10: BMS TXD -> ESP RX
+// GPIO16 and BMS RXD <- ESP TX GPIO17. pinDefines.h lists the opposite pair at
+// 115200. DSP_BMS_UART_SWAP stays 0. Set it to 1 only to try that other pair.
 #if POWERCELL_DSP011
 #ifndef DSP_BMS_UART_SWAP
 #define DSP_BMS_UART_SWAP 0
@@ -35,9 +35,9 @@
 #define PIN_PZEM_TX 33   // ESP TX -> PZEM RX
 #define PIN_DSP_SD_CS 5  // was GPIO33; GPIO5 was the unused MPPT CS
 #define PIN_FRONT_LIGHT 27
-#define PIN_AC_VOUT 34
-#define PIN_AC_GRID 35
-#define PIN_AC_ISENSE 39
+// Only the grid is sensed here. Output volts and current come from the PZEM.
+// GPIO39 is the v0.2 grid-sense node (ADC1). GPIO34 and GPIO35 are not read.
+#define PIN_GRID_SENSE 39
 #else
 #define PIN_BMS_RX 17
 #define PIN_BMS_TX 16
@@ -101,8 +101,6 @@ static_assert(PIN_PZEM_RX != PIN_DSP_SD_CS && PIN_PZEM_TX != PIN_DSP_SD_CS, "SD 
 static_assert(PIN_BMS_RX != PIN_PZEM_RX && PIN_BMS_TX != PIN_PZEM_TX, "BMS/PZEM UART overlap");
 static_assert(PIN_LED_RED == 12 && PIN_LED_BLUE == 13 && PIN_LED_GREEN == 14, "DSP RGB");
 static_assert(PIN_FRONT_LIGHT == 27 && PIN_LED_GREEN != PIN_FRONT_LIGHT, "front light is not the green LED");
-static_assert(PIN_AC_VOUT >= 32 && PIN_AC_GRID >= 32 && PIN_AC_ISENSE >= 32, "AC sense stays on ADC1");
-static_assert(PIN_AC_VOUT != PIN_AC_GRID && PIN_AC_VOUT != PIN_AC_ISENSE && PIN_AC_GRID != PIN_AC_ISENSE,
-              "AC sense pins distinct");
+static_assert(PIN_GRID_SENSE == 39, "DSP grid sense is GPIO39");
 static_assert(PIN_I2C_SDA == 21 && PIN_I2C_SCL == 22, "DS3231 stays on I2C 21/22");
 #endif

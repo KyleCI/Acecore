@@ -3,8 +3,8 @@
 #include "jk_bms.h"
 
 // STM images: JK-PB BMS on Serial2 (IO17 RX / IO16 TX, 115200 8N1). The BMS
-// streams 300-byte frames. DSP images: JBD polled at 9600 8N1, default
-// IO16 RX / IO17 TX (DSP_BMS_UART_SWAP selects the other pair). A bad frame
+// streams 300-byte frames. DSP images: JBD polled at 9600 8N1. Caleb confirmed
+// 2026-11-10: RX GPIO16, TX GPIO17. DSP_BMS_UART_SWAP stays 0. A bad frame
 // never publishes zeros: the last good reading ages out after JK_BMS_STALE_MS.
 namespace bms {
 struct Stats { uint32_t frames = 0, ok = 0, setupFrames = 0, checksumErrors = 0, badFrames = 0, timeouts = 0; };

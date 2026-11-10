@@ -26,6 +26,7 @@
 #include "dsp011_pzem.h"
 #include "stm32_link.h"
 #include "stm_energy.h"
+#include "grid_sense.h"
 #include "stm32_updater.h"
 #include "web_local.h"
 
@@ -57,6 +58,7 @@ void setup() {
 #endif
 #if POWERCELL_DSP011
   hwPzemBegin();
+  dspGridBegin();
 #endif
   battery::begin();
   bms::begin();

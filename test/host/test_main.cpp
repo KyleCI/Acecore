@@ -869,6 +869,7 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
 #include "ac_energy_today.h"
 #include "stm_energy.h"
 #include "jbd_bms.h"
+#include "grid_sense.h"
 static powercell::BatteryReading soc_at(float percent, uint32_t at, bool bms_own = true) {
   return {true, percent, 51.2f, at, false, bms_own};
 }
@@ -1629,6 +1630,49 @@ static void test_stm_estimate() {
   CHECK(kept_today > 0);
 }
 
+static void test_grid_sense() {
+  using namespace powercell::grid;
+  const float k = kScale;
+  const int n = kSampleCount;
+  float wave[kSampleCount];
+  const float offset_v = 1.20f;  // not 1.65 V
+  const float peak_v = (230.f / k) * sqrtf(2.f);
+  for (int i = 0; i < n; ++i) {
+    const float pin = offset_v + peak_v * sinf(2.f * 3.14159265f * static_cast<float>(i) / kSamplesPerCycle);
+    wave[i] = pin * 1000.f;
+  }
+  const WaveResult mains = fromPinMillivolts(wave, n, k);
+  CHECK(mains.ok && !mains.clipped);
+  NEAR(mains.ac_ref_v, offset_v, 0.02);
+  NEAR(mains.vrms, 230.0, 0.5);
+
+  float zero[kSampleCount];
+  for (int i = 0; i < n; ++i) zero[i] = 1800.f;
+  const WaveResult dead = fromPinMillivolts(zero, n, k);
+  CHECK(dead.ok && !dead.clipped);
+  NEAR(dead.ac_ref_v, 1.8, 0.001);
+  NEAR(dead.vrms, 0.0, 0.001);
+
+  float biased[8] = {900, 1100, 1300, 1500, 1700, 1900, 2100, 2300};
+  NEAR(meanMv(biased, 8) / 1000.f, 1.6, 0.001);
+  const WaveResult mid = fromPinMillivolts(biased, 8, k);
+  CHECK(mid.ok);
+  NEAR(mid.ac_ref_v, 1.6, 0.001);
+
+  wave[3] = 2500.f;
+  CHECK(fromPinMillivolts(wave, n, k).clipped);
+  wave[3] = offset_v * 1000.f;
+  wave[4] = 100.f;
+  CHECK(fromPinMillivolts(wave, n, k).clipped);
+  CHECK(!anyClipped(zero, n));
+
+  CHECK(!presentHysteresis(false, 165.f));
+  CHECK(presentHysteresis(false, 170.f));
+  CHECK(presentHysteresis(true, 165.f));
+  CHECK(presentHysteresis(true, 160.f));
+  CHECK(!presentHysteresis(true, 159.f));
+}
+
 static void test_jbd() {
   using namespace powercell::jbd;
   uint8_t req[7];
@@ -1697,7 +1741,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_jbd(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
+  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();

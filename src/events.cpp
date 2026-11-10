@@ -10,6 +10,7 @@
 #include "offline_queue.h"
 #include "sockets/sockets.h"
 #include "stm32_link.h"
+#include "grid_sense.h"
 
 namespace events {
 namespace {
@@ -114,6 +115,10 @@ void service() {
     in.hasIout = s.has_iout; in.iout = s.iout; in.hasTemp = s.has_temp; in.temp = s.temp_c;
     in.hasGrid = s.has_grid; in.gridV = s.grid_v;
   }
+#if POWERCELL_DSP011
+  DspGridReading grid;
+  if (dspGridRead(&grid) && grid.valid) { in.hasGrid = true; in.gridV = grid.vrms; }
+#endif
   pc::jk::Data d;
   if ((in.bmsOnline = bms::read(d))) { in.bmsAlarms = d.alarms; in.bmsCurrentA = d.currentMa / 1000.0f; }
   battery::Reading b = battery::read();

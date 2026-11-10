@@ -22,6 +22,7 @@
 #include "factory_id.h"
 #include "dsp011_log.h"
 #include "payment_lock.h"
+#include "grid_sense.h"
 #include "telemetry.h"
 
 namespace console {
@@ -205,15 +206,21 @@ void selftest() {
     else { jso["energy_today_kwh"] = nullptr; jso["energy_total_kwh"] = nullptr; }
   }
 #if POWERCELL_DSP011
-  // Pin millivolts only. Dubem's map has no divider ratios, so these are not volts.
-  analogSetPinAttenuation(PIN_AC_VOUT, ADC_11db);
-  analogSetPinAttenuation(PIN_AC_GRID, ADC_11db);
-  analogSetPinAttenuation(PIN_AC_ISENSE, ADC_11db);
-  JsonObject adc = d["adc_pin_mv"].to<JsonObject>();
-  adc["calibrated"] = false;
-  adc["vout"] = analogReadMilliVolts(PIN_AC_VOUT);
-  adc["grid"] = analogReadMilliVolts(PIN_AC_GRID);
-  adc["isense"] = analogReadMilliVolts(PIN_AC_ISENSE);
+  {
+    DspGridReading grid;
+    JsonObject gv = d["grid"].to<JsonObject>();
+    gv["grid_v_calibrated"] = false;
+    gv["grid_v_source"] = "adc_gpio39_k357";
+    if (dspGridRead(&grid) && grid.valid) {
+      gv["voltage"] = grid.vrms;
+      gv["grid_v_clipped"] = grid.clipped;
+      gv["available"] = grid.present;
+    } else {
+      gv["voltage"] = nullptr;
+      gv["grid_v_clipped"] = nullptr;
+      gv["available"] = nullptr;
+    }
+  }
   telemetry::acEnergyTodayToJson(d.as<JsonObject>(), "energy_today_kwh");
   telemetry::acEnergyTodayToJson(d["inverter"].to<JsonObject>(), "energy_today_kwh");
   telemetry::acEnergyTodayToJson(d["live"].to<JsonObject>(), "load_energy_today_kwh");
