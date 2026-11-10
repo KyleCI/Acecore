@@ -51,7 +51,7 @@ inline int battery_cutoff_pin_level(HardwareProfile profile, bool hold_off) {
 inline bool battery_cutoff_writes_bms_fets() { return false; }
 inline bool battery_cutoff_stops_charging() { return false; }
 
-// SD chip select. DSP hardware uses GPIO5 (Dubem). GPIO33 is PZEM TX on that
+// SD chip select. DSP hardware uses GPIO5 (Dubem). GPIO33 is unused on that
 // board. The original profile keeps GPIO14.
 inline int profile_sd_cs(HardwareProfile profile) {
   return profile == HardwareProfile::V011 ? 5 : 14;

@@ -1,5 +1,10 @@
 # Collector firmware changelog
 
+## Unreleased (DSP v0.1.1 PZEM pins)
+- DSP images only: PZEM UART1 moves to RX GPIO35 / TX GPIO32 (was RX GPIO32 / TX GPIO33), 9600 8N1, per Caleb 2026-11-10 13:16 WAT. GPIO33 is unused on DSP. STM images unchanged.
+- GPIO35 is input only with no internal pull-up. The PZEM open-collector TX needs a board pull-up to 3.3 V on GPIO35, and the PZEM TTL side must be 3.3 V safe (no 5 V pull-up).
+- No ADC read remains on GPIO35 (DSP grid sense is GPIO39 only; FEATURE_BAT_SENSE_ADC=0 on DSP).
+
 ## 2.5.13 (NVS model)
 - NVS Powercell model adds `PC3_5K` (3.5 kVA / 3.15 kW usable, matching the 35kw
   factory rating). Aliases `3.5K`, `PC3.5K`, `35K`, `PC35K`. `PC3K` / `PC5K` /

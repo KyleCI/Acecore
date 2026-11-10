@@ -27,7 +27,7 @@ void begin() {
   // LoRa CS (IO4) and SD CS (IO14) driven HIGH as outputs (MPPT CS too).
 #if POWERCELL_DSP011
   // SD CS is GPIO5 (also the old unused MPPT CS). Idle high: GPIO5 is a
-  // strapping pin and must not be low at reset. GPIO33 is PZEM TX, not a CS.
+  // strapping pin and must not be low at reset. GPIO33 is unused (not a CS).
   // GPIO4 (LoRa CS) is not driven: that radio is not fitted.
   for (int cs : {PIN_DSP_SD_CS}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
 #else

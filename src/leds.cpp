@@ -46,7 +46,7 @@ void service() {
   digitalWrite(PIN_LED_RED, red ? HIGH : LOW);
 #if POWERCELL_DSP011
   // This board has blue where the original profile has yellow. No amber LED;
-  // GPIO32 is the PZEM receiver.
+  // GPIO32 is the PZEM transmitter.
   digitalWrite(PIN_LED_BLUE, yellow && (!net::apActive() || blink) ? HIGH : LOW);
   digitalWrite(PIN_LED_GREEN, green ? HIGH : LOW);
 #else
