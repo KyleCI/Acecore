@@ -14,4 +14,11 @@ void appSolarToJson(JsonObject o);  // 2.5.8 GET /data root "solar" (power in kW
 // Unknown values are null. Used in /data+SSE metrics, WS "live", /v2/status.
 void liveToJson(JsonObject o);
 void modelToJson(JsonObject o);           // model, rated_kva, usable_kw, rated_kw
+// DSP only. Writes kwhKey and energy_today_source. Both are null when today's
+// AC total is unknown. STM images leave the object unchanged.
+void acEnergyTodayToJson(JsonObject o, const char *kwhKey);
+// STM images. kwhKey and energy_today_source are null together when the day
+// total is unknown. includeLifetime writes estimated_lifetime_wh and does
+// not write lifetime_wh.
+void stmEnergyToJson(JsonObject o, const char *kwhKey, bool includeLifetime);
 }  // namespace telemetry

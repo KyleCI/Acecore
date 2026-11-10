@@ -364,6 +364,49 @@ static void test_jk_bms() {
   t += 500;
   for (size_t i = 0; i < sizeof kJkDynamic; ++i) got += a.feed(kJkDynamic[i], t);
   CHECK(got == 1 && a.timeouts() == 1 && parseDynamic(a.buf(), kFrameLen, e) == Parse::Ok && e.soc == 76);
+
+  // A reconnect/boot frame can carry SOC 0 while remaining capacity is still ~96%.
+  // That byte is not a measurement: it must not publish, so it cannot latch or release.
+  uint8_t glitch[sizeof kJkDynamic];
+  memcpy(glitch, kJkDynamic, sizeof glitch);
+  glitch[173] = 0;
+  glitch[174] = 0x00; glitch[175] = 0x77; glitch[176] = 0x01; glitch[177] = 0x00;  // 96000 mAh
+  glitch[178] = 0xA0; glitch[179] = 0x86; glitch[180] = 0x01; glitch[181] = 0x00;  // 100000 mAh
+  glitch[299] = frameChecksum(glitch);
+  Data kept;
+  kept.soc = 96;
+  CHECK(parseDynamic(glitch, sizeof glitch, kept) == Parse::BadFrame);
+  CHECK(kept.soc == 96);
+  // SOC 0 with no capacity total is incomplete, not a real empty pack.
+  memcpy(glitch, kJkDynamic, sizeof glitch);
+  glitch[173] = 0;
+  glitch[174] = glitch[175] = glitch[176] = glitch[177] = 0;
+  glitch[178] = glitch[179] = glitch[180] = glitch[181] = 0;
+  glitch[299] = frameChecksum(glitch);
+  CHECK(parseDynamic(glitch, sizeof glitch, kept) == Parse::BadFrame);
+  CHECK(kept.soc == 96);
+  // A consistent empty pack still parses, and a consistent 96% still parses.
+  memcpy(glitch, kJkDynamic, sizeof glitch);
+  glitch[173] = 0;
+  glitch[174] = glitch[175] = glitch[176] = glitch[177] = 0;
+  glitch[178] = 0xA0; glitch[179] = 0x86; glitch[180] = 0x01; glitch[181] = 0x00;
+  glitch[299] = frameChecksum(glitch);
+  CHECK(parseDynamic(glitch, sizeof glitch, kept) == Parse::Ok && kept.soc == 0);
+  memcpy(glitch, kJkDynamic, sizeof glitch);
+  glitch[173] = 96;
+  glitch[174] = 0x00; glitch[175] = 0x77; glitch[176] = 0x01; glitch[177] = 0x00;
+  glitch[178] = 0xA0; glitch[179] = 0x86; glitch[180] = 0x01; glitch[181] = 0x00;
+  glitch[299] = frameChecksum(glitch);
+  CHECK(parseDynamic(glitch, sizeof glitch, kept) == Parse::Ok && kept.soc == 96 && kept.remainMah == 96000);
+  // A high SOC byte with an empty remaining count must not release a latch.
+  memcpy(glitch, kJkDynamic, sizeof glitch);
+  glitch[173] = 96;
+  glitch[174] = glitch[175] = glitch[176] = glitch[177] = 0;
+  glitch[178] = 0xA0; glitch[179] = 0x86; glitch[180] = 0x01; glitch[181] = 0x00;
+  glitch[299] = frameChecksum(glitch);
+  kept.soc = 11;
+  CHECK(parseDynamic(glitch, sizeof glitch, kept) == Parse::BadFrame);
+  CHECK(kept.soc == 11);
 }
 
 static bool hexIs(const uint8_t *d, size_t n, const char *want) { char h[129]; toHex(d, n, h); return !strcmp(h, want); }
@@ -823,6 +866,8 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
   frame[0x0F] = status;
 }
 #include "battery_alert_policy.h"
+#include "ac_energy_today.h"
+#include "stm_energy.h"
 static powercell::BatteryReading soc_at(float percent, uint32_t at, bool bms_own = true) {
   return {true, percent, 51.2f, at, false, bms_own};
 }
@@ -980,6 +1025,128 @@ static void test_battery_cutoff() {
   CHECK(!failed.outputOnAllowed());
   failed.update(soc_at(80, 100 + P::RecoveryHoldMs), 100 + P::RecoveryHoldMs);
   CHECK(failed.outputOnAllowed() && !failed.outputLatched());
+  // A failed NVS read clears only in RAM today. The clear must be saved, or the
+  // next boot (and the websocket session that follows it) refuses ON again.
+  CHECK(failed.latchDirty());
+
+  // Reconnect: restored latch, then stale/invalid samples, then idle 96% for 60s.
+  // Invalid and stale SoC must not count as 0% and must not count as a pass.
+  P again(10);
+  again.loadLatch(true, true);
+  powercell::BatteryReading junk = {false, 0, 0, 0, false, false};
+  again.update(junk, 1000);
+  powercell::BatteryReading stale96 = soc_at(96, 1000);
+  again.update(stale96, 1000 + P::FreshnessMs + 1);
+  CHECK(again.outputLatched() && !again.outputOnAllowed());
+  const uint32_t back = 5000;
+  again.update(soc_at(96, back), back);
+  CHECK(again.outputLatched() && !again.outputOnAllowed());
+  again.update(soc_at(96, back + P::RecoveryHoldMs - 1), back + P::RecoveryHoldMs - 1);
+  CHECK(again.outputLatched());
+  again.update(soc_at(96, back + P::RecoveryHoldMs), back + P::RecoveryHoldMs);
+  CHECK(!again.outputLatched() && again.outputOnAllowed());
+  CHECK(!powercell::battery_recovery_drives_on());
+  CHECK(again.latchDirty());
+
+  using S = P::LatchStore;
+  CHECK(P::classifyLatchStore(false, true, false, false) == S::Absent);
+  CHECK(P::classifyLatchStore(false, false, false, false) == S::Unreadable);
+  CHECK(P::classifyLatchStore(true, false, false, false) == S::Clear);
+  CHECK(P::classifyLatchStore(true, false, true, false) == S::Clear);
+  CHECK(P::classifyLatchStore(true, false, true, true) == S::Held);
+  P absent;
+  absent.applyLatchStore(S::Absent);
+  CHECK(absent.outputOnAllowed() && !absent.outputLatched());
+  absent.update(soc_at(96, 1000), 1000);
+  CHECK(absent.outputOnAllowed() && !absent.outputLatched());
+  CHECK(!absent.latchDirty());
+  P saved;
+  saved.applyLatchStore(S::Held);
+  CHECK(saved.outputLatched() && !saved.outputOnAllowed());
+  saved.update(soc_at(96, 2000), 2000);
+  saved.update(soc_at(96, 2000 + P::RecoveryHoldMs), 2000 + P::RecoveryHoldMs);
+  CHECK(!saved.outputLatched() && saved.outputOnAllowed() && saved.latchDirty());
+}
+
+static void test_ac_energy_today() {
+  using namespace powercell;
+  AcEnergyToday t;
+  TodayInput in;
+  in.valid = false;
+  in.lifetime_wh = 0;
+  in.clock = TodayClock::Anchored;
+  in.day_id = 100;
+  TodayOutput o = t.observe(in);
+  CHECK(!o.known && !o.persist && !t.known());
+
+  in.valid = true;
+  in.lifetime_wh = 5000;
+  in.clock = TodayClock::Untrusted;
+  in.day_id = 0;
+  in.mono_ms = 1000;
+  in.mono_continuous = true;
+  o = t.observe(in);
+  CHECK(!o.known && !o.persist && !t.baselineValid());
+
+  in.clock = TodayClock::Anchored;
+  in.day_id = 100;
+  o = t.observe(in);
+  CHECK(o.known && o.persist && o.kwh == 0);
+  CHECK(t.baselineWh() == 5000 && t.dayId() == 100);
+
+  in.lifetime_wh = 6500;
+  in.mono_ms = 1000 + 3600 * 1000;
+  o = t.observe(in);
+  CHECK(o.known && !o.persist);
+  NEAR(o.kwh, 1.5, 1e-9);
+
+  in.valid = false;
+  o = t.observe(in);
+  CHECK(!o.known && !o.persist);
+  CHECK(t.baselineWh() == 5000 && t.dayId() == 100);
+
+  in.valid = true;
+  in.lifetime_wh = 6500;
+  o = t.observe(in);
+  CHECK(o.known);
+  NEAR(o.kwh, 1.5, 1e-9);
+
+  AcEnergyToday booted;
+  booted.restore(true, 100, 5000, false);
+  in.lifetime_wh = 8000;
+  in.mono_continuous = false;
+  o = booted.observe(in);
+  CHECK(o.known && !o.persist);
+  NEAR(o.kwh, 3.0, 1e-9);
+
+  in.mono_continuous = true;
+  in.mono_ms = 5000;
+  in.lifetime_wh = 8000;
+  booted.observe(in);
+  in.mono_ms = 6000;
+  in.lifetime_wh = 8000 + 100;
+  o = booted.observe(in);
+  CHECK(!o.known && o.persist && booted.dayUnknown());
+
+  in.lifetime_wh = 8100;
+  in.mono_ms = 7000;
+  o = booted.observe(in);
+  CHECK(!o.known && !o.persist);
+
+  in.clock = TodayClock::Rtc;
+  in.day_id = 101;
+  in.lifetime_wh = 9000;
+  in.mono_ms = 8000;
+  o = booted.observe(in);
+  CHECK(o.known && o.persist && o.kwh == 0);
+  CHECK(!booted.dayUnknown() && booted.baselineWh() == 9000 && booted.dayId() == 101);
+
+  in.day_id = 0;
+  in.clock = TodayClock::Untrusted;
+  in.lifetime_wh = 9500;
+  o = booted.observe(in);
+  CHECK(!o.known && !o.persist);
+  CHECK(booted.dayId() == 101 && booted.baselineWh() == 9000);
 }
 
 static void test_v011_gpio() {
@@ -1194,6 +1361,13 @@ static void test_payment_lock() {
   CHECK(judge(100, 50, true) == Verdict::Duplicate);
   CHECK(judge(0, 0, false) == Verdict::Invalid);
   CHECK(controlBlocked(true) && !controlBlocked(false));
+  CHECK(!strcmp(setStateBlock(true, true, true, true), "payment_locked"));
+  CHECK(!strcmp(setStateBlock(true, false, false, true), "payment_locked"));
+  CHECK(!strcmp(setStateBlock(false, true, true, true), "battery_critical_latched"));
+  CHECK(!strcmp(setStateBlock(false, true, true, false), "battery_critical_latched"));
+  CHECK(!strcmp(setStateBlock(false, true, false, true), "output_overload_latched"));
+  CHECK(setStateBlock(false, false, true, true) == nullptr);
+  CHECK(setStateBlock(false, true, false, false) == nullptr);
 }
 
 
@@ -1335,6 +1509,124 @@ static void test_solar_energy() {  // 2.5.8
   Energy f; f.restore(10, 20, 7); CHECK(f.totalWh() == 20);
 }
 
+static powercell::StmEstimateSample stm_at(float volts, float amps, uint32_t mono, int64_t unix_s, int32_t day) {
+  powercell::StmEstimateSample s;
+  s.valid = true;
+  s.volts = volts;
+  s.amps = amps;
+  s.mono_ms = mono;
+  s.unix_s = unix_s;
+  s.day_id = day;
+  return s;
+}
+
+static void test_stm_estimate() {
+  using namespace powercell;
+  const int64_t utc_midnight = unix_from_utc(2026, 11, 10, 0, 0, 0);
+  const int64_t lagos_midnight = utc_midnight - static_cast<int64_t>(kLagosOffsetMin) * 60;
+  CHECK(kLagosOffsetMin == 60);
+  CHECK(pc::clk::kTzDefault == 60);
+  CHECK(pc::solar::localDay(lagos_midnight, true, kLagosOffsetMin) ==
+        pc::solar::localDay(lagos_midnight - 1, true, kLagosOffsetMin) + 1);
+
+  CHECK(StmEnergyEstimate::plausible(230, 10));
+  CHECK(StmEnergyEstimate::plausible(0, 0));
+  CHECK(!StmEnergyEstimate::plausible(400, 1));
+  CHECK(!StmEnergyEstimate::plausible(230, -1));
+  CHECK(!StmEnergyEstimate::plausible(230, 40));
+  CHECK(!StmEnergyEstimate::plausible(10, 5));
+  CHECK(!StmEnergyEstimate::plausible(NAN, 1));
+  NEAR(StmEnergyEstimate::activeWatts(230, 10), 1840.0, 1e-4);
+
+  StmEnergyEstimate e;
+  const double watts = 1840.0;
+  e.observe(stm_at(230, 10, 1000, 1700000000, 100));
+  if (e.publish().persist) e.ackPersist(1000);
+  for (int i = 1; i <= 10; ++i) e.observe(stm_at(230, 10, 1000 + static_cast<uint32_t>(i) * 1000, 1700000000 + i, 100));
+  NEAR(e.workingTodayWh(), watts * 10.0 / 3600.0, 1e-4);
+  NEAR(e.workingLifetimeWh(), watts * 10.0 / 3600.0, 1e-4);
+  CHECK(e.publish().lifetime_wh <= e.workingLifetimeWh() + 1e-9);
+
+  const double before_save = e.publish().lifetime_wh;
+  bool saved = false;
+  for (int i = 11; i <= 920; ++i) {
+    const auto view = e.observe(stm_at(230, 10, 1000 + static_cast<uint32_t>(i) * 1000, 1700000000 + i, 100));
+    if (view.persist) {
+      e.ackPersist(1000 + static_cast<uint32_t>(i) * 1000);
+      saved = true;
+      break;
+    }
+  }
+  CHECK(saved);
+  CHECK(e.publish().lifetime_wh + 1e-6 >= before_save);
+  CHECK(e.publish().today_known);
+  NEAR(e.publish().lifetime_wh, e.workingLifetimeWh(), 1e-6);
+  const double published = e.publish().lifetime_wh;
+  e.observe(stm_at(230, 10, 1000 + 921u * 1000, 1700000000 + 921, 100));
+  CHECK(e.publish().lifetime_wh + 1e-9 >= published);
+
+  const double life_before_midnight = e.workingLifetimeWh();
+  const auto rolled = e.observe(stm_at(230, 10, 1000 + 922u * 1000, 1700000000 + 922, 101));
+  NEAR(e.workingTodayWh(), watts / 3600.0, 1e-4);
+  NEAR(e.workingLifetimeWh(), life_before_midnight + watts / 3600.0, 1e-4);
+  CHECK(rolled.persist);
+  e.ackPersist(1000 + 922u * 1000);
+  const double saved_today = e.workingTodayWh();
+  const double saved_life = e.workingLifetimeWh();
+
+  StmEnergyEstimate booted;
+  booted.restore(101, saved_today, saved_life);
+  StmEstimateSample quiet = stm_at(0, 0, 50, 1700001000, 101);
+  quiet.valid = false;
+  const auto restored = booted.observe(quiet);
+  CHECK(restored.today_known);
+  NEAR(restored.lifetime_wh, saved_life, 1e-6);
+  NEAR(restored.today_kwh * 1000.0, saved_today, 1e-4);
+  booted.observe(stm_at(230, 10, 5000, 1700001000, 101));
+  booted.observe(stm_at(230, 10, 6000, 1700001001, 101));
+  CHECK(booted.workingLifetimeWh() > saved_life);
+  CHECK(booted.publish().lifetime_wh + 1e-9 >= saved_life);
+
+  StmEnergyEstimate jump;
+  jump.observe(stm_at(230, 10, 1000, 1700000000, 100));
+  jump.observe(stm_at(230, 10, 2000, 1700000001, 100));
+  const double jumped = jump.workingLifetimeWh();
+  jump.observe(stm_at(230, 10, 3000, 1700000001 + 1000, 100));
+  NEAR(jump.workingLifetimeWh(), jumped, 1e-6);
+
+  StmEnergyEstimate gap;
+  gap.observe(stm_at(230, 10, 1000, 1700000000, 100));
+  gap.observe(stm_at(230, 10, 2000, 1700000001, 100));
+  const double gapped = gap.workingLifetimeWh();
+  gap.observe(stm_at(230, 10, 2000 + kStmMaxGapMs + 1, 1700000001 + 12, 100));
+  NEAR(gap.workingLifetimeWh(), gapped, 1e-6);
+
+  StmEnergyEstimate backward;
+  backward.observe(stm_at(230, 10, 5000, 1700000010, 100));
+  backward.observe(stm_at(230, 10, 6000, 1700000011, 100));
+  const double backed = backward.workingLifetimeWh();
+  backward.observe(stm_at(230, 10, 5500, 1700000012, 100));
+  NEAR(backward.workingLifetimeWh(), backed, 1e-6);
+  backward.observe(stm_at(230, 10, 7000, 1700000011 - 30, 100));
+  NEAR(backward.workingLifetimeWh(), backed, 1e-6);
+
+  StmEnergyEstimate bad;
+  bad.observe(stm_at(230, 10, 1000, 1700000000, 100));
+  bad.observe(stm_at(230, 10, 2000, 1700000001, 100));
+  const double kept = bad.workingLifetimeWh();
+  const double kept_today = bad.workingTodayWh();
+  bad.observe(stm_at(400, 1, 3000, 1700000002, 100));
+  bad.observe(stm_at(230, -1, 4000, 1700000003, 100));
+  bad.observe(stm_at(230, 40, 5000, 1700000004, 100));
+  bad.observe(stm_at(10, 5, 6000, 1700000005, 100));
+  StmEstimateSample missing = stm_at(0, 0, 7000, 1700000006, 100);
+  missing.valid = false;
+  bad.observe(missing);
+  NEAR(bad.workingLifetimeWh(), kept, 1e-6);
+  NEAR(bad.workingTodayWh(), kept_today, 1e-6);
+  CHECK(kept_today > 0);
+}
+
 static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x/1000 : x
   auto displayKw = [](double x) { return fabs(x) > 20.0 ? x / 1000.0 : x; };
   const float ws[] = {0.0f, 5.0f, 15.0f, 20.0f, 21.0f, 127.9f, 3000.0f, 19999.0f};
@@ -1350,7 +1642,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
+  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();

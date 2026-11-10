@@ -8,4 +8,7 @@ void hwPzemBegin();
 // Power is active watts. Energy is lifetime watt-hours.
 // A missing, stale, or sentinel reading returns false and does not invent zero.
 bool hwPzemSample(float* volts, float* amps, float* active_w, uint32_t* lifetime_wh, uint32_t* age_ms);
+// Today's AC output energy in kWh from the PZEM lifetime counter.
+// False means the value is unknown: omit it, do not send 0.
+bool hwAcEnergyTodayKwh(double* kwh);
 #endif

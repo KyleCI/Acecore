@@ -21,6 +21,8 @@
 #include "devauth.h"
 #include "factory_id.h"
 #include "dsp011_log.h"
+#include "payment_lock.h"
+#include "telemetry.h"
 
 namespace console {
 namespace {
@@ -198,10 +200,19 @@ void selftest() {
     else { jso["voltage"] = nullptr; jso["current"] = nullptr; jso["power_w"] = nullptr; }
     uint32_t ag = solar::lastGoodAgeMs();
     if (ag != UINT32_MAX) jso["last_good_age_ms"] = ag; else jso["last_good_age_ms"] = nullptr;
-    double et = 0, eT = 0;  // 2.5.8
+    double et = 0, eT = 0;  // 2.5.8 PV only
     if (solar::energy(et, eT)) { jso["energy_today_kwh"] = et; jso["energy_total_kwh"] = eT; }
     else { jso["energy_today_kwh"] = nullptr; jso["energy_total_kwh"] = nullptr; }
   }
+#if POWERCELL_DSP011
+  telemetry::acEnergyTodayToJson(d.as<JsonObject>(), "energy_today_kwh");
+  telemetry::acEnergyTodayToJson(d["inverter"].to<JsonObject>(), "energy_today_kwh");
+  telemetry::acEnergyTodayToJson(d["live"].to<JsonObject>(), "load_energy_today_kwh");
+#else
+  telemetry::stmEnergyToJson(d.as<JsonObject>(), "energy_today_kwh", false);
+  telemetry::stmEnergyToJson(d["inverter"].to<JsonObject>(), "energy_today_kwh", false);
+  telemetry::stmEnergyToJson(d["live"].to<JsonObject>(), "load_energy_today_kwh", true);
+#endif
   // Wi-Fi / heap / cloud
   JsonObject jw = d["wifi"].to<JsonObject>();
   jw["connected"] = WiFi.status() == WL_CONNECTED; jw["state"] = net::stateName(); jw["hotspot"] = net::apActive();
@@ -275,8 +286,11 @@ void handle(String cmd) {
     int c = cmd.indexOf(':', 6);
     String st = cmd.substring(c + 1);
     if (fid::paymentLocked()) Serial.println("rejected payment_locked");
-    else if (c > 6 && st == "ON" && powerguard::latched()) Serial.println("rejected battery_critical_latched");
-    else if (c > 6 && (st == "ON" || st == "OFF")) Serial.println(sendRelayCommand(cmd.substring(6, c), st == "ON") ? "queued" : "rejected");
+    else if (c > 6 && (st == "ON" || st == "OFF")) {
+      if (const char *why = pc::paylock::setStateBlock(false, st == "ON", powerguard::latched(), powerguard::overloadLatched()))
+        Serial.printf("rejected %s\n", why);
+      else Serial.println(sendRelayCommand(cmd.substring(6, c), st == "ON") ? "queued" : "rejected");
+    }
   } else if (cmd.startsWith("PRIO ")) {  // INTERIM: PRIO <socket_id> E|H
     int sp = cmd.indexOf(' ', 5); String pr = cmd.substring(sp + 1);
     if (sp > 5 && (pr == "E" || pr == "H")) { powerguard::setPriority(cmd.substring(5, sp), pr == "E"); Serial.println("OK"); }

@@ -245,8 +245,10 @@ void handleSetState(JsonDocument &doc) {
   uint64_t expires = doc["expires_at"] | uint64_t(0);
   if (expires && unixNow() && expires <= unixNow()) { reject(id, kind, target, desired, "command_expired"); return; }
   if (ota::busy()) { reject(id, kind, target, desired, "firmware_update_in_progress"); return; }
-  if (desired && powerguard::latched()) { reject(id, kind, target, desired, "battery_critical_latched"); return; }
-  if (fid::paymentLocked()) { reject(id, kind, target, desired, "payment_locked"); return; }
+  if (const char* why = pc::paylock::setStateBlock(fid::paymentLocked(), desired, powerguard::latched(), powerguard::overloadLatched())) {
+    reject(id, kind, target, desired, why);
+    return;
+  }
 
 #if POWERCELL_DSP011
   if (kind == "socket") { reject(id, kind, target, desired, "lora_not_fitted"); return; }

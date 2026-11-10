@@ -17,6 +17,7 @@
 #include "sockets/sockets.h"
 #include "solar.h"
 #include "dsp011_pzem.h"
+#include "stm_energy.h"
 #include "stm32_link.h"
 #include "factory_id.h"
 #include "live.h"
@@ -53,6 +54,9 @@ void inverterBlock(JsonObject inv) {
   if (fresh && s.has_vout && s.has_iout) inv["output_power_quantity"] = "apparent_va";
   else inv["output_power_quantity"] = nullptr;
   inv["stm32_online"] = false;
+  acEnergyTodayToJson(inv, "energy_today_kwh");
+#else
+  stmEnergyToJson(inv, "energy_today_kwh", false);
 #endif
   num("grid_voltage", s.has_grid, s.grid_v);
   num("temperature", s.has_temp, s.temp_c);
@@ -138,12 +142,49 @@ void solarBlock(JsonObject o) {
   o["voltage"] = r.voltage; o["current"] = r.current; o["power"] = r.power;
 }
 
-void solarEnergyKeys(JsonObject o) {  // 2.5.8
+void solarEnergyKeys(JsonObject o) {  // 2.5.8 PV only. DSP AC energy is not written here.
   double et = 0, eT = 0;
   if (solar::energy(et, eT)) { o["energy_today_kwh"] = et; o["energy_total_kwh"] = eT; }
   else { o["energy_today_kwh"] = nullptr; o["energy_total_kwh"] = nullptr; }
 }
 }  // namespace
+
+void stmEnergyToJson(JsonObject o, const char *kwhKey, bool includeLifetime) {
+#if !POWERCELL_DSP011
+  double kwh = 0;
+  if (kwhKey && stmEnergyTodayKwh(&kwh)) {
+    o[kwhKey] = kwh;
+    o["energy_today_source"] = "stm32_estimated_pf080";
+  } else if (kwhKey) {
+    o[kwhKey] = nullptr;
+    o["energy_today_source"] = nullptr;
+  }
+  if (includeLifetime) {
+    o["estimated_lifetime_wh"] = stmEnergyLifetimeWh();
+    o["estimated_lifetime_source"] = "stm32_estimated_pf080";
+  }
+#else
+  (void)o;
+  (void)kwhKey;
+  (void)includeLifetime;
+#endif
+}
+
+void acEnergyTodayToJson(JsonObject o, const char *kwhKey) {
+#if POWERCELL_DSP011
+  double ac = 0;
+  if (kwhKey && hwAcEnergyTodayKwh(&ac)) {
+    o[kwhKey] = ac;
+    o["energy_today_source"] = "pzem004t_v3_active";
+  } else {
+    if (kwhKey) o[kwhKey] = nullptr;
+    o["energy_today_source"] = nullptr;
+  }
+#else
+  (void)o;
+  (void)kwhKey;
+#endif
+}
 
 // 2.5.8: GET /data + SSE root "solar", the block the installed app's solar tile reads
 // (FirmwareSnapshot._solar: solar.online / voltage / current / power).
@@ -215,9 +256,14 @@ void liveToJson(JsonObject o) {
     num("solar_voltage", pv.valid, pv.voltage);
     num("solar_current", pv.valid, pv.current);
     num("solar_power_w", pv.valid, pv.powerW);
-    double et = 0, eT = 0; bool he = solar::energy(et, eT);  // 2.5.8
+    double et = 0, eT = 0; bool he = solar::energy(et, eT);  // 2.5.8 PV only
     num("solar_energy_today_kwh", he, (float)et);
     num("solar_energy_total_kwh", he, (float)eT);
+#if POWERCELL_DSP011
+    acEnergyTodayToJson(o, "load_energy_today_kwh");
+#else
+    stmEnergyToJson(o, "load_energy_today_kwh", true);
+#endif
   }
   modelToJson(o);
   num("battery_current_a", in.bmsOn, in.bmsCurrentA);
@@ -247,6 +293,11 @@ void buildTelemetry(JsonDocument &doc) {
   }
   batteryBlock(doc["battery"].to<JsonObject>());
   inverterBlock(doc["inverter"].to<JsonObject>());
+#if POWERCELL_DSP011
+  acEnergyTodayToJson(doc.as<JsonObject>(), "energy_today_kwh");
+#else
+  stmEnergyToJson(doc.as<JsonObject>(), "energy_today_kwh", false);
+#endif
   { JsonObject so = doc["solar"].to<JsonObject>(); solarBlock(so); solarEnergyKeys(so); }
   liveToJson(doc["live"].to<JsonObject>());  // 2.5.4
   JsonArray sockets = doc["sockets"].to<JsonArray>();

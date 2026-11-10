@@ -54,6 +54,7 @@ const char *resultName(Result r) {
     case Result::Nack: return "stm32_rejected";
     case Result::CriticalLatched: return "battery_critical_latched";
     case Result::PaymentLocked: return "payment_locked";
+    case Result::OverloadLatched: return "output_overload_latched";
     default: return "stm32_timeout";
   }
 }
@@ -73,6 +74,10 @@ Result set(bool on, const char *origin) {
   if (on && powerguard::refuseOn(origin)) {
     LOGW("GATEWAY", "REFUSED", "on while battery critical latched (origin=%s)", origin);
     return Result::CriticalLatched;
+  }
+  if (on && powerguard::overloadLatched()) {
+    LOGW("GATEWAY", "REFUSED", "on while ac overload latched (origin=%s)", origin);
+    return Result::OverloadLatched;
   }
 #if POWERCELL_DSP011
   if (on && ota::busy()) {
