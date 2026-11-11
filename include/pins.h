@@ -54,6 +54,11 @@
 // Only the grid is sensed here. Output volts and current come from the PZEM.
 // GPIO39 is the v0.2 grid-sense node (ADC1). GPIO34 is not read. GPIO35 is PZEM RX.
 #define PIN_GRID_SENSE 39
+// System temperature and cooling fan (Dubem "dspic collector_2", 2026-11-11, pinDefines.h).
+// GPIO36 (VP, ADC1, input only): 10k NTC / 2k7 divider from 3V3. ADC2 pins fail with Wi-Fi on.
+// GPIO25: fan driver, HIGH = ON. Unused on DSP before this (PIN_PWR_LIGHT is STM only).
+#define PIN_NTC 36
+#define PIN_FAN 25
 #else
 #define PIN_BMS_RX 17
 #define PIN_BMS_TX 16
@@ -92,7 +97,7 @@
 #define PIN_LED_RED 12
 #define PIN_LED_BLUE 13
 #define PIN_LED_GREEN 14
-#define PIN_PWR_LIGHT 25
+// No PIN_PWR_LIGHT on DSP: GPIO25 is the cooling fan (PIN_FAN).
 #else
 #if LED_MAP_OLD_CODE
 #define PIN_LED_RED 13
@@ -135,5 +140,13 @@ static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "3.5 kW DSP uses JK-
 static_assert(PIN_LED_RED == 12 && PIN_LED_BLUE == 13 && PIN_LED_GREEN == 14, "DSP RGB");
 static_assert(PIN_FRONT_LIGHT == 27 && PIN_LED_GREEN != PIN_FRONT_LIGHT, "front light is not the green LED");
 static_assert(PIN_GRID_SENSE == 39, "DSP grid sense is GPIO39");
+static_assert(PIN_NTC == 36 && PIN_FAN == 25, "DSP NTC GPIO36, fan GPIO25 (Dubem dspic collector_2)");
+static_assert(PIN_NTC >= 32 && PIN_NTC <= 39, "NTC must be on ADC1 for Wi-Fi");
+static_assert(PIN_NTC != PIN_GRID_SENSE && PIN_NTC != PIN_PZEM_RX && PIN_NTC != PIN_BMS_RX && PIN_NTC != PIN_BAT_SENSE,
+              "NTC pin is not shared");
+static_assert(PIN_FAN != PIN_PWR_KEY && PIN_FAN != PIN_FRONT_LIGHT && PIN_FAN != PIN_LED_RED && PIN_FAN != PIN_LED_BLUE &&
+              PIN_FAN != PIN_LED_GREEN && PIN_FAN != PIN_PZEM_TX && PIN_FAN != PIN_BMS_TX && PIN_FAN != PIN_BMS_RX &&
+              PIN_FAN != PIN_DSP_SD_CS && PIN_FAN != PIN_I2C_SDA && PIN_FAN != PIN_I2C_SCL && PIN_FAN != PIN_SPI_SCK &&
+              PIN_FAN != PIN_SPI_MISO && PIN_FAN != PIN_SPI_MOSI, "fan pin is not shared");
 static_assert(PIN_I2C_SDA == 21 && PIN_I2C_SCL == 22, "DS3231 stays on I2C 21/22");
 #endif

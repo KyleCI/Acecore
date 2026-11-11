@@ -870,6 +870,7 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
 #include "stm_energy.h"
 #include "jbd_bms.h"
 #include "grid_sense.h"
+#include "dsp_thermal.h"
 #include "pzem_stats.h"
 #include "pzem_route.h"
 #include "dsp_status_led.h"
@@ -2017,6 +2018,63 @@ static bool flag_in_env(const char *text, const char *env, const char *flag) {
   return strstr(block, flag) != nullptr;
 }
 
+
+static float ntc_mv_for(float c, bool low_side) {  // independent forward model of Dubem's divider
+  const double r = 10000.0 * exp(3950.0 * (1.0 / (c + 273.15) - 1.0 / 298.15));
+  return (float)(low_side ? 3300.0 * r / (r + 2700.0) : 3300.0 * 2700.0 / (r + 2700.0));
+}
+
+static void test_dsp_thermal() {
+  using namespace powercell::thermal;
+  float c = -99.f;
+  // Dubem default wiring: NTC to 3V3, 2k7 to GND. 25 C -> 701.6 mV.
+  CHECK(mvToCelsius(3300.f * 2700.f / 12700.f, &c, false)); NEAR(c, 25.0, 0.05);
+  const float pts[] = {0.5f, 10.f, 25.f, 40.f, 65.f, 70.f, 85.f, 100.f, 125.f, 149.f};
+  for (float t : pts) {
+    c = -99.f; CHECK(mvToCelsius(ntc_mv_for(t, false), &c, false)); NEAR(c, t, 0.05);
+    c = -99.f; CHECK(mvToCelsius(ntc_mv_for(t, true), &c, true)); NEAR(c, t, 0.05);
+  }
+  // Pin volts rise with temperature on the default wiring, fall on the low-side wiring.
+  CHECK(ntc_mv_for(70.f, false) > ntc_mv_for(25.f, false));
+  CHECK(ntc_mv_for(70.f, true) < ntc_mv_for(25.f, true));
+  // Open / short / rails: invalid, *c untouched (never a fabricated value).
+  const float bad[] = {0.f, 10.f, 39.9f, 3260.1f, 3300.f, 4000.f, -5.f};
+  for (float mv : bad) {
+    c = 12.34f;
+    CHECK(!mvToCelsius(mv, &c, false)); NEAR(c, 12.34, 1e-6);
+    c = 12.34f;
+    CHECK(!mvToCelsius(mv, &c, true)); NEAR(c, 12.34, 1e-6);
+  }
+  c = 12.34f; CHECK(!mvToCelsius(NAN, &c, false)); NEAR(c, 12.34, 1e-6);
+  CHECK(!mvToCelsius(INFINITY, &c, false));
+  CHECK(!mvToCelsius(700.f, nullptr, false));
+  // ESP32 11 dB ADC saturates near 3.1 V: a shorted NTC reads ~3130 mV -> >150 C -> invalid.
+  c = 12.34f; CHECK(!mvToCelsius(3130.f, &c, false)); NEAR(c, 12.34, 1e-6);
+  // Below 0 C (or a reading that maps there) is out of range.
+  CHECK(!mvToCelsius(200.f, &c, false));
+  CHECK(!mvToCelsius(ntc_mv_for(-5.f, false), &c, false));
+  CHECK(!mvToCelsius(ntc_mv_for(155.f, false), &c, false));
+  CHECK(!mvToCelsius(ntc_mv_for(-5.f, true), &c, true));
+
+  // Fan: ON >= 70, OFF <= 65, hold between, fault forces ON (Dubem fail-safe).
+  CHECK(kFanOnC == 70.0f && kFanOffC == 65.0f);
+  CHECK(!fanWanted(false, false, 25.f));
+  CHECK(!fanWanted(false, false, 69.9f));
+  CHECK(fanWanted(false, false, 70.f));
+  CHECK(fanWanted(true, false, 67.f));
+  CHECK(!fanWanted(false, false, 67.f));
+  CHECK(fanWanted(true, false, 65.1f));
+  CHECK(!fanWanted(true, false, 65.f));
+  CHECK(fanWanted(false, true, 25.f));
+  CHECK(fanWanted(false, true, NAN));
+  CHECK(fanWanted(false, false, NAN));
+  // Sweep up then down: one ON edge at 70, one OFF edge at 65.
+  bool fan = false; int on_edges = 0, off_edges = 0;
+  for (float t = 50.f; t <= 80.f; t += 0.5f) { bool w = fanWanted(fan, false, t); if (w && !fan) { ++on_edges; NEAR(t, 70.0, 0.01); } fan = w; }
+  for (float t = 80.f; t >= 50.f; t -= 0.5f) { bool w = fanWanted(fan, false, t); if (!w && fan) { ++off_edges; NEAR(t, 65.0, 0.01); } fan = w; }
+  CHECK(on_edges == 1 && off_edges == 1);
+}
+
 static void test_dsp_bms_select() {
   // Host tests compile like an STM image: JK-PB, DSP_BMS_JKPB left at its default 0.
   CHECK(POWERCELL_DSP011 == 0);
@@ -2052,7 +2110,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_dsp_status_led(); test_pzem_route(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
+  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_dsp_thermal(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_dsp_status_led(); test_pzem_route(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();

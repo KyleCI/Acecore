@@ -1,5 +1,12 @@
 # Collector firmware changelog
 
+## Unreleased (DSP system temperature and fan, from Dubem's dspic collector_2)
+
+- DSP images read a 10k NTC (B 3950, R25 10 k) on GPIO36 (VP, ADC1) through a 2k7 divider from 3V3, NTC on the 3V3 side (`NTC_ON_LOW_SIDE` 0, Dubem default). 16 samples averaged with `analogReadMilliVolts` every 2 s, 11 dB attenuation. Same math and limits as Dubem's thermal.cpp: within 40 mV of 0 V or 3.3 V, or outside 0-150 C, is a sensor fault. A reading older than 10 s is stale.
+- Cooling fan on GPIO25, HIGH = ON, exactly as Dubem's code: ON at 70 C or more, OFF at 65 C or less, held in between. A sensor fault forces the fan ON (fail-safe). There is no shutdown or derating on temperature (Dubem's code has none).
+- Published as `system_temperature_c` (deg C, null when absent, faulted or stale), `temp_sensor_fault` and `fan_on` in the live block (cloud telemetry.live, /v2/status live, /data + SSE metrics, /metrics), plus a `thermal` object in cloud telemetry and SELFTEST (`temperature_c`, `valid`, `fault`, `fan_on`, `ntc_mv`, `age_ms`). As in Dubem's metrics.cpp, the legacy `inverter_temperature` / `inverter.temperature` keys carry the same NTC value on DSP (the board has no STM32 temperature), so the installed app's system temperature shows it. INFO prints `thermal=ntc10k ntc_pin=36 fan_pin=25 temperature_c=... fault=... fan_on=... ntc_mv=...`.
+- GPIO25 was the STM power light pin; it is not used on DSP. STM images unchanged.
+
 ## Unreleased (DSP grid crosstalk and offline energy today)
 
 - DSP grid sense (GPIO39): inverter output can couple into the grid divider and read 36-88 V with no mains. Presence is still 170 V on / 160 V off, now with a 2 s debounce so a brief spike does not flip the flag. Below that window, published `grid_voltage` / `gridVoltage` and any grid frequency are JSON null and `grid_available` is false. The raw ADC reading is only `grid_sense_raw_v` (telemetry, /data metrics, /metrics, /v2/status live, SELFTEST). Crosstalk while the inverter is on cannot mark grid. 230 V still does. STM images unchanged.

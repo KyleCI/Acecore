@@ -24,6 +24,7 @@
 #include "dsp011_log.h"
 #include "payment_lock.h"
 #include "grid_sense.h"
+#include "dsp_thermal.h"
 #include "dsp011_pzem.h"
 #include "pzem_route.h"
 #include "telemetry.h"
@@ -60,6 +61,14 @@ void info() {
 #if POWERCELL_DSP011
   Serial.printf("bms=%s baud=%lu rx=%d tx=%d\n", POWERCELL_BMS_JKPB ? "JK-PB" : "JBD",
                 (unsigned long)PIN_BMS_BAUD, PIN_BMS_RX, PIN_BMS_TX);
+  {
+    DspThermalReading t;
+    const bool tok = dspThermalRead(&t);
+    char tc[16];
+    if (tok) snprintf(tc, sizeof tc, "%.1f", t.temp_c); else snprintf(tc, sizeof tc, "null");
+    Serial.printf("thermal=ntc10k ntc_pin=%d fan_pin=%d temperature_c=%s fault=%d fan_on=%d ntc_mv=%.0f\n", PIN_NTC, PIN_FAN, tc,
+                  t.sampled ? (int)t.fault : -1, t.sampled ? (int)t.fan_on : -1, t.sampled ? t.mv : 0.0f);
+  }
 #endif
   Serial.printf("ap_ssid=%s wifi_state=%s hotspot=%d\n", id.apSsid, net::stateName(), net::apActive());
   String ofp = onboarding::fingerprint();
@@ -247,6 +256,7 @@ void selftest() {
       gv["available"] = nullptr;
     }
   }
+  telemetry::dspThermalBlock(d["thermal"].to<JsonObject>());
   telemetry::acEnergyTodayToJson(d.as<JsonObject>(), "energy_today_kwh");
   telemetry::acEnergyTodayToJson(d["inverter"].to<JsonObject>(), "energy_today_kwh");
   telemetry::acEnergyTodayToJson(d["live"].to<JsonObject>(), "load_energy_today_kwh");

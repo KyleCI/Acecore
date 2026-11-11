@@ -27,6 +27,7 @@
 #include "stm32_link.h"
 #include "stm_energy.h"
 #include "grid_sense.h"
+#include "dsp_thermal.h"
 #include "stm32_updater.h"
 #include "web_local.h"
 
@@ -59,6 +60,7 @@ void setup() {
 #if POWERCELL_DSP011
   hwPzemBegin();
   dspGridBegin();
+  dspThermalBegin();  // NTC GPIO36 + fan GPIO25 task (Dubem dspic collector_2)
 #endif
   battery::begin();
   bms::begin();

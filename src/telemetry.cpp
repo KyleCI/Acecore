@@ -19,6 +19,8 @@
 #include "dsp011_pzem.h"
 #include "stm_energy.h"
 #include "grid_sense.h"
+#include "dsp_thermal.h"
+#include "pins.h"
 #include "stm32_link.h"
 #include "factory_id.h"
 #include "live.h"
@@ -69,7 +71,11 @@ void inverterBlock(JsonObject inv) {
 #if POWERCELL_DSP011
   dspGridKeys(inv);
 #endif
+#if POWERCELL_DSP011
+  dspThermalKeys(inv, "temperature");  // system NTC, not an STM32 reading
+#else
   num("temperature", s.has_temp, s.temp_c);
+#endif
   num("battery_voltage", s.has_bat, s.bat_v);  // STM32 PA3 (cross-check)
   if (!fresh) return;
   inv["system"] = pc::sysStateName(s.sys);
@@ -187,6 +193,40 @@ void dspGridPublish(JsonObject o, const char *voltKey, const char *availKey) {
 }
 #endif
 
+#if POWERCELL_DSP011
+// System NTC (GPIO36) and fan (GPIO25). Ported from Dubem's dspic collector_2.
+// The DSP board has no STM32 temperature, so the installed app's
+// inverter_temperature / inverter.temperature keys carry this NTC, as in
+// Dubem's metrics.cpp and websocket_commands.cpp. tempKey may be null.
+void dspThermalKeys(JsonObject o, const char *tempKey) {
+  DspThermalReading t;
+  const bool ok = dspThermalRead(&t);
+  const bool running = t.sampled;
+  if (ok) o["system_temperature_c"] = t.temp_c; else o["system_temperature_c"] = nullptr;
+  if (tempKey) {
+    if (ok) o[tempKey] = t.temp_c; else o[tempKey] = nullptr;
+  }
+  if (running) { o["temp_sensor_fault"] = t.fault; o["fan_on"] = t.fan_on; }
+  else { o["temp_sensor_fault"] = nullptr; o["fan_on"] = nullptr; }
+}
+
+void dspThermalBlock(JsonObject o) {
+  DspThermalReading t;
+  const bool ok = dspThermalRead(&t);
+  o["sensor"] = "ntc10k_b3950_2k7_gpio36";
+  o["fan_pin"] = PIN_FAN;
+  o["valid"] = ok;
+  if (ok) o["temperature_c"] = t.temp_c; else o["temperature_c"] = nullptr;
+  if (t.sampled) {
+    o["fault"] = t.fault; o["fan_on"] = t.fan_on; o["ntc_mv"] = roundf(t.mv); o["age_ms"] = t.age_ms;
+  } else {
+    o["fault"] = nullptr; o["fan_on"] = nullptr; o["ntc_mv"] = nullptr; o["age_ms"] = nullptr;
+  }
+  o["fan_on_c"] = powercell::thermal::kFanOnC;
+  o["fan_off_c"] = powercell::thermal::kFanOffC;
+}
+#endif
+
 void stmEnergyToJson(JsonObject o, const char *kwhKey, bool includeLifetime) {
 #if !POWERCELL_DSP011
   double kwh = 0;
@@ -288,7 +328,11 @@ void liveToJson(JsonObject o) {
 #endif
   float pct = 0;
   num("load_pct", ps != pc::live::PowerSrc::None && pc::live::loadPct(w, unitmodel::get(), pct), pct);
+#if POWERCELL_DSP011
+  dspThermalKeys(o, "inverter_temperature");
+#else
   num("inverter_temperature", in.stmFresh && s.has_temp, s.temp_c);
+#endif
   {  // 2.5.7 PV in the live block (cloud telemetry.live, /v2/status live, /data+SSE metrics)
     pc::live::SolarView pv = pc::live::solarView(sr.ok, sr.voltage, sr.current);
     o["solar_valid"] = pv.valid;
@@ -339,6 +383,7 @@ void buildTelemetry(JsonDocument &doc) {
   batteryBlock(doc["battery"].to<JsonObject>());
   inverterBlock(doc["inverter"].to<JsonObject>());
 #if POWERCELL_DSP011
+  dspThermalBlock(doc["thermal"].to<JsonObject>());
   acEnergyTodayToJson(doc.as<JsonObject>(), "energy_today_kwh");
 #else
   stmEnergyToJson(doc.as<JsonObject>(), "energy_today_kwh", false);
@@ -407,7 +452,11 @@ void buildMetrics(JsonDocument &doc) {
   num("inverterLoad", fresh && s.has_vout && s.has_iout, s.vout * s.iout);
   num("inverterVoltage", fresh && s.has_vout, s.vout);
   num("inverterCurrent", fresh && s.has_iout, s.iout);
+#if POWERCELL_DSP011
+  dspThermalKeys(doc.as<JsonObject>(), "inverter_temperature");
+#else
   num("inverter_temperature", fresh && s.has_temp, s.temp_c);
+#endif
 #if POWERCELL_DSP011
   {
     dspGridPublish(doc.as<JsonObject>(), "gridVoltage", "grid_available");
