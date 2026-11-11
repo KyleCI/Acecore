@@ -235,11 +235,14 @@ void selftest() {
     gv["grid_v_calibrated"] = false;
     gv["grid_v_source"] = "adc_gpio39_k357";
     if (dspGridRead(&grid) && grid.valid) {
-      gv["voltage"] = grid.vrms;
+      if (grid.present) gv["voltage"] = grid.vrms;
+      else gv["voltage"] = nullptr;
+      gv["grid_sense_raw_v"] = grid.raw_vrms;
       gv["grid_v_clipped"] = grid.clipped;
       gv["available"] = grid.present;
     } else {
       gv["voltage"] = nullptr;
+      gv["grid_sense_raw_v"] = nullptr;
       gv["grid_v_clipped"] = nullptr;
       gv["available"] = nullptr;
     }

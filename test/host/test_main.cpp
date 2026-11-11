@@ -1096,11 +1096,38 @@ static void test_ac_energy_today() {
   o = t.observe(in);
   CHECK(!o.known && !o.persist && !t.baselineValid());
 
-  in.clock = TodayClock::Anchored;
-  in.day_id = 100;
+  // Offline, no trusted clock: first valid PZEM sample starts a session baseline.
+  in.clock = TodayClock::Session;
+  in.day_id = kSessionDayId;
   o = t.observe(in);
   CHECK(o.known && o.persist && o.kwh == 0);
+  CHECK(t.baselineWh() == 5000 && t.dayId() == kSessionDayId && t.known());
+
+  in.lifetime_wh = 6350;  // 1.35 kWh since the first sample (Caleb's 1350 Wh case)
+  in.mono_ms = 1000 + 3600 * 1000;
+  o = t.observe(in);
+  CHECK(o.known && !o.persist);
+  NEAR(o.kwh, 1.35, 1e-9);
+
+  // A trusted clock later in the same run adopts the session; energy stays.
+  in.clock = TodayClock::Anchored;
+  in.day_id = 100;
+  in.lifetime_wh = 6350;
+  in.mono_ms = 1000 + 3600 * 1000 + 1000;
+  o = t.observe(in);
+  CHECK(o.known && o.persist);
+  NEAR(o.kwh, 1.35, 1e-9);
   CHECK(t.baselineWh() == 5000 && t.dayId() == 100);
+
+  AcEnergyToday fresh;
+  in.clock = TodayClock::Anchored;
+  in.day_id = 100;
+  in.lifetime_wh = 5000;
+  in.mono_ms = 1000;
+  o = fresh.observe(in);
+  CHECK(o.known && o.persist && o.kwh == 0);
+  CHECK(fresh.baselineWh() == 5000 && fresh.dayId() == 100);
+  t = fresh;
 
   in.lifetime_wh = 6500;
   in.mono_ms = 1000 + 3600 * 1000;
@@ -1153,7 +1180,17 @@ static void test_ac_energy_today() {
   in.clock = TodayClock::Untrusted;
   in.lifetime_wh = 9500;
   o = booted.observe(in);
-  CHECK(!o.known && !o.persist);
+  CHECK(o.known && !o.persist);  // keep the established day if the clock drops
+  NEAR(o.kwh, 0.0, 1e-9);
+  CHECK(booted.dayId() == 101 && booted.baselineWh() == 9000);
+
+  in.clock = TodayClock::Session;
+  in.day_id = kSessionDayId;
+  in.lifetime_wh = 9500;
+  in.mono_ms = 8000 + 3600 * 1000;  // 500 Wh over an hour is a plausible step
+  o = booted.observe(in);
+  CHECK(o.known);
+  NEAR(o.kwh, 0.5, 1e-9);
   CHECK(booted.dayId() == 101 && booted.baselineWh() == 9000);
 }
 
@@ -1873,6 +1910,35 @@ static void test_grid_sense() {
   CHECK(presentHysteresis(true, 165.f));
   CHECK(presentHysteresis(true, 160.f));
   CHECK(!presentHysteresis(true, 159.f));
+
+  // Bench crosstalk: inverter ON, no mains. GPIO39 saw 36-88 V. Must not be grid.
+  const bool inverting = true;
+  CHECK(!senseIsGrid(false, 36.f, inverting));
+  CHECK(!senseIsGrid(false, 88.f, inverting));
+  CHECK(!senseIsGrid(false, 159.f, inverting));
+  CHECK(senseIsGrid(false, 230.f, inverting));
+  CHECK(senseIsGrid(true, 170.f, inverting));
+  CHECK(!senseIsGrid(true, 36.f, inverting));
+  CHECK(!senseIsGrid(true, 88.f, inverting));
+  NEAR(publishedVoltage(false, 36.f), 0.0, 0.001);
+  NEAR(publishedVoltage(false, 88.f), 0.0, 0.001);
+  NEAR(publishedVoltage(true, 230.f), 230.0, 0.001);
+
+  PresentDebounce d;
+  CHECK(!d.update(false, 0));
+  CHECK(!d.update(true, 0));                   // start of enter window
+  CHECK(!d.update(true, kPresentDebounceMs - 1));
+  CHECK(d.update(true, kPresentDebounceMs));   // held 2 s at 230 V class
+  CHECK(d.update(false, kPresentDebounceMs));  // start of exit window, still present
+  CHECK(d.update(false, kPresentDebounceMs + kPresentDebounceMs - 1));
+  CHECK(!d.update(false, kPresentDebounceMs + kPresentDebounceMs));
+  // A brief spike must not enter.
+  PresentDebounce spike;
+  CHECK(!spike.update(true, 1000));
+  CHECK(!spike.update(false, 1500));
+  CHECK(!spike.update(true, 2000));
+  CHECK(!spike.update(true, 2000 + kPresentDebounceMs - 1));
+  CHECK(spike.update(true, 2000 + kPresentDebounceMs));
 }
 
 static void test_jbd() {

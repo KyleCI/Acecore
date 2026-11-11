@@ -25,6 +25,9 @@
 #include "unit_model.h"
 
 namespace telemetry {
+#if POWERCELL_DSP011
+void dspGridPublish(JsonObject o, const char *voltKey, const char *availKey);
+#endif
 namespace {
 #if POWERCELL_DSP011
 void dspGridKeys(JsonObject o);
@@ -72,7 +75,9 @@ void inverterBlock(JsonObject inv) {
   inv["system"] = pc::sysStateName(s.sys);
   inv["switch"] = pc::switchName(s.sw);
   inv["charge_state"] = pc::chargeName(s.chr);
+#if !POWERCELL_DSP011
   if (s.has_grid) inv["grid_available"] = s.grid_v >= 160.0f;
+#endif
   inv["fault_code"] = s.fault;
   inv["fault_active"] = pc::ev::faultActive(s.fault);  // bits 16-19 are status flags, not faults
   faultList(inv["faults"].to<JsonArray>(), s.fault);
@@ -141,20 +146,7 @@ void batteryBlock(JsonObject b) {
 }
 
 #if POWERCELL_DSP011
-void dspGridKeys(JsonObject o) {
-  DspGridReading g;
-  o["grid_v_calibrated"] = false;
-  o["grid_v_source"] = "adc_gpio39_k357";
-  if (dspGridRead(&g) && g.valid) {
-    o["grid_voltage"] = g.vrms;
-    o["grid_available"] = g.present;
-    o["grid_v_clipped"] = g.clipped;
-  } else {
-    o["grid_voltage"] = nullptr;
-    o["grid_available"] = nullptr;
-    o["grid_v_clipped"] = nullptr;
-  }
-}
+void dspGridKeys(JsonObject o) { dspGridPublish(o, "grid_voltage", "grid_available"); }
 #endif
 
 void solarBlock(JsonObject o) {
@@ -172,6 +164,28 @@ void solarEnergyKeys(JsonObject o) {  // 2.5.8 PV only. DSP AC energy is not wri
   else { o["energy_today_kwh"] = nullptr; o["energy_total_kwh"] = nullptr; }
 }
 }  // namespace
+
+#if POWERCELL_DSP011
+void dspGridPublish(JsonObject o, const char *voltKey, const char *availKey) {
+  DspGridReading g;
+  o["grid_v_calibrated"] = false;
+  o["grid_v_source"] = "adc_gpio39_k357";
+  // Below the 170/160 window the published volts are null, not the GPIO39
+  // crosstalk reading. Raw ADC stays on grid_sense_raw_v and in SELFTEST.
+  if (dspGridRead(&g) && g.valid) {
+    if (g.present) o[voltKey] = g.vrms;
+    else o[voltKey] = nullptr;
+    o[availKey] = g.present;
+    o["grid_v_clipped"] = g.clipped;
+    o["grid_sense_raw_v"] = g.raw_vrms;
+  } else {
+    o[voltKey] = nullptr;
+    o[availKey] = nullptr;
+    o["grid_v_clipped"] = nullptr;
+    o["grid_sense_raw_v"] = nullptr;
+  }
+}
+#endif
 
 void stmEnergyToJson(JsonObject o, const char *kwhKey, bool includeLifetime) {
 #if !POWERCELL_DSP011
@@ -270,6 +284,7 @@ void liveToJson(JsonObject o) {
     o["output_power_source"] = nullptr;
     o["lifetime_wh"] = nullptr;
   }
+  dspGridPublish(o, "grid_voltage", "grid_available");
 #endif
   float pct = 0;
   num("load_pct", ps != pc::live::PowerSrc::None && pc::live::loadPct(w, unitmodel::get(), pct), pct);
@@ -395,18 +410,7 @@ void buildMetrics(JsonDocument &doc) {
   num("inverter_temperature", fresh && s.has_temp, s.temp_c);
 #if POWERCELL_DSP011
   {
-    DspGridReading grid;
-    doc["grid_v_calibrated"] = false;
-    doc["grid_v_source"] = "adc_gpio39_k357";
-    if (dspGridRead(&grid) && grid.valid) {
-      doc["gridVoltage"] = grid.vrms;
-      doc["grid_available"] = grid.present;
-      doc["grid_v_clipped"] = grid.clipped;
-    } else {
-      doc["gridVoltage"] = nullptr;
-      doc["grid_available"] = nullptr;
-      doc["grid_v_clipped"] = nullptr;
-    }
+    dspGridPublish(doc.as<JsonObject>(), "gridVoltage", "grid_available");
   }
 #else
   num("gridVoltage", fresh && s.has_grid, s.grid_v);

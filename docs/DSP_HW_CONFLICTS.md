@@ -44,3 +44,9 @@ Replaced on DSP: the critical-latch red blink, STM32 fault red, and the blue off
 
 Our UART1 setup matches Dubem's pzem.cpp: Serial1, begin(9600, SERIAL_8N1, 35, 32), same request bytes and CRC, flush, 200 ms timeout, 1 s poll. The BMS is on Serial2 in both, so the two never share a UART. Nothing in this firmware reconfigures GPIO32 or GPIO35 after begin (no pinMode, analogRead, LEDC, touch or RTC IO on those pins; the only ADC pin is GPIO39). Each poll now verifies the routing and repairs it if it changed. On the bench run PZEM RAW: route=ok with rx 0 bytes points to the meter side (AC on the PZEM input, 5 V, TX wiring); any route fault names the register that changed.
 
+## 18. Grid-sense crosstalk while the inverter is on (2026-11-11)
+
+Caleb's 5 kW DSP, firmware 5ae37b4, inverter ON, no grid: the app showed Output 226.6 V (PZEM) and Input 36.4 V. Dubem's /metrics also showed gridVoltage 36-88 V with no mains. GPIO39 picks up inverter output through the divider. Presence was already 170 V on / 160 V off, so `grid_available` was false at 36 V, but the raw 36.4 V was still published as `grid_voltage` / `gridVoltage`. The Powercore app displays that as Input voltage, and if the explicit flag is missing it treats >= 80 V as grid present (88 V crosstalk would trip it).
+
+Published grid volts are now null when not present. Presence has a 2 s debounce. Raw ADC remains on `grid_sense_raw_v` and in SELFTEST. 230 V is still grid, including while inverting.
+

@@ -69,6 +69,7 @@ float g_vrms = 0;
 bool g_clipped = false;
 bool g_present = false;
 uint32_t g_at = 0;
+powercell::grid::PresentDebounce g_deb;
 
 void loadScale() {
   g_k = static_cast<float>(DSP_GRID_K);
@@ -98,7 +99,8 @@ void task(void*) {
         powercell::grid::fromPinMillivolts(mv, powercell::grid::kSampleCount, g_k);
     if (g_mu && xSemaphoreTake(g_mu, pdMS_TO_TICKS(20)) == pdTRUE) {
       if (wave.ok) {
-        g_present = powercell::grid::presentHysteresis(g_present, wave.vrms);
+        const bool candidate = powercell::grid::presentHysteresis(g_deb.present, wave.vrms);
+        g_present = g_deb.update(candidate, millis());
         g_vrms = wave.vrms;
         g_clipped = wave.clipped;
         g_valid = true;
@@ -123,9 +125,10 @@ bool dspGridRead(DspGridReading* out) {
   const uint32_t age = g_valid ? static_cast<uint32_t>(millis() - g_at) : 0;
   const bool fresh = g_valid && age < 5000;
   out->valid = fresh;
-  out->vrms = fresh ? g_vrms : 0;
-  out->clipped = fresh && g_clipped;
+  out->raw_vrms = fresh ? g_vrms : 0;
   out->present = fresh && g_present;
+  out->vrms = powercell::grid::publishedVoltage(out->present, out->raw_vrms);
+  out->clipped = fresh && g_clipped;
   out->age_ms = fresh ? age : 0;
   out->calibrated = false;
   xSemaphoreGive(g_mu);

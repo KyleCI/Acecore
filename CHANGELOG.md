@@ -1,5 +1,10 @@
 # Collector firmware changelog
 
+## Unreleased (DSP grid crosstalk and offline energy today)
+
+- DSP grid sense (GPIO39): inverter output can couple into the grid divider and read 36-88 V with no mains. Presence is still 170 V on / 160 V off, now with a 2 s debounce so a brief spike does not flip the flag. Below that window, published `grid_voltage` / `gridVoltage` and any grid frequency are JSON null and `grid_available` is false. The raw ADC reading is only `grid_sense_raw_v` (telemetry, /data metrics, /metrics, /v2/status live, SELFTEST). Crosstalk while the inverter is on cannot mark grid. 230 V still does. STM images unchanged.
+- Energy today on DSP: with no trusted clock (offline, "Needs internet", no NTP/phone, RTC untrusted) the first valid PZEM lifetime reading now starts a session baseline, so `energy_today_kwh` is published instead of null. A reboot keeps that baseline. When a trusted clock arrives, the session is adopted as the local day and the energy already counted stays. Midnight still rolls only on a synced clock.
+
 ## Unreleased (DSP PZEM bench diagnosis)
 
 - Bench 2026-11-10 22:34 WAT on 701fa96: GPIO15 ON works; PZEM never replied (201 polls, 0 bytes). Dubem's firmware reads the same meter on the same board.

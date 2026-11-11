@@ -11,11 +11,14 @@ namespace powercell {
 // baseline saved earlier that same day (so a reboot keeps energy counted while
 // the ESP was off — the meter keeps running). It is not integrated from watts.
 //
-// Local day uses the configured timezone offset. A day boundary is applied
+// Local day uses the configured timezone offset. A calendar midnight rolls
 // only when the clock is synced: NTP, phone time, or a coherent DS3231.
-// An unsynced clock (none, NVS-only, oscillator stopped) does not roll the
-// day and does not publish a value. Energy before the first trusted sample
-// of a day that has no saved baseline is not included; that is not filled in.
+// With no trusted clock (offline, no NTP/phone, RTC untrusted) the first
+// valid PZEM sample still starts a session baseline, and today is
+// (counter - that baseline). A reboot keeps that session baseline. When a
+// trusted clock later arrives, the session is adopted as the real local day
+// and the energy already counted stays in today. Midnight is not invented
+// while the clock is unsynced.
 //
 // A missing or invalid meter sample publishes nothing (null), not zero.
 // Zero is published only when a real baseline and a real counter are equal.
@@ -25,7 +28,14 @@ namespace powercell {
 // Persistence is the baseline, the day, and the unknown flag. The counter
 // itself is not copied on every sample.
 
-enum class TodayClock : uint8_t { Untrusted = 0, Rtc = 1, Anchored = 2 };
+enum class TodayClock : uint8_t { Untrusted = 0, Rtc = 1, Anchored = 2, Session = 3 };
+
+// Not a calendar day. Used while the clock is unsynced so today can still
+// be published from the first valid PZEM reading.
+constexpr int32_t kSessionDayId = -1;
+
+inline bool isCalendarDay(int32_t day_id) { return day_id > 0; }
+inline bool isSessionDay(int32_t day_id) { return day_id == kSessionDayId; }
 
 struct TodayInput {
   bool valid = false;

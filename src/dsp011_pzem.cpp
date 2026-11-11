@@ -70,9 +70,18 @@ powercell::TodayInput todayInput(bool sample_ok, uint32_t lifetime_wh) {
   const pc::clk::Source src = clock_::source();
   const bool synced = now >= pc::clk::kMinEpoch &&
                       (src == pc::clk::Source::Ntp || src == pc::clk::Source::Phone || src == pc::clk::Source::Rtc);
-  if (!synced) return in;
+  if (!synced) {
+    // Offline / no trusted clock: still start today from the first good PZEM read.
+    in.day_id = powercell::kSessionDayId;
+    in.clock = powercell::TodayClock::Session;
+    return in;
+  }
   const int32_t day = pc::solar::localDay(now, true, clock_::tzOffsetMin());
-  if (day <= 0) return in;
+  if (day <= 0) {
+    in.day_id = powercell::kSessionDayId;
+    in.clock = powercell::TodayClock::Session;
+    return in;
+  }
   in.day_id = day;
   in.clock = src == pc::clk::Source::Rtc ? powercell::TodayClock::Rtc : powercell::TodayClock::Anchored;
   return in;

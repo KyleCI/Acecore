@@ -117,7 +117,7 @@ void service() {
   }
 #if POWERCELL_DSP011
   DspGridReading grid;
-  if (dspGridRead(&grid) && grid.valid) { in.hasGrid = true; in.gridV = grid.vrms; }
+  if (dspGridRead(&grid) && grid.valid) { in.hasGrid = true; in.gridV = grid.raw_vrms; }
 #endif
   pc::jk::Data d;
   if ((in.bmsOnline = bms::read(d))) { in.bmsAlarms = d.alarms; in.bmsCurrentA = d.currentMa / 1000.0f; }
