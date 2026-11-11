@@ -2056,23 +2056,125 @@ static void test_dsp_thermal() {
   CHECK(!mvToCelsius(ntc_mv_for(155.f, false), &c, false));
   CHECK(!mvToCelsius(ntc_mv_for(-5.f, true), &c, true));
 
-  // Fan: ON >= 70, OFF <= 65, hold between, fault forces ON (Dubem fail-safe).
-  CHECK(kFanOnC == 70.0f && kFanOffC == 65.0f);
+  // Fan: ON >= 70, OFF <= 60 (Caleb 2026-11-11), hold between, fault forces ON (Dubem fail-safe).
+  CHECK(kFanOnC == 70.0f && kFanOffC == 60.0f);
   CHECK(!fanWanted(false, false, 25.f));
   CHECK(!fanWanted(false, false, 69.9f));
   CHECK(fanWanted(false, false, 70.f));
   CHECK(fanWanted(true, false, 67.f));
   CHECK(!fanWanted(false, false, 67.f));
-  CHECK(fanWanted(true, false, 65.1f));
-  CHECK(!fanWanted(true, false, 65.f));
+  CHECK(fanWanted(true, false, 65.f));   // was the old OFF point: now still ON
+  CHECK(fanWanted(true, false, 60.1f));
+  CHECK(!fanWanted(true, false, 60.f));
   CHECK(fanWanted(false, true, 25.f));
   CHECK(fanWanted(false, true, NAN));
   CHECK(fanWanted(false, false, NAN));
-  // Sweep up then down: one ON edge at 70, one OFF edge at 65.
+  CHECK(fanWanted(true, false, 85.f));   // fan stays on through a cutoff
+  // Sweep up then down: one ON edge at 70, one OFF edge at 60.
   bool fan = false; int on_edges = 0, off_edges = 0;
-  for (float t = 50.f; t <= 80.f; t += 0.5f) { bool w = fanWanted(fan, false, t); if (w && !fan) { ++on_edges; NEAR(t, 70.0, 0.01); } fan = w; }
-  for (float t = 80.f; t >= 50.f; t -= 0.5f) { bool w = fanWanted(fan, false, t); if (!w && fan) { ++off_edges; NEAR(t, 65.0, 0.01); } fan = w; }
+  for (float t = 50.f; t <= 90.f; t += 0.5f) { bool w = fanWanted(fan, false, t); if (w && !fan) { ++on_edges; NEAR(t, 70.0, 0.01); } fan = w; }
+  for (float t = 90.f; t >= 50.f; t -= 0.5f) { bool w = fanWanted(fan, false, t); if (!w && fan) { ++off_edges; NEAR(t, 60.0, 0.01); } fan = w; }
   CHECK(on_edges == 1 && off_edges == 1);
+
+  // Sensor health: no fault before the first sample; fault or stale after.
+  CHECK(!sensorFaulted(false, false, 0));
+  CHECK(!sensorFaulted(false, true, 99999));
+  CHECK(!sensorFaulted(true, false, 2000));
+  CHECK(sensorFaulted(true, true, 0));
+  CHECK(!sensorFaulted(true, false, kStaleMs - 1));
+  CHECK(sensorFaulted(true, false, kStaleMs));
+}
+
+static void test_dsp_over_temp() {
+  using namespace powercell::thermal;
+  CHECK(kCutoffC == 80.0f && kOnAllowedBelowC == 70.0f);
+  OverTempGuard g;
+  CHECK(!g.latched() && !g.blocksOn(true, 25.f) && !g.blocksOn(false, 0.f));
+  // Below 80: no latch, ON allowed (70-80 too when not latched).
+  CHECK(!g.update(true, 79.9f) && !g.latched());
+  CHECK(!g.blocksOn(true, 75.f));
+  // Sensor fault alone never latches, even with a stale hot value passed in.
+  CHECK(!g.update(false, 95.f) && !g.latched() && !g.dirty());
+  CHECK(!g.blocksOn(false, 95.f));
+  // 80.0 latches once (edge), marks dirty for NVS.
+  CHECK(g.update(true, 80.f));
+  CHECK(g.latched() && g.dirty());
+  CHECK(!g.update(true, 85.f));            // no second edge
+  g.ackSaved(); CHECK(!g.dirty());
+  // While latched: hot, 70-80, exactly 70, no reading, fault -> ON refused, latch kept.
+  CHECK(!g.acceptOn(true, 85.f) && g.latched());
+  CHECK(!g.acceptOn(true, 75.f) && g.latched());
+  CHECK(!g.acceptOn(true, 70.f) && g.latched());
+  CHECK(!g.acceptOn(false, 25.f) && g.latched());
+  CHECK(g.blocksOn(true, 70.f) && g.blocksOn(false, 0.f) && !g.dirty());
+  // Cooling alone does not clear the latch (no auto-ON).
+  CHECK(!g.update(true, 40.f) && g.latched());
+  // User ON at a valid 69.9 C: accepted, latch cleared, dirty for NVS.
+  CHECK(!g.blocksOn(true, 69.9f));
+  CHECK(g.acceptOn(true, 69.9f) && !g.latched() && g.dirty());
+  g.ackSaved();
+  // Not latched: ON accepted with no state change; >= 80 refused even before the service pass latches.
+  CHECK(g.acceptOn(true, 50.f) && !g.dirty());
+  CHECK(g.blocksOn(true, 80.f) && !g.acceptOn(true, 81.f));
+  // Reboot with a persisted latch and no reading yet: ON refused until valid < 70.
+  OverTempGuard b; b.restore(true);
+  CHECK(b.latched() && !b.dirty());
+  CHECK(!b.acceptOn(false, 0.f) && b.latched());
+  CHECK(b.acceptOn(true, 30.f) && !b.latched());
+
+  // ON gate order: payment lock > battery > overload > over temperature.
+  using pc::paylock::setStateBlock;
+  CHECK(!strcmp(setStateBlock(false, true, false, false, true), "over_temperature_latched"));
+  CHECK(!strcmp(setStateBlock(false, true, true, false, true), "battery_critical_latched"));
+  CHECK(!strcmp(setStateBlock(false, true, false, true, true), "output_overload_latched"));
+  CHECK(!strcmp(setStateBlock(true, true, false, false, true), "payment_locked"));
+  CHECK(setStateBlock(false, false, false, false, true) == nullptr);  // OFF is never blocked
+  CHECK(setStateBlock(false, true, false, false) == nullptr);
+
+  // Alerts through the event engine (same path as battery_critical / over_temp).
+  using namespace pc::ev;
+  Engine e; Inputs in; Event out[24];
+  in.dspThermal = true; in.sysTempValid = true; in.sysTemp = 45.f;
+  e.update(in, 1000, 0); CHECK(e.drain(out, 24) == 0);
+  in.sysTemp = 81.f; in.overTempLatched = true;
+  e.update(in, 2000, 0);
+  size_t n = e.drain(out, 24);
+  CHECK(n == 1 && out[0].type == Type::OverTemp && out[0].active && out[0].severity == Sev::Critical);
+  CHECK(n == 1 && !strcmp(out[0].id, "over_temperature") && !strcmp(typeName(out[0].type), "over_temp"));
+  CHECK(n == 1 && out[0].hasValue && fabs(out[0].value - 81.0) < 0.01 && !strcmp(out[0].code, "system_ntc_80c_cutoff"));
+  CHECK(n == 1 && out[0].releaseRequires && !strcmp(out[0].releaseRequires, "cool_below_70c_then_on"));
+  in.sysTemp = 50.f; e.update(in, 3000, 0); CHECK(e.drain(out, 24) == 0);  // still latched: no clear, no repeat
+  CHECK(e.activeCount() == 1);
+  in.overTempLatched = false; e.update(in, 4000, 0);
+  n = e.drain(out, 24);
+  CHECK(n == 1 && out[0].type == Type::OverTemp && !out[0].active);
+
+  // temp_sensor_fault: raised once after 4 s of fault, no repeat, cleared after 10 s valid.
+  Engine f; Inputs fi; fi.dspThermal = true; fi.sysTempValid = false; fi.sysTempFault = true;
+  f.update(fi, 0, 0); CHECK(f.drain(out, 24) == 0);
+  f.update(fi, 3999, 0); CHECK(f.drain(out, 24) == 0);
+  f.update(fi, 4000, 0);
+  n = f.drain(out, 24);
+  CHECK(n == 1 && out[0].type == Type::TempSensorFault && out[0].active && out[0].severity == Sev::Warning);
+  CHECK(n == 1 && !strcmp(typeName(out[0].type), "temp_sensor_fault") && !strcmp(out[0].id, "temp_sensor_fault"));
+  for (uint32_t t = 5000; t < 60000; t += 1000) f.update(fi, t, 0);
+  CHECK(f.drain(out, 24) == 0);  // no spam while it stays faulted
+  // A fault never raises the cutoff alert.
+  for (size_t i = 0; i < f.activeCount(); ++i) CHECK(f.active(i)->type != Type::OverTemp);
+  fi.sysTempFault = false; fi.sysTempValid = true; fi.sysTemp = 30.f;
+  f.update(fi, 60000, 0); f.update(fi, 69999, 0); CHECK(f.drain(out, 24) == 0);
+  f.update(fi, 70000, 0);
+  n = f.drain(out, 24);
+  CHECK(n == 1 && out[0].type == Type::TempSensorFault && !out[0].active);
+  // A brief flicker (< 4 s) does not alert.
+  fi.sysTempFault = true; f.update(fi, 71000, 0); fi.sysTempFault = false; f.update(fi, 73000, 0); f.update(fi, 90000, 0);
+  CHECK(f.drain(out, 24) == 0);
+  // STM images (dspThermal false) never raise either alert.
+  Engine s; Inputs si; si.overTempLatched = true; si.sysTempFault = true;
+  s.update(si, 0, 0); s.update(si, 20000, 0);
+  n = s.drain(out, 24);
+  bool any = false; for (size_t i = 0; i < n; ++i) any |= out[i].type == Type::OverTemp || out[i].type == Type::TempSensorFault;
+  CHECK(!any);
 }
 
 static void test_dsp_bms_select() {
@@ -2110,7 +2212,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 int main() {
   test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_dsp_thermal(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_dsp_status_led(); test_pzem_route(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
+  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_dsp_thermal(); test_dsp_over_temp(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_dsp_status_led(); test_pzem_route(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();

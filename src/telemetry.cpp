@@ -206,19 +206,36 @@ void dspThermalKeys(JsonObject o, const char *tempKey) {
   if (tempKey) {
     if (ok) o[tempKey] = t.temp_c; else o[tempKey] = nullptr;
   }
-  if (running) { o["temp_sensor_fault"] = t.fault; o["fan_on"] = t.fan_on; }
+  const bool faulted = powercell::thermal::sensorFaulted(t.sampled, t.fault, t.age_ms);
+  if (running) { o["temp_sensor_fault"] = faulted; o["fan_on"] = t.fan_on; }
   else { o["temp_sensor_fault"] = nullptr; o["fan_on"] = nullptr; }
+  const bool cut = powerguard::overTempLatched();
+  o["over_temp_cutoff"] = cut;
+  // One alert name for the app: the cutoff wins over a sensor fault.
+  if (cut) o["temp_alert"] = "over_temperature";
+  else if (faulted) o["temp_alert"] = "temp_sensor_fault";
+  else o["temp_alert"] = nullptr;
 }
 
 void dspThermalBlock(JsonObject o) {
   DspThermalReading t;
   const bool ok = dspThermalRead(&t);
-  o["sensor"] = "ntc10k_b3950_2k7_gpio36";
+  o["sensor"] = "ntc10k_b3950_2k7_gpio33";
+  o["ntc_pin"] = PIN_NTC;
   o["fan_pin"] = PIN_FAN;
   o["valid"] = ok;
   if (ok) o["temperature_c"] = t.temp_c; else o["temperature_c"] = nullptr;
+  const bool faulted = powercell::thermal::sensorFaulted(t.sampled, t.fault, t.age_ms);
+  const bool cut = powerguard::overTempLatched();
+  o["over_temp_cutoff"] = cut;
+  o["on_blocked"] = powerguard::overTempBlocksOn();
+  if (cut) o["alert"] = "over_temperature";
+  else if (faulted) o["alert"] = "temp_sensor_fault";
+  else o["alert"] = nullptr;
+  o["cutoff_c"] = powercell::thermal::kCutoffC;
+  o["on_allowed_below_c"] = powercell::thermal::kOnAllowedBelowC;
   if (t.sampled) {
-    o["fault"] = t.fault; o["fan_on"] = t.fan_on; o["ntc_mv"] = roundf(t.mv); o["age_ms"] = t.age_ms;
+    o["fault"] = faulted; o["fan_on"] = t.fan_on; o["ntc_mv"] = roundf(t.mv); o["age_ms"] = t.age_ms;
   } else {
     o["fault"] = nullptr; o["fan_on"] = nullptr; o["ntc_mv"] = nullptr; o["age_ms"] = nullptr;
   }

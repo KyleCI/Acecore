@@ -245,7 +245,8 @@ void handleSetState(JsonDocument &doc) {
   uint64_t expires = doc["expires_at"] | uint64_t(0);
   if (expires && unixNow() && expires <= unixNow()) { reject(id, kind, target, desired, "command_expired"); return; }
   if (ota::busy()) { reject(id, kind, target, desired, "firmware_update_in_progress"); return; }
-  if (const char* why = pc::paylock::setStateBlock(fid::paymentLocked(), desired, powerguard::latched(), powerguard::overloadLatched())) {
+  if (const char* why = pc::paylock::setStateBlock(fid::paymentLocked(), desired, powerguard::latched(), powerguard::overloadLatched(),
+                                                   kind == "gateway" && powerguard::overTempBlocksOn())) {
     reject(id, kind, target, desired, why);
     return;
   }

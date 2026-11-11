@@ -112,6 +112,7 @@ const char *resultName(Result r) {
     case Result::CriticalLatched: return "battery_critical_latched";
     case Result::PaymentLocked: return "payment_locked";
     case Result::OverloadLatched: return "output_overload_latched";
+    case Result::OverTempLatched: return "over_temperature_latched";
     default: return "stm32_timeout";
   }
 }
@@ -121,7 +122,8 @@ Result set(bool on, const char *origin) {
   // battery_critical, ota) still runs. ON is never allowed while locked.
   if (fid::paymentLocked()) {
     bool systemOff = !on && origin && (!strcmp(origin, "payment_lock") || !strcmp(origin, "battery_critical") ||
-                                    !strcmp(origin, "ac_overload") || !strcmp(origin, "ota"));
+                                    !strcmp(origin, "ac_overload") || !strcmp(origin, "ota") ||
+                                    !strcmp(origin, "over_temperature"));
     if (on || !systemOff) {
       LOGW("GATEWAY", "PAYMENT_LOCKED", "%s refused (origin=%s)", on ? "on" : "off", origin ? origin : "?");
       return Result::PaymentLocked;
@@ -135,6 +137,12 @@ Result set(bool on, const char *origin) {
   if (on && powerguard::overloadLatched()) {
     LOGW("GATEWAY", "REFUSED", "on while ac overload latched (origin=%s)", origin);
     return Result::OverloadLatched;
+  }
+  // DSP system NTC: >= 80 C, or latched and not yet valid and < 70 C. Checked last so a
+  // refused ON for another reason never clears the over-temperature latch.
+  if (on && powerguard::overTempRefuseOn(origin)) {
+    LOGW("GATEWAY", "REFUSED", "on while over temperature (origin=%s)", origin);
+    return Result::OverTempLatched;
   }
 #if POWERCELL_DSP011
   if (on && ota::busy()) {

@@ -66,8 +66,9 @@ void info() {
     const bool tok = dspThermalRead(&t);
     char tc[16];
     if (tok) snprintf(tc, sizeof tc, "%.1f", t.temp_c); else snprintf(tc, sizeof tc, "null");
-    Serial.printf("thermal=ntc10k ntc_pin=%d fan_pin=%d temperature_c=%s fault=%d fan_on=%d ntc_mv=%.0f\n", PIN_NTC, PIN_FAN, tc,
-                  t.sampled ? (int)t.fault : -1, t.sampled ? (int)t.fan_on : -1, t.sampled ? t.mv : 0.0f);
+    Serial.printf("thermal=ntc10k ntc_pin=%d fan_pin=%d temperature_c=%s fault=%d fan_on=%d ntc_mv=%.0f over_temp_cutoff=%d\n", PIN_NTC,
+                  PIN_FAN, tc, t.sampled ? (int)powercell::thermal::sensorFaulted(t.sampled, t.fault, t.age_ms) : -1,
+                  t.sampled ? (int)t.fan_on : -1, t.sampled ? t.mv : 0.0f, (int)powerguard::overTempLatched());
   }
 #endif
   Serial.printf("ap_ssid=%s wifi_state=%s hotspot=%d\n", id.apSsid, net::stateName(), net::apActive());

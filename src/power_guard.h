@@ -13,7 +13,11 @@ bool stmReserve();           // STM32 RSV:1 latch reported
 bool latched();              // battery critical: on commands are refused (battery_critical_latched)
 bool overloadLatched();      // AC-output overload shutdown (output_overload_latched). DSP only.
 bool lowPower();             // standby mode active (== latched())
-bool refuseOn(const char *origin);  // battery gate only. "soc_restore" passes while the ESP latch is set.
+bool refuseOn(const char *origin);
+// DSP over-temperature cutoff (system NTC >= 80 C, latched in NVS). STM: always false.
+bool overTempLatched();
+bool overTempBlocksOn();               // ON would be refused now (no state change)
+bool overTempRefuseOn(const char *origin);  // ON gate: clears the latch when valid and < 70 C  // battery gate only. "soc_restore" passes while the ESP latch is set.
 void setPriority(const String &socketId, bool essential);  // console PRIO fallback: writes the socket config priority
 void setAlertThresholds(float lowPercent, float warningPercent);
 void toJson(JsonObject o);

@@ -18,6 +18,7 @@ const char *typeName(Type t) {
     case Type::OutputRestored: return "output_restored";
     case Type::ModeFallback: return "mode_fallback";
     case Type::LoadShed: return "load_shed";
+    case Type::TempSensorFault: return "temp_sensor_fault";
   }
   return "unknown";
 }
@@ -141,6 +142,18 @@ void Engine::update(const Inputs &in, uint32_t now, uint32_t ts) {
       bool raw = hystBelow(isActive("grid_down"), in.gridV, kGridMinV, kGridRestoreV);
       cond({"grid_down", Type::GridDown, Sev::Warning, true, in.gridV, "grid_below_160v", nullptr, "stm32", false, 3000, 3000}, raw, now, ts);
     }
+  }
+  // ---- DSP system temperature (NTC GPIO33) ----------------------------------------
+  // over_temperature: the 80 C cutoff latch. Same type as the STM32 thermal alert
+  // (over_temp) so the server's existing over_temp notification path carries it.
+  // Raised on the latch edge, cleared when the latch is cleared (user ON below 70 C).
+  // temp_sensor_fault: open, short, out of range or stale. Raised once after 4 s,
+  // cleared after 10 s valid. No cutoff on a fault alone.
+  if (in.dspThermal) {
+    cond({"over_temperature", Type::OverTemp, Sev::Critical, in.sysTempValid, in.sysTemp, "system_ntc_80c_cutoff", nullptr, "esp", false, 0, 0,
+          "cool_below_70c_then_on"}, in.overTempLatched, now, ts);
+    cond({"temp_sensor_fault", Type::TempSensorFault, Sev::Warning, false, 0, "ntc_open_short_range", nullptr, "esp", false,
+          kTempSensorFaultOnMs, kTempSensorFaultOffMs}, in.sysTempFault, now, ts);
   }
   // ---- Battery full ----------------------------------------------------------
   {

@@ -421,7 +421,8 @@ void begin() {
     if (s != "on" && s != "off") return fail(r, 400, "state must be on|off");
     if (fid::paymentLocked()) return fail(r, 403, "payment_locked");
     if (s == "on" && ota::busy()) return fail(r, 409, "refused");
-    if (const char *why = pc::paylock::setStateBlock(false, s == "on", powerguard::latched(), powerguard::overloadLatched()))
+    if (const char *why = pc::paylock::setStateBlock(false, s == "on", powerguard::latched(), powerguard::overloadLatched(),
+                                                     powerguard::overTempBlocksOn()))
       return fail(r, 409, why);
 #if !POWERCELL_DSP011
     if (s == "on" && !stm32link::online()) return fail(r, 503, "stm32_timeout");  // IO15 stays LOW

@@ -55,9 +55,12 @@
 // GPIO39 is the v0.2 grid-sense node (ADC1). GPIO34 is not read. GPIO35 is PZEM RX.
 #define PIN_GRID_SENSE 39
 // System temperature and cooling fan (Dubem "dspic collector_2", 2026-11-11, pinDefines.h).
-// GPIO36 (VP, ADC1, input only): 10k NTC / 2k7 divider from 3V3. ADC2 pins fail with Wi-Fi on.
+// GPIO33 (ADC1_CH5): 10k NTC / 2k7 divider from 3V3. Caleb 2026-11-11 18:30 WAT: the sensor
+// moved from GPIO36 to GPIO33. ADC2 pins fail with Wi-Fi on. On DSP, GPIO33 is otherwise
+// unused: PIN_STM32_RX is STM only (FEATURE_STM32=0, the UART is never begun) and
+// Dubem's current-sense input (AC_PIN_CSENSE) is not read by this firmware. GPIO36 is unused.
 // GPIO25: fan driver, HIGH = ON. Unused on DSP before this (PIN_PWR_LIGHT is STM only).
-#define PIN_NTC 36
+#define PIN_NTC 33
 #define PIN_FAN 25
 #else
 #define PIN_BMS_RX 17
@@ -140,10 +143,13 @@ static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "3.5 kW DSP uses JK-
 static_assert(PIN_LED_RED == 12 && PIN_LED_BLUE == 13 && PIN_LED_GREEN == 14, "DSP RGB");
 static_assert(PIN_FRONT_LIGHT == 27 && PIN_LED_GREEN != PIN_FRONT_LIGHT, "front light is not the green LED");
 static_assert(PIN_GRID_SENSE == 39, "DSP grid sense is GPIO39");
-static_assert(PIN_NTC == 36 && PIN_FAN == 25, "DSP NTC GPIO36, fan GPIO25 (Dubem dspic collector_2)");
+static_assert(PIN_NTC == 33 && PIN_FAN == 25, "DSP NTC GPIO33 (Caleb 2026-11-11), fan GPIO25");
 static_assert(PIN_NTC >= 32 && PIN_NTC <= 39, "NTC must be on ADC1 for Wi-Fi");
-static_assert(PIN_NTC != PIN_GRID_SENSE && PIN_NTC != PIN_PZEM_RX && PIN_NTC != PIN_BMS_RX && PIN_NTC != PIN_BAT_SENSE,
-              "NTC pin is not shared");
+static_assert(PIN_NTC != PIN_GRID_SENSE && PIN_NTC != PIN_PZEM_RX && PIN_NTC != PIN_PZEM_TX && PIN_NTC != PIN_BMS_RX &&
+              PIN_NTC != PIN_BMS_TX && PIN_NTC != PIN_BAT_SENSE && PIN_NTC != PIN_PWR_KEY && PIN_NTC != PIN_FRONT_LIGHT &&
+              PIN_NTC != PIN_DSP_SD_CS && PIN_NTC != PIN_FAN, "NTC pin is not shared");
+static_assert(!(FEATURE_STM32) || PIN_NTC != PIN_STM32_RX, "GPIO33 is the STM32 RX on STM boards; DSP has no STM32");
+static_assert(!(FEATURE_BAT_SENSE_ADC) || PIN_NTC != PIN_BAT_SENSE, "BAT_SENSE ADC is off on DSP");
 static_assert(PIN_FAN != PIN_PWR_KEY && PIN_FAN != PIN_FRONT_LIGHT && PIN_FAN != PIN_LED_RED && PIN_FAN != PIN_LED_BLUE &&
               PIN_FAN != PIN_LED_GREEN && PIN_FAN != PIN_PZEM_TX && PIN_FAN != PIN_BMS_TX && PIN_FAN != PIN_BMS_RX &&
               PIN_FAN != PIN_DSP_SD_CS && PIN_FAN != PIN_I2C_SDA && PIN_FAN != PIN_I2C_SCL && PIN_FAN != PIN_SPI_SCK &&

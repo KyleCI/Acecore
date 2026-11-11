@@ -10,7 +10,7 @@
 // telemetry, the offline queue, LAN /data and the /events SSE stream.
 namespace pc {
 namespace ev {
-enum class Type : uint8_t { Overload, Overcurrent, InverterFault, BmsFault, RelayFailed, OverTemp, BatteryFull, BatteryLow, GridDown, ApplianceLockout, BatteryCritical, OutputRestored, ModeFallback, LoadShed };
+enum class Type : uint8_t { Overload, Overcurrent, InverterFault, BmsFault, RelayFailed, OverTemp, BatteryFull, BatteryLow, GridDown, ApplianceLockout, BatteryCritical, OutputRestored, ModeFallback, LoadShed, TempSensorFault };
 enum class Sev : uint8_t { Info, Warning, Critical };
 const char *typeName(Type t);
 const char *sevName(Sev s);
@@ -27,6 +27,7 @@ inline bool faultActive(uint32_t bits) { return (bits & kFaultMask) != 0; }
 
 constexpr float kOverloadAmps = 19.0f, kOverloadClearAmps = 17.0f;  // ESP rule: any link without bit16
 constexpr float kTempWarnC = 70.0f, kTempWarnClearC = 65.0f;
+constexpr uint32_t kTempSensorFaultOnMs = 4000, kTempSensorFaultOffMs = 10000;  // DSP NTC: 2 samples in, 5 out
 constexpr float kGridMinV = 160.0f, kGridRestoreV = 170.0f;
 constexpr float kSocketTripA = 10.0f, kSocketTripClearA = 9.0f, kSocketWarnA = 8.0f, kSocketWarnClearA = 7.0f;
 
@@ -69,6 +70,11 @@ struct Inputs {
   // SoC critical latch (ESP, soc_guard.h) and the STM32 reserve latch (legacy RSV:1)
   bool critLatched = false;
   bool stmReserve = false;
+  // DSP system NTC (GPIO33). dspThermal = the board has the sensor (DSP images).
+  // overTempLatched = the 80 C cutoff latch (dsp_thermal.h OverTempGuard).
+  // sysTempFault = sensorFaulted(): open, short, out of range or stale.
+  bool dspThermal = false, overTempLatched = false, sysTempValid = false, sysTempFault = false;
+  float sysTemp = 0;
   static constexpr size_t kMaxSockets = 10;
   SocketIn sockets[kMaxSockets];
   size_t nSockets = 0;

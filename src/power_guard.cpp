@@ -18,6 +18,7 @@
 #include "socket_cfg.h"
 #include "sockets/sockets.h"
 #include "stm32_link.h"
+#include "dsp_thermal.h"
 
 namespace powerguard {
 namespace {
@@ -42,6 +43,23 @@ void saveCutoff() {
   p.putUChar("latch", g_cutoff.outputLatched() ? 1 : 0);
   p.end();
   g_cutoff.ackLatchSave(true);
+}
+powercell::thermal::OverTempGuard g_ot;
+bool g_otOff = false;
+uint32_t g_otLastTry = 0;
+
+void saveOverTemp() {
+  Preferences p;
+  if (!p.begin(kCutoffNs, false)) return;  // dirty stays set: retried next pass
+  p.putUChar("ot_latch", g_ot.latched() ? 1 : 0);
+  p.end();
+  g_ot.ackSaved();
+}
+bool thermalNow(float *c) {
+  DspThermalReading t;
+  const bool ok = dspThermalRead(&t);
+  *c = t.temp_c;
+  return ok;
 }
 void holdAcOff() {
   if (!powercell::battery_ac_output_auto_off(powercell::HardwareProfile::V011)) return;
@@ -106,6 +124,44 @@ bool overloadLatched() {
 #if POWERCELL_DSP011
   return powercell::acOutputPolicy().shutdownLatched();
 #else
+  return false;
+#endif
+}
+
+bool overTempLatched() {
+#if POWERCELL_DSP011
+  return g_ot.latched();
+#else
+  return false;
+#endif
+}
+bool overTempBlocksOn() {
+#if POWERCELL_DSP011
+  float c = 0;
+  const bool ok = thermalNow(&c);
+  return g_ot.blocksOn(ok, c);
+#else
+  return false;
+#endif
+}
+bool overTempRefuseOn(const char *origin) {
+#if POWERCELL_DSP011
+  float c = 0;
+  const bool ok = thermalNow(&c);
+  const bool was = g_ot.latched();
+  if (!g_ot.acceptOn(ok, c)) {
+    if (ok) LOGW("PWR", "OVER_TEMP_REFUSED", "on refused at %.1f C (origin=%s latched=%d)", c, origin ? origin : "?", (int)was);
+    else LOGW("PWR", "OVER_TEMP_REFUSED", "on refused: no valid temperature (origin=%s latched=%d)", origin ? origin : "?", (int)was);
+    return true;
+  }
+  if (was) {
+    saveOverTemp();
+    g_otOff = false;
+    LOGW("PWR", "OVER_TEMP_CLEARED", "user on at %.1f C (< %.0f C, origin=%s)", c, powercell::thermal::kOnAllowedBelowC, origin ? origin : "?");
+  }
+  return false;
+#else
+  (void)origin;
   return false;
 #endif
 }
@@ -180,6 +236,17 @@ void begin() {
   }
   g_cutoff.applyLatchStore(powercell::BatteryAlertPolicy::classifyLatchStore(opened, not_found, has_key, held));
   if (!g_cutoff.outputOnAllowed()) holdAcOff();
+  {  // over-temperature latch, same namespace. Missing key = not latched.
+    uint8_t ot = 0;
+    if (nvs_open(kCutoffNs, NVS_READONLY, &h) == ESP_OK) { nvs_get_u8(h, "ot_latch", &ot); nvs_close(h); }
+    g_ot.restore(ot != 0);
+    if (g_ot.latched()) {
+      LOGW("PWR", "OVER_TEMP_RESTORED", "over-temperature latch from NVS; output held off until < %.0f C and a user on",
+           powercell::thermal::kOnAllowedBelowC);
+      gateway::Result r = gateway::set(false, "over_temperature");
+      g_otOff = r == gateway::Result::Ok;
+    }
+  }
   return;
 #else
   Preferences p;
@@ -211,6 +278,20 @@ void service() {
   if (g_cutoff.latchDirty()) saveCutoff();
   if (!g_cutoff.outputOnAllowed()) holdAcOff();
   else g_cutoffOff = false;  // eligible again; do not turn the output on
+  {  // over-temperature cutoff: >= 80 C latches, GPIO15 off, no auto-on
+    float c = 0;
+    const bool ok = thermalNow(&c);
+    if (g_ot.update(ok, c)) {
+      g_otOff = false; g_otLastTry = 0;
+      LOGE("PWR", "OVER_TEMP_CUTOFF", "system temperature %.1f C >= %.0f C: inverter output off (latched)", c, powercell::thermal::kCutoffC);
+    }
+    if (g_ot.dirty()) saveOverTemp();
+    if (g_ot.latched() && (gateway::state() || (!g_otOff && (!g_otLastTry || now - g_otLastTry >= 5000)))) {
+      g_otLastTry = now;
+      gateway::Result r = gateway::set(false, "over_temperature");
+      g_otOff = r == gateway::Result::Ok;
+    }
+  }
   manualLimitsService(now);
   if (powercell::acOutputPolicy().shutdownLatched()) {
     const bool edge = powercell::acOutputPolicy().takeShutdownEdge();
@@ -281,6 +362,10 @@ void toJson(JsonObject o) {
   o["physical_shutdown_verified"] = powercell::kPhysicalShutdownVerified;
   o["stm32_reserve_latched"] = false;
   o["charging_stopped"] = powercell::battery_cutoff_stops_charging();
+  o["over_temp_cutoff"] = g_ot.latched();
+  o["over_temp_blocks_on"] = overTempBlocksOn();
+  o["over_temp_cutoff_c"] = powercell::thermal::kCutoffC;
+  o["over_temp_on_below_c"] = powercell::thermal::kOnAllowedBelowC;
   return;
 #else
   o["critical_latched"] = g_guard.latched();

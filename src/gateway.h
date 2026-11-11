@@ -11,7 +11,7 @@ void latchOutputOff();  // DSP: GPIO15 low and held. STM: no pin write.
 void begin();
 bool state();       // last state accepted by the STM32 (framed) or driven on PWR_KEY (legacy)
 bool viaFramed();
-enum class Result : uint8_t { Ok, Refused, Busy, Nack, Timeout, CriticalLatched, PaymentLocked, OverloadLatched };
+enum class Result : uint8_t { Ok, Refused, Busy, Nack, Timeout, CriticalLatched, PaymentLocked, OverloadLatched, OverTempLatched };
 const char *resultName(Result r);
 // Blocking for the framed link (up to the set_mode timeout x retries): call from loop() context only.
 Result set(bool on, const char *origin);

@@ -11,6 +11,7 @@
 #include "sockets/sockets.h"
 #include "stm32_link.h"
 #include "grid_sense.h"
+#include "dsp_thermal.h"
 
 namespace events {
 namespace {
@@ -54,7 +55,10 @@ const char *title(const Event &e) {
     case T::InverterFault: return e.active ? "Inverter fault" : "Inverter fault cleared";
     case T::BmsFault: return e.active ? "Battery protection alarm" : "Battery alarm cleared";
     case T::RelayFailed: return e.active ? "Socket did not switch" : "Socket switching restored";
-    case T::OverTemp: return e.active ? "Inverter too hot" : "Inverter temperature normal";
+    case T::OverTemp:
+      if (!strcmp(e.id, "over_temperature")) return e.active ? "Powercell too hot: output off" : "Powercell cooled down";
+      return e.active ? "Inverter too hot" : "Inverter temperature normal";
+    case T::TempSensorFault: return e.active ? "Temperature sensor fault" : "Temperature sensor working";
     case T::BatteryFull: return e.active ? "Battery full" : "Battery charging";
     case T::BatteryLow: return e.active ? "Battery low" : "Battery level recovered";
     case T::GridDown: return e.active ? "Grid power lost" : "Grid power restored";
@@ -124,6 +128,16 @@ void service() {
   battery::Reading b = battery::read();
   in.socValid = b.valid; in.soc = b.soc; in.socSource = b.source;
   in.critLatched = powerguard::espLatched();
+#if POWERCELL_DSP011
+  {
+    DspThermalReading t;
+    in.dspThermal = true;
+    in.sysTempValid = dspThermalRead(&t);
+    in.sysTemp = t.temp_c;
+    in.sysTempFault = powercell::thermal::sensorFaulted(t.sampled, t.fault, t.age_ms);
+    in.overTempLatched = powerguard::overTempLatched();
+  }
+#endif
   in.stmReserve = in.stmOnline && s.has_rsv && s.rsv_latched;
   gatherSockets(in);
   g_engine.update(in, now, unixNow());
