@@ -19,9 +19,9 @@ The model is the OTA hardware identity. It is not the serial number and it is no
 | `pc-stm01-5kw` | STM32, 2.5.11 code paths | `esp32dev_stm01_5kw` |
 | `pc-stm01-35kw` | STM32, 2.5.11 code paths | `esp32dev_stm01_35kw` |
 
-The two STM32 images share the 2.5.11 collector behaviour. They differ only by the model string in the OTA check and the identity. They do not add a factory rating or a power limit. Both use firmware version `2.5.22`, the same number as the DSP images. The model inside the identity keeps a DSP file from installing on an STM32 unit, and the other way around.
+The two STM32 images share the 2.5.11 collector behaviour. They differ only by the model string in the OTA check and the identity. They do not add a factory rating or a power limit. Both use firmware version `2.5.23`, the same number as the DSP images. The model inside the identity keeps a DSP file from installing on an STM32 unit, and the other way around.
 
-Release files are named `<model>_v<version>.bin`. Examples: `pc-dsp011-5kw_v2.5.22.bin` and `pc-stm01-35kw_v2.5.22.bin`.
+Release files are named `<model>_v<version>.bin`. Examples: `pc-dsp011-5kw_v2.5.23.bin` and `pc-stm01-35kw_v2.5.23.bin`.
 
 `POST /api/ota/check` sends the model. It is also the `model` field on `GET /v2/setup/info`. On the DSP images, the factory rating path sets `powercell_model` to `PC5K` (5 kW) or leaves it null (3.5 kW); an NVS `SET model PC3_5K` still applies for INFO / live telemetry / load_pct.
 

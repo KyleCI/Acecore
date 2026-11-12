@@ -1,5 +1,9 @@
 # Collector firmware changelog
 
+## 2.5.23 (OTA test of the 2.5.22 updater)
+
+Version is 2.5.23 on all four product images so a unit already on 2.5.22 will accept the file. No other functional change on top of 00db613.
+
 ## 2.5.22 (OTA download TLS on a fragmented heap: two-phase OTA on boot, Caleb 12 Nov 2026)
 
 On top of 2.5.21 (80c504e, = 2.5.20 898ffcc code). All four product images. Prompted by ACE-000001 (DSP 5 kW) on 2.5.20: the WS now connects (`TLS_UP attempt=1 ms=2388 free 131632->83216 largest 57332->40948`), but the download handshake right after the WS closed failed: `DOWNLOAD_TLS_START free_heap=101260 largest=40948 min=54792`, then `DOWNLOAD_TLS http=-1 tls=-32512 'SSL - Memory allocation failed'` after 235 ms, `FAILED download_connect_failed`.
