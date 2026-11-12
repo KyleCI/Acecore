@@ -2547,6 +2547,58 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
   }
 }
 
+static void test_stm_save_interval() {  // Caleb 12 Nov 2026: 5 min + 10 Wh, 15 min fallback
+  using namespace powercell;
+  CHECK(kStmSaveMinMs == 5u * 60u * 1000u && kStmSaveMaxMs == 15u * 60u * 1000u && kStmSaveWh == 10.0 && kStmSaveIdleWh == 0.5);
+  // Worst-case loss at rated power: 5 min. 5 kW: 416.7 Wh, 3.5 kW: 291.7 Wh.
+  NEAR(5000.0 * kStmSaveMinMs / 3600000.0, 416.67, 0.01);
+  NEAR(3500.0 * kStmSaveMinMs / 3600000.0, 291.67, 0.01);
+  // Worst-case writes per day: one per 5 min + one day change.
+  CHECK(86400000u / kStmSaveMinMs + 1 == 289);
+  auto run = [](float volts, float amps, uint32_t seconds, uint32_t *firstSaveS, int *saves) {
+    StmEnergyEstimate e; e.restore(100, 0, 1000);  // a saved counter exists
+    *firstSaveS = 0; *saves = 0;
+    for (uint32_t i = 0; i <= seconds; ++i) {
+      const uint32_t ms = 1000 + i * 1000;
+      StmEstimateSample s; s.valid = true; s.volts = volts; s.amps = amps; s.mono_ms = ms; s.unix_s = 1700000000 + i; s.day_id = 100;
+      const auto v = e.observe(s);
+      if (v.persist) { e.ackPersist(ms); if (!*firstSaveS) *firstSaveS = i; ++*saves; }
+    }
+    return e;
+  };
+  uint32_t first = 0; int saves = 0;
+  // Full load 5 kW (230 V, 27.2 A): 10 Wh after ~8 s, so the 5 min floor sets the pace.
+  run(230, 27.2f, 3600, &first, &saves);
+  CHECK(first == 299 && saves == 12);  // 5 min from boot (ms 0)  // 12 writes/hour = 288/day
+  // 1 kW: the same 5 min.
+  run(230, 5.44f, 3600, &first, &saves);
+  CHECK(first == 299 && saves == 12);  // 5 min from boot (ms 0)
+  // 50 W (230 V, 0.272 A): 10 Wh takes 12 min, so the save is at 12 min, not 5.
+  run(230, 0.272f, 3600, &first, &saves);
+  CHECK(first >= 719 && first <= 721 && saves == 5);
+  // 3 W trickle: 0.5 Wh after 10 min, the 15 min fallback flushes it.
+  {
+    StmEnergyEstimate e; e.restore(100, 0, 1000); int n = 0; uint32_t at = 0;
+    for (uint32_t i = 0; i <= 3600; ++i) {
+      const uint32_t ms = 1000 + i * 1000;
+      StmEstimateSample s; s.valid = true; s.volts = 230; s.amps = 0.0163f; s.mono_ms = ms; s.unix_s = 1700000000 + i; s.day_id = 100;
+      if (e.observe(s).persist) { e.ackPersist(ms); ++n; if (!at) at = i; }
+    }
+    CHECK(at == 899 && n == 4);  // 3 W: about 0.75 Wh at 15 min from boot
+  }
+  // No energy: no write, ever.
+  run(230, 0, 3600, &first, &saves);
+  CHECK(saves == 0);
+  // A day change still saves at once.
+  {
+    StmEnergyEstimate e; e.restore(100, 5, 1000);
+    StmEstimateSample s; s.valid = true; s.volts = 230; s.amps = 1; s.mono_ms = 1000; s.unix_s = 1700000000; s.day_id = 100;
+    CHECK(!e.observe(s).persist);
+    s.mono_ms = 2000; s.unix_s += 1; s.day_id = 101;
+    CHECK(e.observe(s).persist);
+  }
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -2558,7 +2610,7 @@ int main() {
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
-  test_payment_lock(); test_ac_limit_events(); test_lan_ota();
+  test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }
