@@ -13,6 +13,13 @@
 #define POWERCELL_HARDWARE_MODEL "esp32dev"  // unset default. Product images override this with -D.
 #endif
 
+// ---- Local HTTP API ---------------------------------------------------------
+// AsyncWebServer port for /, /data, /login and the /v2/* setup API (GET /v2/setup/info).
+// mDNS advertises _http._tcp on this port once the station is on the home network.
+#ifndef LOCAL_HTTP_PORT
+#define LOCAL_HTTP_PORT 80
+#endif
+
 // ---- Backend ---------------------------------------------------------------
 // Defaults = live cloud api-dev (Caleb 2026-10-26). Override via platformio.ini:
 //   the four product images → api-dev.acecore.tech

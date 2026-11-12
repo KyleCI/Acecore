@@ -26,7 +26,7 @@
 
 namespace web {
 namespace {
-AsyncWebServer server(80);
+AsyncWebServer server(LOCAL_HTTP_PORT);
 AsyncEventSource events("/events");
 SemaphoreHandle_t g_lock = nullptr, g_bufLock = nullptr;
 String g_label;                  // setup token from the label (AP only)

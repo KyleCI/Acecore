@@ -4,6 +4,7 @@
 #include <math.h>
 #include "crc.h"
 #include "identity.h"
+#include "mdns_core.h"
 #include "ota_identity.h"
 #include "jk_bms.h"
 #include "power_policy.h"
@@ -2308,13 +2309,81 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
   CHECK(strstr(b, "today_kwh=null total_kwh=null") != nullptr);
 }
 
+static void test_mdns() {
+  using namespace pc::mdns;
+  char h[kHostCap];
+  const uint8_t mac[6] = {0x24, 0x6F, 0x28, 0xDD, 0xEE, 0xFF};
+  // Display ids already valid stay exactly as /v2/setup/info reports them.
+  CHECK(hostLabel("ACE-000001", h, sizeof h) == 10 && !strcmp(h, "ACE-000001"));
+  CHECK(hostLabel("ACE-DDEEFF", h, sizeof h) == 10 && !strcmp(h, "ACE-DDEEFF"));
+  // Spaces, dots, underscores, unicode bytes collapse to one '-'; edges trimmed.
+  CHECK(hostLabel("My Powercell #2", h, sizeof h) && !strcmp(h, "My-Powercell-2"));
+  CHECK(hostLabel("  ace_000001.local ", h, sizeof h) && !strcmp(h, "ace-000001-local"));
+  CHECK(hostLabel("--ACE--01--", h, sizeof h) && !strcmp(h, "ACE-01"));
+  CHECK(hostLabel("Caf\xc3\xa9 unit", h, sizeof h) && !strcmp(h, "Caf-unit"));
+  CHECK(hostLabel("", h, sizeof h) == 0 && h[0] == 0);
+  CHECK(hostLabel("___", h, sizeof h) == 0 && h[0] == 0);
+  CHECK(hostLabel(nullptr, h, sizeof h) == 0 && h[0] == 0);
+  // 63-char label limit, no trailing '-' after the cut.
+  char longId[100]; memset(longId, 'A', 99); longId[99] = 0;
+  CHECK(hostLabel(longId, h, sizeof h) == 63 && strlen(h) == 63);
+  memset(longId, 'B', 62); longId[62] = ' '; longId[63] = 'C'; longId[64] = 0;
+  CHECK(hostLabel(longId, h, sizeof h) == 62 && h[61] == 'B');
+  // Small buffer cuts safely.
+  char tiny[5]; CHECK(hostLabel("ACE-000001", tiny, sizeof tiny) == 3 && !strcmp(tiny, "ACE"));
+  // MAC fallback only when nothing usable is left; same format as pc::gatewayName.
+  CHECK(hostname("ACE-000001", mac, h, sizeof h) == 10 && !strcmp(h, "ACE-000001"));
+  CHECK(hostname("!!!", mac, h, sizeof h) == 10 && !strcmp(h, "ACE-DDEEFF"));
+  char gw[16]; gatewayName(mac, gw);
+  CHECK(hostname(gw, mac, h, sizeof h) && !strcmp(h, gw));
+
+  // Announcer: start once the station is on the home network, no repeat while steady.
+  Announcer a;
+  CHECK(a.decide(false, 0, "ACE-000001", 0) == Action::None);   // hotspot / no IP: nothing
+  CHECK(a.decide(true, 1, "ACE-000001", 10) == Action::Start);
+  a.started(true, "ACE-000001", 1, 10);
+  CHECK(a.running && !strcmp(a.host, "ACE-000001"));
+  CHECK(a.decide(true, 1, "ACE-000001", 20) == Action::None);
+  CHECK(a.decide(true, 1, "ACE-000001", 999999) == Action::None);
+  // Reconnect without the loop seeing the drop (new GOT_IP): restart once.
+  CHECK(a.decide(true, 2, "ACE-000001", 30) == Action::Restart);
+  a.started(true, "ACE-000001", 2, 30);
+  CHECK(a.decide(true, 2, "ACE-000001", 40) == Action::None);
+  // Rename (gw_name / factory serial): restart under the new name.
+  CHECK(a.decide(true, 2, "ACE-000002", 50) == Action::Restart);
+  a.started(true, "ACE-000002", 2, 50);
+  // Station lost / hotspot-only / Wi-Fi test: stop once, then stay idle.
+  CHECK(a.decide(false, 2, "ACE-000002", 60) == Action::Stop);
+  a.stopped();
+  CHECK(!a.running && a.host[0] == 0);
+  CHECK(a.decide(false, 2, "ACE-000002", 70) == Action::None);
+  // Back on the network: start again.
+  CHECK(a.decide(true, 3, "ACE-000002", 80) == Action::Start);
+  // begin failed: wait kRetryMs, unless a new GOT_IP arrives first.
+  a.started(false, "ACE-000002", 3, 100);
+  CHECK(!a.running && a.failed && a.host[0] == 0);
+  CHECK(a.decide(true, 3, "ACE-000002", 100 + kRetryMs - 1) == Action::None);
+  CHECK(a.decide(true, 3, "ACE-000002", 100 + kRetryMs) == Action::Start);
+  CHECK(a.decide(true, 4, "ACE-000002", 101) == Action::Start);
+  // millis() wrap does not block the retry forever.
+  Announcer w; w.started(false, "ACE-000001", 1, 0xFFFFFF00u);
+  CHECK(w.decide(true, 1, "ACE-000001", 0xFFFFFF00u + 10) == Action::None);
+  CHECK(w.decide(true, 1, "ACE-000001", (uint32_t)(0xFFFFFF00u + kRetryMs)) == Action::Start);
+  // Empty name never starts; a running announcer stops.
+  Announcer e;
+  CHECK(e.decide(true, 1, "", 0) == Action::None);
+  CHECK(e.decide(true, 1, nullptr, 0) == Action::None);
+  e.started(true, "ACE-000001", 1, 0);
+  CHECK(e.decide(true, 1, "", 5) == Action::Stop);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
   test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_dsp_thermal(); test_dsp_over_temp(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_dsp_status_led(); test_pzem_route(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
-  test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();
+  test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity(); test_mdns();
   test_ota_hardware_model();
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_ws_rules();

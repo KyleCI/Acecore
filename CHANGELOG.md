@@ -1,5 +1,14 @@
 # Collector firmware changelog
 
+## Unreleased (mDNS on the home network)
+
+Caleb approved 2026-11-12 14:31 WAT (via the Software VP). App home Wi-Fi setup could not find units because `net.cpp` only called `WiFi.setHostname()` and nothing started mDNS.
+
+- After the station gets an IP on the saved home network, `MDNS.begin(<display id>)` (e.g. `ACE-000001.local`) and `_http._tcp` on port 80 (`LOCAL_HTTP_PORT`, the server for `/v2/setup/info`) with TXT `device_id`, `model`, `fw`, `path=/v2/setup/info`. Instance name is the display id.
+- Hostname: the display id as one DNS label (letters, digits, `-`; other runs become one `-`; max 63), MAC `ACE-DDEEFF` if nothing is left. `pc::mdns` in `lib/pc_core/src/mdns_core.*`, host-tested.
+- The `STA_GOT_IP` event only bumps a counter. `net::service()` (loop task) restarts mDNS once per new IP or display-id change, stops it when the station drops, in hotspot-only mode or during a Wi-Fi test, and retries a failed begin after 30 s or on the next got-IP. Hotspot and the 30 s router-loss fallback are unchanged.
+- No `powercell.local` alias (two units on a LAN would collide). Version stays 2.5.13.
+
 ## Unreleased (DSP orange LED macro renamed)
 
 - `PIN_LED_BLUE` is now `PIN_LED_ORANGE` (DSP orange, mid-SOC, GPIO12). Name only: red GPIO13, orange GPIO12, green GPIO14 and the front light GPIO27 are unchanged, and so is the light behaviour. STM images are unchanged.

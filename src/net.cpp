@@ -1,8 +1,10 @@
 #include <esp_heap_caps.h>
 #include "net.h"
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include "config.h"
 #include "log.h"
+#include "mdns_core.h"
 #include "onb_core.h"
 #include "settings.h"
 
@@ -28,6 +30,11 @@ String g_scanJson = "[]";
 uint32_t g_scanAt = 0;
 pc::onb::NetMode g_mode = pc::onb::NetMode::Unset;  // v14
 bool hotspotOnlyNow() { return g_mode == pc::onb::NetMode::HotspotOnly; }
+// mDNS (2.5.13): "<display id>.local" plus _http._tcp on LOCAL_HTTP_PORT, so the app
+// finds the unit on the home network. The event callback only bumps g_gotIpGen;
+// MDNS.begin/end run from service() on the loop task.
+volatile uint32_t g_gotIpGen = 0;
+pc::mdns::Announcer g_mdns;
 
 void startAp() {
   if (g_ap) return;
@@ -50,6 +57,41 @@ void stopAp() {
 void onWifiEvent(WiFiEvent_t e, WiFiEventInfo_t info) {
   if (e == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) g_tDisc = info.wifi_sta_disconnected.reason;
   else if (e == ARDUINO_EVENT_WIFI_STA_CONNECTED) g_tAssoc = true;
+  else if (e == ARDUINO_EVENT_WIFI_STA_GOT_IP) g_gotIpGen = g_gotIpGen + 1;  // re-announce mDNS from service()
+}
+void serviceMdns(uint32_t now, bool allowed) {
+  const settings::Identity &id = settings::id();
+  char host[pc::mdns::kHostCap];
+  pc::mdns::hostname(id.gatewayName, id.mac, host, sizeof host);
+  const uint32_t gen = g_gotIpGen;
+  switch (g_mdns.decide(allowed, gen, host, now)) {
+    case pc::mdns::Action::None: return;
+    case pc::mdns::Action::Stop:
+      MDNS.end();
+      g_mdns.stopped();
+      LOGI("WIFI", "MDNS_OFF", "station not on the home network");
+      return;
+    case pc::mdns::Action::Restart:
+      MDNS.end();
+      break;
+    case pc::mdns::Action::Start: break;
+  }
+  bool ok = MDNS.begin(host);
+  if (ok) {
+    MDNS.setInstanceName(id.gatewayName);
+    ok = MDNS.addService("http", "tcp", LOCAL_HTTP_PORT);
+  }
+  if (ok) {
+    MDNS.addServiceTxt("http", "tcp", "device_id", id.gatewayName);
+    MDNS.addServiceTxt("http", "tcp", "model", POWERCELL_HARDWARE_MODEL);
+    MDNS.addServiceTxt("http", "tcp", "fw", POWERCELL_FIRMWARE_VERSION);
+    MDNS.addServiceTxt("http", "tcp", "path", "/v2/setup/info");
+  } else {
+    MDNS.end();
+  }
+  g_mdns.started(ok, host, gen, now);
+  if (ok) LOGI("WIFI", "MDNS_UP", "host=%s.local service=_http._tcp port=%u device_id=%s ip=%s", host, (unsigned)LOCAL_HTTP_PORT, id.gatewayName, WiFi.localIP().toString().c_str());
+  else LOGW("WIFI", "MDNS_FAILED", "host=%s retry in %lu s or on the next reconnect", host, (unsigned long)(pc::mdns::kRetryMs / 1000));
 }
 void restoreSaved() {
   if (hotspotOnlyNow()) { WiFi.disconnect(false, false); return; }  // v14: no station attempts
@@ -149,6 +191,7 @@ void service() {
       Lock l; g_scanJson = s; g_scanAt = now; g_scanReq = false;
     }
   }
+  serviceMdns(now, up && WiFi.localIP() != IPAddress(0, 0, 0, 0) && !hotspotOnlyNow() && g_ssid.length() > 0 && !testing && g_test != Test::Ok);
   if (g_ssid.isEmpty() || testing || g_test == Test::Ok) return;
   const uint32_t retryMs = pc::onb::kWifiRetryMs;  // WiFi.begin ran once; reconnect on this interval
   if (!up && now - g_lastRetry >= retryMs) { g_lastRetry = now; WiFi.reconnect(); }
