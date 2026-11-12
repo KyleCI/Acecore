@@ -1,5 +1,9 @@
 # Collector firmware changelog
 
+## 2.5.21 (OTA test of the 2.5.20 updater)
+
+Version is 2.5.21 on all four product images so a unit already on 2.5.20 will accept the file. No other functional change on top of 898ffcc.
+
 ## 2.5.20 (WS and OTA TLS start on a fragmented heap, Caleb 12 Nov 2026)
 
 On top of 2.5.19 (bbc5024). All four product images. Prompted by ACE-000001 (DSP 5 kW) on 2.5.18: `[MEM][HEAP_LOW] ws TLS deferred: largest=40948 < 40960 free=72064 min=47604`, repeating every 60 s, so no WS, no `ota_check`, no OTA.
