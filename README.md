@@ -139,6 +139,30 @@ When the BMS is silent for 10 s, every BMS field is `null` (never 0) and voltage
 - **Command ack out:** `{"type":"command_result","command_id","status":"confirmed"|"rejected","command_status":same,"error_message"?, ...}`. `status`/`command_status` is what the backend reads; `result`, `reason` stay for older servers. A repeated command id answers with the earlier outcome.
 - **Also in:** `ping`, `socket_lifecycle`, `offline_sync_ack`, `set_local_token` (below).
 - **OTA:** `POST {ota_url}/api/ota/check` with `Authorization: Bearer <API_KEY>`, `X-Device-ID`, optional `X-Device-Secret`, body `{"device_id":"AABBCCDDEEFF","firmware_version":"2.1.0",...}`. The response must have `update_available`; when true, `version`, `url`, `sha256` (top level or in `firmware`; they must agree). `sha256` is required (64 hex). The `url` is followed only if it is on the configured `ota_url` host and is one of `/api/ota/download`, `/api/firmware/download`, `/api/firmware.bin`; otherwise `{ota_url}/api/ota/download?device_id=<12 hex>` is used. The download must send `Content-Length`. The image is checked for SHA-256, the ESP32 image magic and the embedded identity `POWERCELL_FW|collector|<model>|<version>|END` (`docs/OTA_HARDWARE_MODEL.md`), then boots in rollback-protected PENDING_VERIFY. It is confirmed after 30 s connected to the server within 5 min, else it rolls back. In `hotspot_only` (no cloud) 3 min of healthy local run (free heap > 30 KB) confirms it instead, within the same 5 min.
+- **OTA timeouts (2.5.18):** TCP connect 15 s, TLS handshake 45 s (was 10 s), socket read and body stall 30 s (was 15 s), whole body 180 s. Same values for the HTTPS check and the download.
+- **OTA error codes (2.5.18).** After a failed cloud install the device reports `last_status: "failed"` and one of these in `last_error` (in `ota_check` over the WS and in the HTTPS check body). `last_error_detail` is a new optional string with the HTTP code, length or mbedTLS error (`tls=0` means it failed before TLS, i.e. DNS or TCP; `tls=-1` means the handshake timed out). Older firmware sends `download_or_verification_failed` for all of them; keep mapping that.
+
+  | `last_error` | Meaning |
+  |---|---|
+  | `download_no_slot` | No inactive OTA partition |
+  | `download_url_invalid` | The download URL could not be opened by the HTTP client |
+  | `download_connect_failed` | The GET returned a negative HTTP code: DNS, TCP, TLS handshake or send failed. No request reached the server |
+  | `download_timeout` | No response headers within the read timeout (HTTP -11), or the body took longer than 180 s |
+  | `download_http_<code>` | The server answered with a status other than 200, e.g. `download_http_401`, `download_http_404` |
+  | `download_size_mismatch` | No `Content-Length`, fewer than 288 bytes, or a length other than the offered `size` |
+  | `download_too_large` | `Content-Length` is larger than the OTA slot (0x1E0000 on min_spiffs) |
+  | `download_flash_begin_failed` | `esp_ota_begin` failed |
+  | `download_stalled` | No byte for 30 s during the body |
+  | `download_read_error` | A stream read failed |
+  | `verify_magic` | The first byte is not the ESP32 image magic 0xE9 |
+  | `flash_write_failed` | `esp_ota_write` failed |
+  | `verify_size` | The body ended before `Content-Length` bytes |
+  | `verify_identity` | `POWERCELL_FW\|collector\|<model>\|<offered version>\|END` not found in the image |
+  | `verify_sha` | SHA-256 differs from the offer |
+  | `finalize_failed` | `esp_ota_end` or setting the boot partition failed |
+
+  Unchanged: `safe_output_storage_failed`, `interrupted_download`, `rolled_back`, `not_healthy_rolled_back`, `lan_*`.
+- **Hello OTA host (2.5.18):** `device_hello` carries `ota_host` (`scheme://host[:port]` of the effective OTA base URL, no path, query or credentials; `null` if unparsable) and `ota_url_override` (true when a saved `ota_url` differs from the compiled default `https://api-dev.acecore.tech`).
 
 ## Local API (port 80, PR #3 "Local device web server")
 
@@ -233,7 +257,7 @@ REBOOT
 - **Gateway name:** it changes from `ACE4447` / `ACE9678` to `ACE-XXXXXX` unless you `SET gw_name ACE9678` on that unit. The backend should accept MAC-based gateway targets, which 2.0 accepts.
 - **Network:** the static IP from 1.0.x is replaced by DHCP. The setup AP SSID changes to `Powercell-XXXXXX`.
 - **Not migrated:** the old `energy_wh`, and the 2.0.0 ESP energy counter (`pc_energy` NVS) is no longer used; the old offline queue (JSON in `offline_sync/events`).
-- **Version:** the four product images report `2.5.17`. Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
+- **Version:** the four product images report `2.5.18`. Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
 - **STM32 link:** the STM32 still sends 9600 text, so the default `legacy_text` works with today's STM32 firmware. Switch both sides to framed together.
 
 ## Telemetry fields (WS `telemetry`, additive to 1.0.x)

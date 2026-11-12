@@ -18,6 +18,7 @@
 #include "offline_queue.h"
 #include "onboarding.h"
 #include "ota.h"
+#include "ota_errors.h"
 #include "heapguard.h"
 #include "settings.h"
 #include "sockets/sockets.h"
@@ -335,11 +336,21 @@ void handleSetLocalToken(JsonDocument &doc) {
   LOGI("WS", "LOCAL_TOKEN", "request=%s result=%s fp=%s", rid.c_str(), err ? err : "confirmed", settings::localTokenFingerprint().c_str());
 }
 
+// 2.5.18: where this unit downloads OTA images from. scheme://host[:port] only (no
+// path, query or userinfo). ota_url_override = a saved ota_url differs from the compiled default.
+static void addOtaHost(JsonDocument &doc) {
+  String base = settings::otaBaseUrl();
+  char host[96];
+  if (pc::otaerr::hostOf(base.c_str(), host, sizeof host)) doc["ota_host"] = host; else doc["ota_host"] = nullptr;
+  doc["ota_url_override"] = pc::otaerr::isOverride(base.c_str(), POWERCELL_OTA_BASE_URL_DEFAULT);
+}
+
 void sendHello() {
   if (!g_connected) return;
   JsonDocument doc;
   onboarding::buildHello(doc);
   addIdentity(doc);
+  addOtaHost(doc);
   if (send(doc)) onboarding::helloSent();
   JsonDocument pc_;
   if (onboarding::takePasscodeChanged(pc_)) { addIdentity(pc_); send(pc_); }
@@ -659,7 +670,7 @@ bool sendOtaStatus(const char *status, const char *version) {
 }
 
 // OTA check over the open WS (contract: /workspace/esp32_review/ota_over_ws.md)
-bool sendOtaCheck(bool healthy, const char *lastStatus, const char *lastError) {
+bool sendOtaCheck(bool healthy, const char *lastStatus, const char *lastError, const char *lastErrorDetail) {
   if (!connected()) return false;
   JsonDocument doc;
   doc["type"] = "ota_check";
@@ -670,6 +681,8 @@ bool sendOtaCheck(bool healthy, const char *lastStatus, const char *lastError) {
   doc["healthy"] = healthy;
   doc["last_status"] = lastStatus;
   doc["last_error"] = lastError;
+  // 2.5.18: optional diagnostic for the last failure (e.g. "http=-1 tls=-1 ..."); absent when empty.
+  if (lastErrorDetail && *lastErrorDetail) doc["last_error_detail"] = lastErrorDetail;
   return send(doc);
 }
 

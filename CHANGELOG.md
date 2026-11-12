@@ -1,5 +1,15 @@
 # Collector firmware changelog
 
+## 2.5.18 (OTA download robustness, Caleb 12 Nov 2026 16:44 WAT)
+
+On top of 2.5.17 (da2a0a9). All four product images. Prompted by the ACE-000001 OTA of 2.5.17 failing with `download_or_verification_failed` before any download request reached api-dev.
+
+- **Longer TLS handshake for the OTA check and download:** 45 s (was 10 s). TCP connect 15 s (was 10 s). Socket read and body stall 30 s (was 15 s). Whole-body cap stays 180 s. The worker stays on core 1 at priority 1 and the handshake loop yields between mbedTLS steps, so watchdog exposure is unchanged. The install path still makes the output safe first (`prepare`) exactly as before.
+- **TLS error logged on download:** a negative GET logs `OTA DOWNLOAD_TLS http=<n> tls=<mbedTLS err> <text> ms=<elapsed>`, like the check path.
+- **Specific error codes** replace `download_or_verification_failed`: `download_no_slot`, `download_url_invalid`, `download_connect_failed`, `download_timeout`, `download_http_<code>`, `download_size_mismatch`, `download_too_large`, `download_flash_begin_failed`, `download_stalled`, `download_read_error`, `verify_magic`, `flash_write_failed`, `verify_size`, `verify_identity`, `verify_sha`, `finalize_failed`. New optional `last_error_detail` in `ota_check` and the HTTPS check body. Schema otherwise unchanged. See README "OTA error codes".
+- **Hello:** `ota_host` and `ota_url_override` in `device_hello`.
+- Host tests for the error mapping and the host/override helpers (`lib/pc_core/src/ota_errors.h`).
+
 ## 2.5.17 (OTA test of the 12 Nov "one build with everything" image)
 
 Version is 2.5.17 on all four product images so a unit already on 2.5.13 (or an earlier test image 2.5.14 / 2.5.15 / 2.5.16) will accept the file. No other functional change on top of 3a56262.

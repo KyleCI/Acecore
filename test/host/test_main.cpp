@@ -24,6 +24,7 @@
 #include "hw_output.h"
 #include "ac_output_policy.h"
 #include "lan_ota.h"
+#include "ota_errors.h"
 #include <string>
 #include <algorithm>
 
@@ -2543,7 +2544,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.17" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.18" && !s35.found());
   }
 }
 
@@ -2599,6 +2600,69 @@ static void test_stm_save_interval() {  // Caleb 12 Nov 2026: 5 min + 10 Wh, 15 
   }
 }
 
+static void test_ota_errors() {  // 2.5.18: specific OTA failure codes and the hello OTA host
+  using namespace pc::otaerr;
+  char b[48];
+  const size_t slot = 0x1E0000;
+  // Before any flash work.
+  CHECK(classifyResponse(-1, -1, slot, 0) == Fail::ConnectFailed);      // DNS / TCP / TLS handshake
+  CHECK(classifyResponse(-5, -1, slot, 0) == Fail::ConnectFailed);
+  CHECK(classifyResponse(-11, -1, slot, 0) == Fail::Timeout);           // no response headers
+  CHECK(classifyResponse(401, 30, slot, 0) == Fail::Http);
+  CHECK(classifyResponse(404, -1, slot, 0) == Fail::Http);
+  CHECK(classifyResponse(200, -1, slot, 0) == Fail::SizeMismatch);      // chunked / no Content-Length
+  CHECK(classifyResponse(200, 100, slot, 0) == Fail::SizeMismatch);
+  CHECK(classifyResponse(200, 1380144, slot, 1380000) == Fail::SizeMismatch);
+  CHECK(classifyResponse(200, slot + 1, slot, 0) == Fail::TooLarge);
+  CHECK(classifyResponse(200, slot + 1, slot, slot + 1) == Fail::TooLarge);
+  CHECK(classifyResponse(200, 1380144, slot, 1380144) == Fail::None);
+  CHECK(classifyResponse(200, 1380144, slot, 0) == Fail::None);
+  CHECK(classifyResponse(200, slot, slot, 0) == Fail::None);
+  // Strings reported in last_error.
+  code(Fail::Http, 401, b, sizeof b); CHECK(!strcmp(b, "download_http_401"));
+  code(Fail::Http, 503, b, sizeof b); CHECK(!strcmp(b, "download_http_503"));
+  code(Fail::ConnectFailed, -1, b, sizeof b); CHECK(!strcmp(b, "download_connect_failed"));
+  const struct { Fail f; const char *s; } names[] = {
+    {Fail::NoSlot, "download_no_slot"}, {Fail::UrlInvalid, "download_url_invalid"}, {Fail::Timeout, "download_timeout"},
+    {Fail::SizeMismatch, "download_size_mismatch"}, {Fail::TooLarge, "download_too_large"},
+    {Fail::FlashBeginFailed, "download_flash_begin_failed"}, {Fail::Stalled, "download_stalled"},
+    {Fail::ReadError, "download_read_error"}, {Fail::VerifyMagic, "verify_magic"}, {Fail::FlashWriteFailed, "flash_write_failed"},
+    {Fail::VerifySize, "verify_size"}, {Fail::VerifyIdentity, "verify_identity"}, {Fail::VerifySha, "verify_sha"},
+    {Fail::FinalizeFailed, "finalize_failed"}};
+  for (const auto &n : names) { code(n.f, 0, b, sizeof b); CHECK(!strcmp(b, n.s)); CHECK(strlen(b) < 32); }
+  code(Fail::None, 0, b, sizeof b); CHECK(b[0] == 0);
+  { char tiny[8]; code(Fail::VerifyIdentity, 0, tiny, sizeof tiny); CHECK(strlen(tiny) == 7); }  // truncates, never overflows
+  // The legacy catch-all is gone.
+  for (const auto &n : names) CHECK(strcmp(name(n.f), "download_or_verification_failed") != 0);
+  // After the body: loop errors win, then size, identity, sha.
+  CHECK(classifyVerify(Fail::Stalled, 10, 100, false, false) == Fail::Stalled);
+  CHECK(classifyVerify(Fail::VerifyMagic, 0, 100, false, false) == Fail::VerifyMagic);
+  CHECK(classifyVerify(Fail::None, 99, 100, true, true) == Fail::VerifySize);
+  CHECK(classifyVerify(Fail::None, 100, 100, false, true) == Fail::VerifyIdentity);
+  CHECK(classifyVerify(Fail::None, 100, 100, true, false) == Fail::VerifySha);
+  CHECK(classifyVerify(Fail::None, 100, 100, true, true) == Fail::None);
+  // Hello ota_host: scheme://host[:port], nothing else.
+  char h[96];
+  CHECK(hostOf("https://api-dev.acecore.tech", h, sizeof h) && !strcmp(h, "https://api-dev.acecore.tech"));
+  CHECK(hostOf("https://api-dev.acecore.tech/", h, sizeof h) && !strcmp(h, "https://api-dev.acecore.tech"));
+  CHECK(hostOf("HTTPS://API.AceCore.Tech:8443/api/ota?key=secret#x", h, sizeof h) && !strcmp(h, "https://api.acecore.tech:8443"));
+  CHECK(hostOf("https://user:pw@api.acecore.tech/x", h, sizeof h) && !strcmp(h, "https://api.acecore.tech"));
+  CHECK(strstr(h, "pw") == nullptr && strstr(h, "user") == nullptr);
+  CHECK(hostOf("https://api.acecore.tech?token=abc", h, sizeof h) && !strcmp(h, "https://api.acecore.tech"));
+  CHECK(!hostOf("api.acecore.tech", h, sizeof h) && h[0] == 0);
+  CHECK(!hostOf("https://", h, sizeof h));
+  CHECK(!hostOf("https:///path", h, sizeof h));
+  CHECK(!hostOf("https://bad host", h, sizeof h));
+  CHECK(!hostOf(nullptr, h, sizeof h));
+  { char s8[8]; CHECK(!hostOf("https://api-dev.acecore.tech", s8, sizeof s8) && s8[0] == 0); }
+  // ota_url_override
+  CHECK(!isOverride("https://api-dev.acecore.tech", "https://api-dev.acecore.tech"));
+  CHECK(!isOverride("https://API-dev.acecore.tech/", "https://api-dev.acecore.tech"));
+  CHECK(isOverride("https://api.acecore.tech", "https://api-dev.acecore.tech"));
+  CHECK(isOverride("https://api-dev.acecore.tech:8443", "https://api-dev.acecore.tech"));
+  CHECK(isOverride("https://api-dev.acecore.tech/v2", "https://api-dev.acecore.tech"));
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -2610,7 +2674,7 @@ int main() {
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
-  test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval();
+  test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

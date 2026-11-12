@@ -18,6 +18,7 @@
 #include "config.h"
 #include "local_auth.h"
 #include "ota_gate.h"
+#include "ota_errors.h"
 #include <heap_guard.h>
 #include "heapguard.h"
 #include "log.h"
@@ -46,13 +47,21 @@ std::atomic<bool> g_running{false}, g_updating{false};
 bool g_pending = false, g_confirmed = false;
 uint32_t g_nextCheck = 0, g_healthySince = 0;
 pc::OtaGate g_gate;
-String g_status = "idle", g_error, g_deployment, g_installing;
+String g_status = "idle", g_error, g_detail, g_deployment, g_installing;
 // OTA check transport (WS first, HTTPS fallback) and the TLS memory guards.
 pc::OtaTransport g_tx;
 pc::TlsBackoff g_checkBackoff, g_dlBackoff;
 bool g_forceHttps = false;
-// v11 timeouts: TCP connect / TLS handshake 10 s, socket read 15 s.
-constexpr uint16_t kConnectMs = 10000, kReadMs = 15000;
+// 2.5.18 timeouts (were 10 s connect / 10 s handshake / 15 s read in v11..2.5.17):
+// TCP connect 15 s, TLS handshake 45 s, socket read and body stall 30 s, body total 180 s.
+// The api-dev chain (ECDSA P-384, ISRG Root X2) costs the ESP32 several seconds of
+// software ECC per handshake; with a congested link the old 10 s cap failed the
+// download before any HTTP request was sent (ACE-000001, 12 Nov 2026, 2.5.13).
+// The longer cap does not change WDT exposure: the handshake loop in ssl_client.cpp
+// yields (vTaskDelay(2)) between mbedTLS steps, the worker stays on core 1 at
+// priority 1 (see below), and a longer cap only allows more such steps.
+constexpr uint16_t kConnectMs = 15000, kReadMs = 30000;
+constexpr uint32_t kHandshakeS = 45, kBodyTotalMs = 180000;
 // v11: the ota worker runs on core 1 at priority 1. On core 0 (v10) the CPU-bound
 // mbedTLS handshake steps (P-384 ECDHE + chain verify, each one uninterrupted call)
 // kept priority 1 busy long enough that IDLE0 (priority 0, the only task-WDT-watched
@@ -64,10 +73,14 @@ struct Offer { bool set = false; String version, url, sha256; uint32_t size = 0;
 Offer g_wsOffer;   // written by wsReply (ws task, app lock), consumed by service (main loop, app lock)
 Offer g_job;       // the worker's copy; Offer.set=false means "run the HTTPS check first"
 
-void saveStatus(const char *st, const String &err = "") {
-  g_status = st; g_error = err;
+// detail: short diagnostic for the last failure (http code, mbedTLS error); no secrets.
+void saveStatus(const char *st, const String &err = "", const String &detail = "") {
+  g_status = st; g_error = err; g_detail = detail;
   Preferences p;
-  if (p.begin(NS, false)) { p.putString("job", g_deployment); p.putString("status", g_status); p.putString("error", g_error); p.end(); }
+  if (p.begin(NS, false)) {
+    p.putString("job", g_deployment); p.putString("status", g_status); p.putString("error", g_error); p.putString("detail", g_detail);
+    p.end();
+  }
 }
 
 // Backend PR #3 (FirmwareService): the hardware key is the shared API_KEY as
@@ -79,7 +92,7 @@ void prepareClient(OtaClient &) {}
 #else
 using OtaClient = WiFiClientSecure;
 void prepareClient(OtaClient &c) { c.setCACert(POWERCELL_CA_CERT);  // same anchors as the WS (ISRG Root X1 + X2)
-  c.setHandshakeTimeout(10); c.setTimeout(15); }
+  c.setHandshakeTimeout(kHandshakeS); c.setTimeout(kReadMs / 1000); }
 #endif
 
 // Only one credential form is sent: the backend rejects conflicting copies.
@@ -125,6 +138,7 @@ bool checkRequest(const String &base, const String &apiKey, String *response) {
   doc["healthy"] = g_confirmed;
   doc["last_status"] = g_status;
   doc["last_error"] = g_error;
+  if (g_detail.length()) doc["last_error_detail"] = g_detail;
   String body; serializeJson(doc, body);
   int code = -1;
   for (int attempt = 0; attempt < 2; ++attempt) {
@@ -149,62 +163,99 @@ bool checkRequest(const String &base, const String &apiKey, String *response) {
   return ok;
 }
 
-bool install(const String &base, const String &apiKey, const String &path, const String &digest, const String &newVersion, uint32_t expectSize) {
+struct DlResult { pc::otaerr::Fail fail = pc::otaerr::Fail::None; int http = 0; char detail[128] = {0}; };
+
+bool install(const String &base, const String &apiKey, const String &path, const String &digest, const String &newVersion, uint32_t expectSize,
+             DlResult &r) {
+  using pc::otaerr::Fail;
   const esp_partition_t *part = esp_ota_get_next_update_partition(nullptr);
-  if (!part || !pc::isSha256Hex(digest.c_str())) return false;
+  if (!part) { r.fail = Fail::NoSlot; LOGE("OTA", "DOWNLOAD", "no OTA partition"); return false; }
+  if (!pc::isSha256Hex(digest.c_str())) { r.fail = Fail::VerifySha; snprintf(r.detail, sizeof r.detail, "offer sha256 invalid"); return false; }
   OtaClient client; prepareClient(client);
   HTTPClient http; http.setConnectTimeout(kConnectMs); http.setTimeout(kReadMs);
   http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
   int code = -1;
+  const uint32_t t0 = millis();
   for (int attempt = 0; attempt < 2; ++attempt) {
-    if (!http.begin(client, base + path)) return false;
+    if (!http.begin(client, base + path)) { r.fail = Fail::UrlInvalid; LOGE("OTA", "DOWNLOAD", "url refused by http.begin"); return false; }
     addHeaders(http, apiKey, "GET", base + path, String());
     code = http.GET();
     if (!skewRetry(http, code, attempt)) break;
   }
+  r.http = code;
   int len = http.getSize();  // backend sends Content-Length (Response::file); chunked is refused
-  if (code != 200 || len < 288 || static_cast<size_t>(len) > part->size || (expectSize && static_cast<uint32_t>(len) != expectSize)) {
-    LOGE("OTA", "DOWNLOAD", "http=%d length=%d partition=%u", code, len, (unsigned)part->size);
+  r.fail = pc::otaerr::classifyResponse(code, len, part->size, expectSize);
+  if (r.fail != Fail::None) {
+    if (code < 0) {
+#if !POWERCELL_OTA_ALLOW_HTTP
+      // Same diagnostic as checkRequest. tls=0: failed before TLS (DNS / TCP); tls=-1: handshake timeout.
+      char err[96] = {0};
+      int tlsErr = client.lastError(err, sizeof err);
+      LOGW("OTA", "DOWNLOAD_TLS", "http=%d tls=%d %s ms=%lu", code, tlsErr, err, (unsigned long)(millis() - t0));
+      snprintf(r.detail, sizeof r.detail, "http=%d tls=%d %s", code, tlsErr, err);
+#else
+      snprintf(r.detail, sizeof r.detail, "http=%d", code);
+#endif
+    } else {
+      snprintf(r.detail, sizeof r.detail, "http=%d length=%d expect=%lu slot=%u", code, len, (unsigned long)expectSize, (unsigned)part->size);
+    }
+    LOGE("OTA", "DOWNLOAD", "http=%d length=%d partition=%u free_heap=%lu largest=%lu", code, len, (unsigned)part->size,
+         (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
     http.end(); return false;
   }
   const size_t size = static_cast<size_t>(len);
   esp_ota_handle_t handle;
-  if (esp_ota_begin(part, size, &handle) != ESP_OK) { http.end(); return false; }
+  esp_err_t be = esp_ota_begin(part, size, &handle);
+  if (be != ESP_OK) {
+    r.fail = Fail::FlashBeginFailed; snprintf(r.detail, sizeof r.detail, "esp_err=0x%x", (unsigned)be);
+    LOGE("OTA", "DOWNLOAD", "esp_ota_begin err=0x%x", (unsigned)be);
+    http.end(); return false;
+  }
   mbedtls_sha256_context hash; mbedtls_sha256_init(&hash); mbedtls_sha256_starts_ret(&hash, 0);
   static uint8_t buf[2048];
   uint8_t result[32];
   size_t received = 0;
-  bool valid = true, identityFound = false;
+  bool identityFound = false;
+  Fail loop = Fail::None;
   std::string tail;
   const std::string expected = std::string("POWERCELL_FW|") + POWERCELL_FIRMWARE_KIND + "|" + POWERCELL_HARDWARE_MODEL + "|" + newVersion.c_str() + "|END";
   uint32_t start = millis(), lastByte = start;
   WiFiClient *stream = http.getStreamPtr();
   while (received < size) {
-    if (millis() - start > 180000 || millis() - lastByte > kReadMs) { valid = false; break; }
+    if (millis() - start > kBodyTotalMs) { loop = Fail::Timeout; break; }
+    if (millis() - lastByte > kReadMs) { loop = Fail::Stalled; break; }
     int avail = stream->available();
     if (!avail) { vTaskDelay(pdMS_TO_TICKS(2)); continue; }
     size_t count = std::min(size - received, std::min(sizeof buf, static_cast<size_t>(avail)));
     int rd = stream->read(buf, count);
-    if (rd <= 0) { valid = false; break; }
-    if (received == 0 && buf[0] != 0xE9) { valid = false; break; }
+    if (rd <= 0) { loop = Fail::ReadError; break; }
+    if (received == 0 && buf[0] != 0xE9) { loop = Fail::VerifyMagic; break; }
     mbedtls_sha256_update_ret(&hash, buf, rd);
     tail.append(reinterpret_cast<char *>(buf), rd);
     if (tail.find(expected) != std::string::npos) identityFound = true;
     if (tail.size() > expected.size()) tail.erase(0, tail.size() - expected.size());
-    if (esp_ota_write(handle, buf, rd) != ESP_OK) { valid = false; break; }
+    if (esp_ota_write(handle, buf, rd) != ESP_OK) { loop = Fail::FlashWriteFailed; break; }
     received += rd; lastByte = millis();
     vTaskDelay(1);
   }
   mbedtls_sha256_finish_ret(&hash, result); mbedtls_sha256_free(&hash); http.end();
   char hex[65];
   for (int i = 0; i < 32; ++i) snprintf(hex + 2 * i, 3, "%02x", result[i]);
-  if (!valid || received != size || !identityFound || !digest.equalsIgnoreCase(hex)) {
+  const bool shaOk = digest.equalsIgnoreCase(hex);
+  r.fail = pc::otaerr::classifyVerify(loop, received, size, identityFound, shaOk);
+  if (r.fail != Fail::None) {
     esp_ota_abort(handle);
-    LOGE("OTA", "VERIFY", "valid=%d received=%u/%u identity=%d sha_ok=%d", valid, (unsigned)received, (unsigned)size, identityFound, digest.equalsIgnoreCase(hex));
+    snprintf(r.detail, sizeof r.detail, "received=%u/%u identity=%d sha_ok=%d ms=%lu", (unsigned)received, (unsigned)size, identityFound, shaOk,
+             (unsigned long)(millis() - start));
+    LOGE("OTA", "VERIFY", "%s %s", pc::otaerr::name(r.fail), r.detail);
     return false;
   }
-  if (esp_ota_end(handle) != ESP_OK) return false;
-  return esp_ota_set_boot_partition(part) == ESP_OK;
+  esp_err_t ee = esp_ota_end(handle);
+  if (ee != ESP_OK) { r.fail = Fail::FinalizeFailed; snprintf(r.detail, sizeof r.detail, "esp_ota_end=0x%x", (unsigned)ee); return false; }
+  ee = esp_ota_set_boot_partition(part);
+  if (ee != ESP_OK) { r.fail = Fail::FinalizeFailed; snprintf(r.detail, sizeof r.detail, "set_boot=0x%x", (unsigned)ee); return false; }
+  LOGI("OTA", "DOWNLOAD_OK", "bytes=%u ms=%lu", (unsigned)size, (unsigned long)(millis() - t0));
+  return true;
 }
 
 // Response (FirmwareService::check): {"status":"success","update_available":bool,
@@ -300,13 +351,21 @@ void handleOffer(const String &base, const String &key, String newVersion, Strin
   if (p.begin(NS, false)) { p.putString("expected", newVersion); p.end(); }
   saveStatus("downloading");
   bool prepared = !g_prepare || g_prepare();
-  if (prepared && install(base, key, String(path), digest, newVersion, size)) {
+  DlResult dl;
+  if (prepared && install(base, key, String(path), digest, newVersion, size, dl)) {
     saveStatus("rebooting");
     LOGI("OTA", "REBOOT", "installed %s", newVersion.c_str());
     delay(250);
     ESP.restart();
   }
-  saveStatus("failed", prepared ? "download_or_verification_failed" : "safe_output_storage_failed");
+  if (!prepared) saveStatus("failed", "safe_output_storage_failed");
+  else {
+    // 2.5.18: specific code (README "OTA error codes"); was download_or_verification_failed.
+    char ec[40];
+    pc::otaerr::code(dl.fail == pc::otaerr::Fail::None ? pc::otaerr::Fail::FinalizeFailed : dl.fail, dl.http, ec, sizeof ec);
+    saveStatus("failed", ec, dl.detail);
+    LOGE("OTA", "FAILED", "%s %s", ec, dl.detail);
+  }
   g_updating = false;
 }
 
@@ -323,7 +382,7 @@ void begin(bool (*prepare)(), bool (*acquire)()) {
   Preferences p;
   String expected;
   if (prefsOpenRO(p, NS)) {
-    g_deployment = prefsStr(p, "job"); g_status = prefsStr(p, "status", "idle"); g_error = prefsStr(p, "error");
+    g_deployment = prefsStr(p, "job"); g_status = prefsStr(p, "status", "idle"); g_error = prefsStr(p, "error"); g_detail = prefsStr(p, "detail");
     expected = prefsStr(p, "expected");
     p.end();
   }
@@ -519,7 +578,7 @@ void service(bool healthy) {
   pc::OtaTransport::Plan plan = g_forceHttps ? pc::OtaTransport::Https : g_tx.plan(backend::connected(), backend::connectedForMs());
   if (plan == pc::OtaTransport::Wait) { g_nextCheck = now + 5000; return; }
   if (plan == pc::OtaTransport::Ws) {
-    if (backend::sendOtaCheck(g_confirmed, g_status.c_str(), g_error.c_str())) {
+    if (backend::sendOtaCheck(g_confirmed, g_status.c_str(), g_error.c_str(), g_detail.c_str())) {
       g_tx.sent(now);
       g_nextCheck = now + OTA_CHECK_PERIOD_MS + (esp_random() % 30000);
       LOGI("OTA", "WS_CHECK", "sent ota_check fw=%s", POWERCELL_FIRMWARE_VERSION);
