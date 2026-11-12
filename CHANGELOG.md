@@ -1,5 +1,9 @@
 # Collector firmware changelog
 
+## 2.5.27 (OTA test of the 2.5.26 updater)
+
+Version is 2.5.27 on all four product images so a unit already on 2.5.26 will accept the file. No other functional change on top of 7e6f960.
+
 ## 2.5.26 (stale boot OTA job: drop it instead of downloading another target, Caleb 13 Nov 2026)
 
 On top of 2.5.25 (dd5e8a2, = 2.5.24 e814f46 code). All four product images. Prompted by ACE-000001 (DSP 5 kW): 2.5.22 had staged a 2.5.23 boot job (size 1393408) in NVS. The USB flash of 2.5.24 kept NVS, so 2.5.24 ran it at boot (`BOOT_JOB version=2.5.23 attempt=2/3`). Rollout 16 (2.5.23) had been cancelled and rollout 17 (2.5.25) opened; `/api/ota/download` serves whatever target is open, so the unit got the 1395536 B 2.5.25 file, stopped with `download_size_mismatch`, and the server failed the 2.5.25 target and completed the rollout.

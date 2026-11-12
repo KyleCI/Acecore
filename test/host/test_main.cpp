@@ -2859,7 +2859,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.26" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.27" && !s35.found());
   }
 }
 
