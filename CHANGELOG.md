@@ -1,5 +1,9 @@
 # Collector firmware changelog
 
+## Unreleased (DSP orange LED macro renamed)
+
+- `PIN_LED_BLUE` is now `PIN_LED_ORANGE` (DSP orange, mid-SOC, GPIO12). Name only: red GPIO13, orange GPIO12, green GPIO14 and the front light GPIO27 are unchanged, and so is the light behaviour. STM images are unchanged.
+
 ## Unreleased (DSP orange and red status light pins swapped)
 
 Caleb 2026-11-12: "Change the light pins swap orange and red on the firmware".

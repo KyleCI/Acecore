@@ -96,12 +96,12 @@
 // runs at 1.8 V and boot fails.
 #if POWERCELL_DSP011
 // DSP status lights. Caleb 2026-11-12: swap orange and red.
-// Orange is the mid-SOC channel (schematic Y, firmware PIN_LED_BLUE). Green stays 14.
+// Orange is the mid-SOC channel (schematic Y, firmware PIN_LED_ORANGE). Green stays 14.
 // No amber. GPIO32 is PZEM TX, GPIO35 is PZEM RX.
 // GPIO12 is a strapping pin (MTDI): drive it low at boot and never enable a pull-up.
 // GPIO14 flickers during boot (ROM PWM). GPIO27 is the front light, not green.
 #define PIN_LED_RED 13
-#define PIN_LED_BLUE 12
+#define PIN_LED_ORANGE 12
 #define PIN_LED_GREEN 14
 // No PIN_PWR_LIGHT on DSP: GPIO25 is the cooling fan (PIN_FAN).
 #else
@@ -143,7 +143,7 @@ static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "5 kW DSP uses JK-PB
 #if defined(POWERCELL_FACTORY_RATED_ACTIVE_W) && POWERCELL_FACTORY_RATED_ACTIVE_W == 3500
 static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "3.5 kW DSP uses JK-PB (Dubem working firmware)");
 #endif
-static_assert(PIN_LED_RED == 13 && PIN_LED_BLUE == 12 && PIN_LED_GREEN == 14, "DSP status lights: red 13, orange 12, green 14");
+static_assert(PIN_LED_RED == 13 && PIN_LED_ORANGE == 12 && PIN_LED_GREEN == 14, "DSP status lights: red 13, orange 12, green 14");
 static_assert(PIN_FRONT_LIGHT == 27 && PIN_LED_GREEN != PIN_FRONT_LIGHT, "front light is not the green LED");
 static_assert(PIN_GRID_SENSE == 39, "DSP grid sense is GPIO39");
 static_assert(PIN_NTC == 33 && PIN_FAN == 25, "DSP NTC GPIO33 (Caleb 2026-11-11), fan GPIO25");
@@ -153,7 +153,7 @@ static_assert(PIN_NTC != PIN_GRID_SENSE && PIN_NTC != PIN_PZEM_RX && PIN_NTC != 
               PIN_NTC != PIN_DSP_SD_CS && PIN_NTC != PIN_FAN, "NTC pin is not shared");
 static_assert(!(FEATURE_STM32) || PIN_NTC != PIN_STM32_RX, "GPIO33 is the STM32 RX on STM boards; DSP has no STM32");
 static_assert(!(FEATURE_BAT_SENSE_ADC) || PIN_NTC != PIN_BAT_SENSE, "BAT_SENSE ADC is off on DSP");
-static_assert(PIN_FAN != PIN_PWR_KEY && PIN_FAN != PIN_FRONT_LIGHT && PIN_FAN != PIN_LED_RED && PIN_FAN != PIN_LED_BLUE &&
+static_assert(PIN_FAN != PIN_PWR_KEY && PIN_FAN != PIN_FRONT_LIGHT && PIN_FAN != PIN_LED_RED && PIN_FAN != PIN_LED_ORANGE &&
               PIN_FAN != PIN_LED_GREEN && PIN_FAN != PIN_PZEM_TX && PIN_FAN != PIN_BMS_TX && PIN_FAN != PIN_BMS_RX &&
               PIN_FAN != PIN_DSP_SD_CS && PIN_FAN != PIN_I2C_SDA && PIN_FAN != PIN_I2C_SCL && PIN_FAN != PIN_SPI_SCK &&
               PIN_FAN != PIN_SPI_MISO && PIN_FAN != PIN_SPI_MOSI, "fan pin is not shared");

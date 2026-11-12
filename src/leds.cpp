@@ -23,12 +23,12 @@ constexpr uint8_t kCh[3] = {0, 1, 2};
 }
 void begin() {
 #if POWERCELL_DSP011
-  // Orange (PIN_LED_BLUE) is GPIO12 (MTDI). Drive it low before it becomes an
+  // Orange (PIN_LED_ORANGE) is GPIO12 (MTDI). Drive it low before it becomes an
   // output and never enable a pull-up. Red is 13, green is 14 (Caleb 2026-11-12
   // swapped orange and red). Then hand each pin to its own LEDC channel
   // (5 kHz, 8-bit) at duty 0, as Dubem's initLights().
   // The front light (GPIO27) is owned by gateway: it follows the inverter.
-  const int pins[] = {PIN_LED_RED, PIN_LED_BLUE, PIN_LED_GREEN};
+  const int pins[] = {PIN_LED_RED, PIN_LED_ORANGE, PIN_LED_GREEN};
   for (int p : pins) { digitalWrite(p, LOW); pinMode(p, OUTPUT); digitalWrite(p, LOW); }
   for (int i = 0; i < 3; ++i) {
     ledcSetup(kCh[i], powercell::kLedPwmFreqHz, powercell::kLedPwmBits);
@@ -62,7 +62,7 @@ void service() {
     last = now;
     digitalWrite(PIN_LED_RED, (now % 4000) < 100 ? HIGH : LOW);
 #if POWERCELL_DSP011
-    digitalWrite(PIN_LED_BLUE, LOW); digitalWrite(PIN_LED_GREEN, LOW);
+    digitalWrite(PIN_LED_ORANGE, LOW); digitalWrite(PIN_LED_GREEN, LOW);
 #else
     digitalWrite(PIN_LED_YELLOW, LOW); digitalWrite(PIN_LED_GREEN, LOW); digitalWrite(PIN_LED_AMBER, LOW);
 #endif
@@ -81,7 +81,7 @@ void service() {
 #if POWERCELL_DSP011
   // This board has blue where the original profile has yellow. No amber LED;
   // GPIO32 is PZEM TX and GPIO35 is PZEM RX.
-  digitalWrite(PIN_LED_BLUE, yellow && (!net::apActive() || blink) ? HIGH : LOW);
+  digitalWrite(PIN_LED_ORANGE, yellow && (!net::apActive() || blink) ? HIGH : LOW);
   digitalWrite(PIN_LED_GREEN, green ? HIGH : LOW);
 #else
   digitalWrite(PIN_LED_YELLOW, yellow && (!net::apActive() || blink) ? HIGH : LOW);
