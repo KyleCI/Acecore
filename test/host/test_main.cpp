@@ -1688,6 +1688,109 @@ static void test_ota_boot() {  // 2.5.22 two-phase OTA (ota_boot.h) and 8-bit he
   }
 }
 
+static void test_ota_stale_job() {  // 2.5.26: stale boot jobs (ota_boot.h Stale) and the offer query
+  using namespace pc::bootota;
+  const char *J = "41b17e9ac40972bc052884b4fececc3792271dfa9711ee88599195aed7d571d2";  // 2.5.23
+  const char *K = "fb4ddcd829f6568b019265b3c0c4a0d33c76ea15bada122eb891e6fe2a2fb140";  // 2.5.25
+  Job j;
+  strcpy(j.version, "2.5.23"); strcpy(j.sha, J); strcpy(j.path, "/api/ota/download?device_id=20500DD26158"); j.size = 1393408; j.tries = 1;
+  // ACE-000001 replay: a job staged by 2.5.22 (2.5.22..2.5.25 store no stager) found by 2.5.26 after a USB flash
+  CHECK(staleBeforeCheck(j, "2.5.26", "0123456789abcdef") == Stale::StagerUnknown);
+  strcpy(j.stager, "2.5.24"); strcpy(j.build, "0123456789abcdef");
+  CHECK(staleBeforeCheck(j, "2.5.26", "0123456789abcdef") == Stale::StagerChanged);   // other version
+  strcpy(j.stager, "2.5.26");
+  CHECK(staleBeforeCheck(j, "2.5.26", "0123456789ABCDEF") == Stale::No);              // same build (case-insensitive)
+  CHECK(staleBeforeCheck(j, "2.5.26", "fedcba9876543210") == Stale::StagerChanged);   // same version, rebuilt image
+  CHECK(staleBeforeCheck(j, "2.5.26", "") == Stale::No);                              // build unknown: version only
+  { Job n = j; n.build[0] = 0; CHECK(staleBeforeCheck(n, "2.5.26", "fedcba9876543210") == Stale::No); }
+  CHECK(staleBeforeCheck(j, nullptr, "") == Stale::StagerChanged);
+  { Job s = j; strcpy(s.version, "2.5.26"); CHECK(staleBeforeCheck(s, "2.5.26", "") == Stale::SameVersion); }
+  // (c) boot-time offer check
+  Job f = j; strcpy(f.version, "2.5.27"); strcpy(f.sha, K);
+  CHECK(staleAfterCheck(f, "2.5.26", Check::Offer, "2.5.27", K) == Stale::No);
+  {
+    std::string up(K); for (auto &c : up) c = (char)toupper((unsigned char)c);
+    CHECK(staleAfterCheck(f, "2.5.26", Check::Offer, "2.5.27", up.c_str()) == Stale::No);
+  }
+  CHECK(staleAfterCheck(f, "2.5.26", Check::Offer, "2.5.28", K) == Stale::OfferChanged);
+  CHECK(staleAfterCheck(f, "2.5.26", Check::Offer, "2.5.27", J) == Stale::OfferChanged);   // re-uploaded image
+  CHECK(staleAfterCheck(f, "2.5.26", Check::Offer, nullptr, nullptr) == Stale::OfferChanged);
+  CHECK(staleAfterCheck(f, "2.5.26", Check::None, "", "") == Stale::NoOffer);              // rollout cancelled
+  CHECK(staleAfterCheck(f, "2.5.26", Check::Failed, "", "") == Stale::No);                 // unconfirmed newer job runs
+  Job old = j; strcpy(old.version, "2.5.23");
+  CHECK(staleAfterCheck(old, "2.5.26", Check::Failed, "", "") == Stale::NotNewer);         // unconfirmed older job does not
+  CHECK(staleAfterCheck(old, "2.5.26", Check::Offer, "2.5.23", J) == Stale::No);           // a confirmed downgrade runs
+  CHECK(staleAfterCheck(old, "2.5.26", Check::Offer, "2.5.25", K) == Stale::OfferChanged); // the 13 Nov case with a check
+  CHECK(staleAfterCheck(f, "2.5.26.1", Check::Failed, "", "") == Stale::No && staleAfterCheck(f, "2.5.100", Check::Failed, "", "") == Stale::NotNewer);
+  CHECK(!strcmp(checkName(Check::Offer), "offer") && !strcmp(checkName(Check::None), "none") && !strcmp(checkName(Check::Failed), "failed"));
+  // at the download
+  CHECK(staleFromDownload(409, 120, 1393408) == Stale::NotCurrent && staleFromDownload(410, -1, 0) == Stale::NotCurrent);
+  CHECK(staleFromDownload(200, 1395536, 1393408) == Stale::SizeMismatch);   // the 13 Nov 2026 response
+  CHECK(staleFromDownload(200, 1393408, 1393408) == Stale::No);
+  CHECK(staleFromDownload(200, 1395536, 0) == Stale::No);                   // size unknown: no evidence
+  CHECK(staleFromDownload(200, -1, 1393408) == Stale::No && staleFromDownload(200, 100, 1393408) == Stale::No);  // chunked / tiny: genuine failure
+  CHECK(staleFromDownload(404, 30, 1393408) == Stale::No && staleFromDownload(-1, -1, 1393408) == Stale::No);
+  // only an unconfirmed older image is blocked from re-staging (no stage/drop reboot loop)
+  for (Stale s : {Stale::No, Stale::StagerUnknown, Stale::StagerChanged, Stale::SameVersion, Stale::NoOffer, Stale::OfferChanged, Stale::NotCurrent, Stale::SizeMismatch})
+    CHECK(!abandonOnDrop(s));
+  CHECK(abandonOnDrop(Stale::NotNewer));
+  // names and detail
+  CHECK(!strcmp(kStaleJobError, "boot_ota_stale_job") && !strcmp(kStatusDropped, "dropped"));
+  for (Stale s : {Stale::No, Stale::StagerUnknown, Stale::StagerChanged, Stale::SameVersion, Stale::NotNewer, Stale::NoOffer, Stale::OfferChanged, Stale::NotCurrent, Stale::SizeMismatch})
+    CHECK(strcmp(staleName(s), "?") != 0);
+  {
+    Job u = j; u.stager[0] = 0;
+    char d[160];
+    dropDetail(d, sizeof d, Stale::StagerUnknown, u, "");
+    CHECK(!strcmp(d, "reason=staged_by_unknown job=2.5.23 staged_by=unknown"));
+    dropDetail(d, sizeof d, Stale::SizeMismatch, j, "http=200 length=1395536 expect=1393408");
+    CHECK(!strcmp(d, "reason=size_mismatch job=2.5.23 staged_by=2.5.26 http=200 length=1395536 expect=1393408"));
+    char tiny[12]; dropDetail(tiny, sizeof tiny, Stale::NoOffer, j, "x"); CHECK(strlen(tiny) == sizeof tiny - 1);
+    dropDetail(nullptr, 5, Stale::NoOffer, j, "");  // no crash
+  }
+  // download query: version and sha256 on every request
+  {
+    char q[320];
+    CHECK(withOfferQuery("/api/ota/download?device_id=20500DD26158", "2.5.27", K, q, sizeof q));
+    CHECK(std::string(q) == std::string("/api/ota/download?device_id=20500DD26158&version=2.5.27&sha256=") + K);
+    CHECK(withOfferQuery("/api/ota/download", "2.5.27", "", q, sizeof q) && !strcmp(q, "/api/ota/download?version=2.5.27"));
+    CHECK(withOfferQuery("/api/ota/download?device_id=X", "2.5.27-rc 1&a", "", q, sizeof q) && !strcmp(q, "/api/ota/download?device_id=X&version=2.5.27-rc%201%26a"));
+    CHECK(withOfferQuery("/api/ota/download?device_id=X&version=2.5.27", "2.5.27", K, q, sizeof q));  // already there: not doubled
+    CHECK(std::string(q) == std::string("/api/ota/download?device_id=X&version=2.5.27&sha256=") + K);
+    CHECK(withOfferQuery("/api/ota/download?xversion=1", "2.5.27", "", q, sizeof q) && !strcmp(q, "/api/ota/download?xversion=1&version=2.5.27"));
+    char small[40];
+    CHECK(!withOfferQuery("/api/ota/download?device_id=20500DD26158", "2.5.27", K, small, sizeof small) && small[0] == 0);
+    CHECK(!withOfferQuery(nullptr, "2.5.27", K, q, sizeof q) && !withOfferQuery("/a", "1", "", nullptr, 4));
+    // the longest stored path (191) plus both parameters fits the 320 B request buffer
+    std::string longPath = "/api/ota/download?device_id=" + std::string(191 - 28, 'A');
+    CHECK(longPath.size() == 191 && withOfferQuery(longPath.c_str(), "12345678901234567890123456789012", K, q, sizeof q));
+  }
+  // device glue (source checks)
+  {
+    std::string ota = slurp("../../src/ota.cpp"), ws = slurp("../../src/backend_ws.cpp");
+    CHECK(!ota.empty() && !ws.empty());
+    // the stager is stored with every job, and cleared with it
+    CHECK(ota.find("strlcpy(j.stager, POWERCELL_FIRMWARE_VERSION, sizeof j.stager); strlcpy(j.build, runningBuild(), sizeof j.build);") != std::string::npos);
+    CHECK(ota.find("p.putString(\"bj_stg\", j.stager); p.putString(\"bj_bld\", j.build);") != std::string::npos);
+    CHECK(ota.find("\"bj_stg\", \"bj_bld\"}) if (p.isKey(k)) p.remove(k);") != std::string::npos);
+    // (a)+(b) before the attempt is counted
+    size_t st = ota.find("pc::bootota::staleBeforeCheck(j, POWERCELL_FIRMWARE_VERSION, runningBuild())"), inc = ota.find("++j.tries;");
+    CHECK(st != std::string::npos && inc != std::string::npos && st < inc);
+    // (c) before the download in the boot worker
+    size_t bw = ota.find("void bootWorker(void *)"), chk = ota.find("bootOfferCheck(b.base, b.key, ov, osha)", bw), ins = ota.find("install(b.base, b.key,", bw);
+    CHECK(bw != std::string::npos && chk != std::string::npos && ins != std::string::npos && chk < ins);
+    CHECK(ota.find("pc::bootota::staleFromDownload(dl.http, dl.len, b.job.size)") != std::string::npos);
+    // every download names the offer; a drop is never reported as failed
+    CHECK(ota.find("pc::bootota::withOfferQuery(path.c_str(), newVersion.c_str(), digest.c_str(), req, sizeof req)") != std::string::npos);
+    CHECK(ota.find("http.begin(client, base + req)") != std::string::npos && ota.find("base + path") == std::string::npos);
+    CHECK(ota.find("saveStatus(pc::bootota::kStatusDropped, pc::bootota::kStaleJobError, d);") != std::string::npos);
+    // the ota_check (WS and HTTPS) names the version of the last attempt
+    CHECK(ota.find("doc[\"last_version\"] = g_deployment;") != std::string::npos);
+    CHECK(ws.find("doc[\"last_version\"] = lastVersion;") != std::string::npos);
+    CHECK(ota.find("g_detail.c_str(), g_deployment.c_str())") != std::string::npos);
+  }
+}
+
 static void test_ota_task_stage() {  // 2.5.24: worker task not created -> stage from the main loop
   using namespace pc::bootota;
   const char *A = "41b17e9ac40972bc052884b4fececc3792271dfa9711ee88599195aed7d571d2";
@@ -2756,7 +2859,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.25" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.26" && !s35.found());
   }
 }
 
@@ -2822,6 +2925,8 @@ static void test_ota_errors() {  // 2.5.18: specific OTA failure codes and the h
   CHECK(classifyResponse(-11, -1, slot, 0) == Fail::Timeout);           // no response headers
   CHECK(classifyResponse(401, 30, slot, 0) == Fail::Http);
   CHECK(classifyResponse(404, -1, slot, 0) == Fail::Http);
+  CHECK(classifyResponse(409, 120, slot, 0) == Fail::NotCurrent);       // 2.5.26: not_current_offer
+  CHECK(classifyResponse(410, -1, slot, 1393408) == Fail::NotCurrent);
   CHECK(classifyResponse(200, -1, slot, 0) == Fail::SizeMismatch);      // chunked / no Content-Length
   CHECK(classifyResponse(200, 100, slot, 0) == Fail::SizeMismatch);
   CHECK(classifyResponse(200, 1380144, slot, 1380000) == Fail::SizeMismatch);
@@ -2840,7 +2945,7 @@ static void test_ota_errors() {  // 2.5.18: specific OTA failure codes and the h
     {Fail::FlashBeginFailed, "download_flash_begin_failed"}, {Fail::Stalled, "download_stalled"},
     {Fail::ReadError, "download_read_error"}, {Fail::VerifyMagic, "verify_magic"}, {Fail::FlashWriteFailed, "flash_write_failed"},
     {Fail::VerifySize, "verify_size"}, {Fail::VerifyIdentity, "verify_identity"}, {Fail::VerifySha, "verify_sha"},
-    {Fail::FinalizeFailed, "finalize_failed"}};
+    {Fail::FinalizeFailed, "finalize_failed"}, {Fail::NotCurrent, "download_not_current"}};
   for (const auto &n : names) { code(n.f, 0, b, sizeof b); CHECK(!strcmp(b, n.s)); CHECK(strlen(b) < 32); }
   code(Fail::None, 0, b, sizeof b); CHECK(b[0] == 0);
   { char tiny[8]; code(Fail::VerifyIdentity, 0, tiny, sizeof tiny); CHECK(strlen(tiny) == 7); }  // truncates, never overflows
@@ -2886,7 +2991,7 @@ int main() {
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
-  test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage();
+  test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

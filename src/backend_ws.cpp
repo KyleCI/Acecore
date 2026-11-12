@@ -721,7 +721,7 @@ bool sendOtaStatus(const char *status, const char *version) {
 }
 
 // OTA check over the open WS (contract: /workspace/esp32_review/ota_over_ws.md)
-bool sendOtaCheck(bool healthy, const char *lastStatus, const char *lastError, const char *lastErrorDetail) {
+bool sendOtaCheck(bool healthy, const char *lastStatus, const char *lastError, const char *lastErrorDetail, const char *lastVersion) {
   if (!connected()) return false;
   JsonDocument doc;
   doc["type"] = "ota_check";
@@ -734,6 +734,8 @@ bool sendOtaCheck(bool healthy, const char *lastStatus, const char *lastError, c
   doc["last_error"] = lastError;
   // 2.5.18: optional diagnostic for the last failure (e.g. "http=-1 tls=-1 ..."); absent when empty.
   if (lastErrorDetail && *lastErrorDetail) doc["last_error_detail"] = lastErrorDetail;
+  // 2.5.26: version the last OTA attempt was for (the server only charges its target with a failure for that version).
+  if (lastVersion && *lastVersion) doc["last_version"] = lastVersion;
   return send(doc);
 }
 

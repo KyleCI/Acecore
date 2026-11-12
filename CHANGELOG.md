@@ -1,5 +1,17 @@
 # Collector firmware changelog
 
+## 2.5.26 (stale boot OTA job: drop it instead of downloading another target, Caleb 13 Nov 2026)
+
+On top of 2.5.25 (dd5e8a2, = 2.5.24 e814f46 code). All four product images. Prompted by ACE-000001 (DSP 5 kW): 2.5.22 had staged a 2.5.23 boot job (size 1393408) in NVS. The USB flash of 2.5.24 kept NVS, so 2.5.24 ran it at boot (`BOOT_JOB version=2.5.23 attempt=2/3`). Rollout 16 (2.5.23) had been cancelled and rollout 17 (2.5.25) opened; `/api/ota/download` serves whatever target is open, so the unit got the 1395536 B 2.5.25 file, stopped with `download_size_mismatch`, and the server failed the 2.5.25 target and completed the rollout.
+
+- **Job stager:** every staged job stores the firmware that staged it (NVS `bj_stg` = version, `bj_bld` = first 16 hex of the ELF sha256). At boot, before Wi-Fi, a job is dropped when it was staged by another version or build (a USB flash or any image change since; jobs from 2.5.22..2.5.25 have no stager and are always dropped) or is for the running version.
+- **Boot-time offer check:** in the `ota_boot` task, before the download, `POST /api/ota/check` (same TLS, CA and signed headers as the HTTPS check, on the early heap, one session freed before the download). No offer, or a different version or sha256: dropped. If the check fails, the job still runs when it is newer than the running image; an older job is dropped and its sha256 refused until `OTA_RETRY` (a downgrade runs only when the server confirms it, and cannot loop stage/drop reboots). Log `[OTA][BOOT_CHECK] job=.. check=offer|none|failed offer=.. verdict=..`. Boot run cap 9 minutes (was 6).
+- **Download names the offer:** in place and on the boot path, `GET /api/ota/download?device_id=..&version=<v>&sha256=<hex>` (percent-encoded, not doubled if the server URL already has them). Older servers ignore them. 409/410 is `download_not_current` (was `download_http_409`).
+- **Stale evidence at the download:** on the boot path, 409/410 or HTTP 200 with a `Content-Length` other than the job's size drops the job instead of failing it (`download_size_mismatch` stays for the in-place path and for missing/short lengths).
+- **Drop reporting:** `[OTA][BOOT_JOB_DROPPED] reason=<staged_by_unknown|staged_by_other_build|same_version|not_newer|no_offer|offer_changed|not_current_offer|size_mismatch> job=<v> staged_by=<v|unknown> [offer=<v> | http= length= expect=] running=<v>`; the job is cleared and the attempt is not counted; `last_status: "dropped"`, `last_error: boot_ota_stale_job`, `last_error_detail` = the reason string. An in-place 409 reports `dropped` / `download_not_current` and does not fall back to the boot path. Never `failed`, so no rollout target is charged with it.
+- **`last_version` in `ota_check`:** WS and HTTPS checks carry the version the last attempt was for, so the server can ignore a failure that is not about its open target (backend `cursor/ota-offer-guard`).
+- Host tests: `test_ota_stale_job` (stager, same version, offer check, downgrade rule, download evidence, no re-stage loop, detail string, query encoding and bounds, source checks); `classifyResponse` 409/410.
+
 ## 2.5.25 (OTA test of the 2.5.24 updater)
 
 Version is 2.5.25 on all four product images so a unit already on 2.5.24 will accept the file. No other functional change on top of e814f46.

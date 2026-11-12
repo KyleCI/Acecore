@@ -145,6 +145,8 @@ bool checkRequest(const String &base, const String &apiKey, String *response) {
   doc["last_status"] = g_status;
   doc["last_error"] = g_error;
   if (g_detail.length()) doc["last_error_detail"] = g_detail;
+  // 2.5.26: the version the last attempt was for, so the server does not charge another target with it.
+  if (g_deployment.length()) doc["last_version"] = g_deployment;
   String body; serializeJson(doc, body);
   int code = -1;
   for (int attempt = 0; attempt < 2; ++attempt) {
@@ -170,7 +172,8 @@ bool checkRequest(const String &base, const String &apiKey, String *response) {
 }
 
 // 2.5.22: detail grew to 160 B for the heap numbers; tls = mbedTLS error of a failed connect.
-struct DlResult { pc::otaerr::Fail fail = pc::otaerr::Fail::None; int http = 0, tls = 0; char detail[160] = {0}; };
+// 2.5.26: len = Content-Length of the response (-1 none), for the stale-job size check.
+struct DlResult { pc::otaerr::Fail fail = pc::otaerr::Fail::None; int http = 0, tls = 0; long len = -1; char detail[160] = {0}; };
 
 bool install(const String &base, const String &apiKey, const String &path, const String &digest, const String &newVersion, uint32_t expectSize,
              DlResult &r) {
@@ -178,6 +181,12 @@ bool install(const String &base, const String &apiKey, const String &path, const
   const esp_partition_t *part = esp_ota_get_next_update_partition(nullptr);
   if (!part) { r.fail = Fail::NoSlot; LOGE("OTA", "DOWNLOAD", "no OTA partition"); return false; }
   if (!pc::isSha256Hex(digest.c_str())) { r.fail = Fail::VerifySha; snprintf(r.detail, sizeof r.detail, "offer sha256 invalid"); return false; }
+  // 2.5.26: the request names the offer (version, sha256); a 2.5.26 server answers 409
+  // not_current_offer when it would serve another image. Older servers ignore the parameters.
+  char req[320];
+  if (!pc::bootota::withOfferQuery(path.c_str(), newVersion.c_str(), digest.c_str(), req, sizeof req)) {
+    r.fail = Fail::UrlInvalid; LOGE("OTA", "DOWNLOAD", "download path too long for version/sha256"); return false;
+  }
   OtaClient client; prepareClient(client);
   HTTPClient http; http.setConnectTimeout(kConnectMs); http.setTimeout(kReadMs);
   http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
@@ -188,13 +197,14 @@ bool install(const String &base, const String &apiKey, const String &path, const
   LOGI("OTA", "DOWNLOAD_TLS_START", "free_heap=%lu largest=%lu min=%lu iram=%lu", (unsigned long)f0, (unsigned long)l0, (unsigned long)m0,
        (unsigned long)heapguard::iramFree());
   for (int attempt = 0; attempt < 2; ++attempt) {
-    if (!http.begin(client, base + path)) { r.fail = Fail::UrlInvalid; LOGE("OTA", "DOWNLOAD", "url refused by http.begin"); return false; }
-    addHeaders(http, apiKey, "GET", base + path, String());
+    if (!http.begin(client, base + req)) { r.fail = Fail::UrlInvalid; LOGE("OTA", "DOWNLOAD", "url refused by http.begin"); return false; }
+    addHeaders(http, apiKey, "GET", base + req, String());
     code = http.GET();
     if (!skewRetry(http, code, attempt)) break;
   }
   r.http = code;
   int len = http.getSize();  // backend sends Content-Length (Response::file); chunked is refused
+  r.len = len;
   r.fail = pc::otaerr::classifyResponse(code, len, part->size, expectSize);
   if (r.fail != Fail::None) {
     if (code < 0) {
@@ -286,6 +296,8 @@ bool install(const String &base, const String &apiKey, const String &path, const
 // NVS pc_ota: bj_ver, bj_path (path on the OTA base), bj_sha, bj_size, bj_try (attempts
 // started), bj_run (true = run at the next boot; false = spent, kept for the count),
 // ab_sha (abandoned sha256: never staged again until cleared).
+// 2.5.26: bj_stg (version of the firmware that staged the job), bj_bld (first 16 hex of its ELF
+// sha256). A job without them (staged by 2.5.22..2.5.25) or from another build is stale.
 using pc::bootota::Job;
 String g_abSha;
 bool loadJob(Job &j, bool &run) {
@@ -293,10 +305,12 @@ bool loadJob(Job &j, bool &run) {
   run = false;
   if (!prefsOpenRO(p, NS)) return false;
   String v = prefsStr(p, "bj_ver"), path = prefsStr(p, "bj_path"), sha = prefsStr(p, "bj_sha");
+  String stg = prefsStr(p, "bj_stg"), bld = prefsStr(p, "bj_bld");
   j.size = p.getUInt("bj_size", 0); j.tries = p.getUChar("bj_try", 0); run = p.getBool("bj_run", false);
   p.end();
   if (v.isEmpty() && sha.isEmpty()) return false;
   strlcpy(j.version, v.c_str(), sizeof j.version); strlcpy(j.path, path.c_str(), sizeof j.path); strlcpy(j.sha, sha.c_str(), sizeof j.sha);
+  strlcpy(j.stager, stg.c_str(), sizeof j.stager); strlcpy(j.build, bld.c_str(), sizeof j.build);
   return true;
 }
 void saveJob(const Job &j, bool run) {
@@ -304,13 +318,21 @@ void saveJob(const Job &j, bool run) {
   if (!p.begin(NS, false)) return;
   p.putString("bj_ver", j.version); p.putString("bj_path", j.path); p.putString("bj_sha", j.sha);
   p.putUInt("bj_size", j.size); p.putUChar("bj_try", j.tries); p.putBool("bj_run", run);
+  p.putString("bj_stg", j.stager); p.putString("bj_bld", j.build);
   p.end();
 }
 void clearJob() {
   Preferences p;
   if (!p.begin(NS, false)) return;
-  for (const char *k : {"bj_ver", "bj_path", "bj_sha", "bj_size", "bj_try", "bj_run"}) if (p.isKey(k)) p.remove(k);
+  for (const char *k : {"bj_ver", "bj_path", "bj_sha", "bj_size", "bj_try", "bj_run", "bj_stg", "bj_bld"}) if (p.isKey(k)) p.remove(k);
   p.end();
+}
+// 2.5.26: first 16 hex of this image's ELF sha256 (esp_app_desc), "" if unavailable.
+const char *runningBuild() {
+  static char b[17] = {0};
+  static bool done = false;
+  if (!done) { done = true; if (esp_ota_get_app_elf_sha256(b, sizeof b) <= 0) b[0] = 0; }
+  return b;
 }
 void setAbandoned(const char *sha) {
   g_abSha = sha ? sha : "";
@@ -327,6 +349,7 @@ void stageAndReboot(const String &version, const char *path, const String &diges
   Job j;
   strlcpy(j.version, version.c_str(), sizeof j.version); strlcpy(j.path, path, sizeof j.path); strlcpy(j.sha, digest.c_str(), sizeof j.sha);
   j.size = size;
+  strlcpy(j.stager, POWERCELL_FIRMWARE_VERSION, sizeof j.stager); strlcpy(j.build, runningBuild(), sizeof j.build);
   j.tries = pc::bootota::stageTries(havePrev ? prev.sha : "", havePrev ? prev.tries : 0, j.sha);
   if (pc::bootota::stageWouldExceed(j.tries)) {
     LOGE("OTA", "BOOT_ABANDONED", "version=%s: %u boot attempts used; not staged again", j.version, (unsigned)j.tries);
@@ -490,6 +513,13 @@ void handleOffer(const String &base, const String &key, String newVersion, Strin
     // 2.5.18: specific code (README "OTA error codes"); was download_or_verification_failed.
     char ec[40];
     pc::otaerr::code(dl.fail == pc::otaerr::Fail::None ? pc::otaerr::Fail::FinalizeFailed : dl.fail, dl.http, ec, sizeof ec);
+    if (dl.fail == pc::otaerr::Fail::NotCurrent) {
+      // 2.5.26: the offer changed between ota_available and the GET: not a failure of either image.
+      saveStatus(pc::bootota::kStatusDropped, ec, dl.detail);
+      LOGW("OTA", "NOT_CURRENT", "version=%s is no longer the offer (%s); next check retries", newVersion.c_str(), dl.detail);
+      g_updating = false;
+      return;
+    }
     saveStatus("failed", ec, dl.detail);
     LOGE("OTA", "FAILED", "%s %s", ec, dl.detail);
     // 2.5.22: the handshake ran out of heap in place: retry the same job on the boot path.
@@ -569,6 +599,37 @@ void loadState() {
 struct BootRun { Job job; String base, key; bool (*prepare)() = nullptr; volatile bool done = false; };
 BootRun *g_boot = nullptr;
 
+// 2.5.26: drop a stale job: cleared (the attempt is not counted against any image), status
+// "dropped" with boot_ota_stale_job (never "failed", so no rollout target is charged with it).
+void dropJob(const Job &j, pc::bootota::Stale s, const char *extra) {
+  clearJob();
+  if (pc::bootota::abandonOnDrop(s)) setAbandoned(j.sha);
+  char d[160];
+  pc::bootota::dropDetail(d, sizeof d, s, j, extra);
+  LOGW("OTA", "BOOT_JOB_DROPPED", "%s running=%s", d, POWERCELL_FIRMWARE_VERSION);
+  g_deployment = j.version;
+  saveStatus(pc::bootota::kStatusDropped, pc::bootota::kStaleJobError, d);
+}
+
+// 2.5.26: boot-time offer check, POST /api/ota/check on the early heap (one TLS session, freed
+// before the download starts). Offer: version and lower-case sha256 of the current offer.
+pc::bootota::Check bootOfferCheck(const String &base, const String &key, String &version, String &sha) {
+  using pc::bootota::Check;
+  String response;
+  if (!checkRequest(base, key, &response)) return Check::Failed;
+  JsonDocument doc;
+  if (deserializeJson(doc, response) || !doc["update_available"].is<bool>()) return Check::Failed;
+  if (!doc["update_available"].as<bool>()) return Check::None;
+  JsonObjectConst fw = doc["firmware"].as<JsonObjectConst>();
+  auto pick = [&](const char *k) -> String {
+    if (doc[k].is<const char *>()) return doc[k].as<String>();
+    if (!fw.isNull() && fw[k].is<const char *>()) return fw[k].as<String>();
+    return "";
+  };
+  version = pick("version"); sha = pick("sha256"); sha.toLowerCase();
+  return version.length() ? Check::Offer : Check::Failed;
+}
+
 void finishBootFail(BootRun &b, const char *ec, const char *detailIn) {
   const bool abandon = b.job.tries >= pc::bootota::kMaxTries;
   char d[160]; snprintf(d, sizeof d, "%s", detailIn ? detailIn : "");
@@ -581,6 +642,21 @@ void finishBootFail(BootRun &b, const char *ec, const char *detailIn) {
 
 void bootWorker(void *) {
   BootRun &b = *g_boot;
+  {
+    // 2.5.26 (c): is this job still the server's offer? A stale job is dropped before any download.
+    String ov, osha;
+    const pc::bootota::Check c = bootOfferCheck(b.base, b.key, ov, osha);
+    const pc::bootota::Stale st = pc::bootota::staleAfterCheck(b.job, POWERCELL_FIRMWARE_VERSION, c, ov.c_str(), osha.c_str());
+    LOGI("OTA", "BOOT_CHECK", "job=%s check=%s offer=%s verdict=%s free_heap=%lu largest=%lu", b.job.version, pc::bootota::checkName(c),
+         ov.length() ? ov.c_str() : "-", pc::bootota::staleName(st), (unsigned long)heapguard::freeNow(), (unsigned long)heapguard::largestNow());
+    if (st != pc::bootota::Stale::No) {
+      char extra[48]; snprintf(extra, sizeof extra, "offer=%.32s", ov.length() ? ov.c_str() : "-");
+      dropJob(b.job, st, extra);
+      b.done = true;
+      vTaskDelete(nullptr);
+      return;
+    }
+  }
   g_deployment = b.job.version;
   g_updating = true;
   { Preferences p; if (p.begin(NS, false)) { p.putString("expected", b.job.version); p.end(); } }
@@ -596,9 +672,17 @@ void bootWorker(void *) {
   }
   if (!prepared) finishBootFail(b, "safe_output_storage_failed", "");
   else {
-    char ec[40];
-    pc::otaerr::code(dl.fail == pc::otaerr::Fail::None ? pc::otaerr::Fail::FinalizeFailed : dl.fail, dl.http, ec, sizeof ec);
-    finishBootFail(b, ec, dl.detail);
+    // 2.5.26: 409/410 not_current_offer, or a 200 whose length is not the job's size, means the
+    // job is stale (the server serves another image): drop it, not a download failure.
+    const pc::bootota::Stale st = pc::bootota::staleFromDownload(dl.http, dl.len, b.job.size);
+    if (st != pc::bootota::Stale::No) {
+      char extra[48]; snprintf(extra, sizeof extra, "http=%d length=%ld expect=%lu", dl.http, dl.len, (unsigned long)b.job.size);
+      dropJob(b.job, st, extra);
+    } else {
+      char ec[40];
+      pc::otaerr::code(dl.fail == pc::otaerr::Fail::None ? pc::otaerr::Fail::FinalizeFailed : dl.fail, dl.http, ec, sizeof ec);
+      finishBootFail(b, ec, dl.detail);
+    }
   }
   g_updating = false;
   b.done = true;
@@ -622,6 +706,12 @@ bool bootJob(bool (*prepare)()) {
   if (d == Boot::Discard) {
     LOGW("OTA", "BOOT_JOB_DISCARDED", "version=%s valid=%d running=%s pending_verify=%d", j.version, ok, POWERCELL_FIRMWARE_VERSION, g_pending);
     clearJob(); return false;
+  }
+  // 2.5.26 (a)+(b): a job staged by another firmware (a USB flash or any image change since), or
+  // for the running version, is stale. Dropped before Wi-Fi; not counted.
+  if (d == Boot::Run) {
+    const pc::bootota::Stale st = pc::bootota::staleBeforeCheck(j, POWERCELL_FIRMWARE_VERSION, runningBuild());
+    if (st != pc::bootota::Stale::No) { dropJob(j, st, ""); return false; }
   }
   if (d == Boot::Abandon) {
     // Every attempt was started and none reported back (crash, watchdog or power cut).
@@ -877,7 +967,7 @@ void service(bool healthy) {
   pc::OtaTransport::Plan plan = g_forceHttps ? pc::OtaTransport::Https : g_tx.plan(backend::connected(), backend::connectedForMs());
   if (plan == pc::OtaTransport::Wait) { g_nextCheck = now + 5000; return; }
   if (plan == pc::OtaTransport::Ws) {
-    if (backend::sendOtaCheck(g_confirmed, g_status.c_str(), g_error.c_str(), g_detail.c_str())) {
+    if (backend::sendOtaCheck(g_confirmed, g_status.c_str(), g_error.c_str(), g_detail.c_str(), g_deployment.c_str())) {
       g_tx.sent(now);
       g_nextCheck = now + OTA_CHECK_PERIOD_MS + (esp_random() % 30000);
       LOGI("OTA", "WS_CHECK", "sent ota_check fw=%s", POWERCELL_FIRMWARE_VERSION);

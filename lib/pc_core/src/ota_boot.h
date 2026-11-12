@@ -24,6 +24,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
+#include "lan_ota.h"
 
 namespace pc {
 namespace bootota {
@@ -32,8 +34,10 @@ constexpr uint8_t kMaxTries = 3;
 constexpr uint32_t kWifiWaitMs = 40000;   // station got-IP after Wi-Fi start
 constexpr uint32_t kClockWaitMs = 30000;  // SNTP for the signed request (same budget as the WS)
 // install() caps: 15 s connect + 45 s handshake + 30 s headers, retried once on a 401
-// time skew, + 180 s body. setup() gives up waiting (and reboots) after this.
-constexpr uint32_t kRunCapMs = 360000;
+// time skew, + 180 s body. 2.5.26: plus the boot-time offer check (POST /api/ota/check, same
+// connect/handshake/read caps, retried once on a skew). setup() gives up waiting (and
+// reboots) after this.
+constexpr uint32_t kRunCapMs = 540000;
 
 // At boot, for a job found in NVS.
 enum class Boot : uint8_t {
@@ -108,6 +112,10 @@ struct Job {
   char sha[65] = {0};
   uint32_t size = 0;
   uint8_t tries = 0;
+  // 2.5.26: the firmware that staged the job (its version and the first 16 hex of its ELF
+  // sha256). Empty in a job staged by 2.5.22..2.5.25.
+  char stager[33] = {0};
+  char build[17] = {0};
 };
 inline bool hex64(const char *s) {
   if (!s || strlen(s) != 64) return false;
@@ -176,6 +184,124 @@ inline void taskStackDetail(char *out, size_t cap, uint32_t stack, uint32_t free
   if (!out || !cap) return;
   snprintf(out, cap, "in_place_gate=task_stack stack=%lu", (unsigned long)stack);
   appendHeap(out, cap, freeB, largest, minB);
+}
+
+// ---- 2.5.26: stale boot jobs ----
+// ACE-000001 (13 Nov 2026): 2.5.22 staged a 2.5.23 job (size 1393408). The USB flash of 2.5.24
+// kept NVS, so 2.5.24 ran that job at boot (BOOT_JOB version=2.5.23 attempt=2/3). Rollout 16
+// (2.5.23) had been cancelled and rollout 17 (2.5.25) opened; the download endpoint serves the
+// open target, so the unit received the 1395536 B 2.5.25 file, stopped with
+// download_size_mismatch, and the server failed the 2.5.25 target. A job is now dropped (not
+// counted, BOOT_JOB_DROPPED) when it is stale:
+//  before Wi-Fi: staged by another firmware (version or build), or for the running version;
+//  after the boot-time offer check (POST /api/ota/check on the early heap): the server offers
+//    nothing, or another version or sha256; if the check fails, a job older than the running
+//    version is dropped (a downgrade runs only when the server confirms it);
+//  at the download: 409/410 not_current_offer (version and sha256 are sent as query
+//    parameters), or HTTP 200 with a Content-Length other than the job's size.
+enum class Stale : uint8_t { No, StagerUnknown, StagerChanged, SameVersion, NotNewer, NoOffer, OfferChanged, NotCurrent, SizeMismatch };
+inline const char *staleName(Stale s) {
+  switch (s) {
+    case Stale::No: return "fresh";
+    case Stale::StagerUnknown: return "staged_by_unknown";
+    case Stale::StagerChanged: return "staged_by_other_build";
+    case Stale::SameVersion: return "same_version";
+    case Stale::NotNewer: return "not_newer";
+    case Stale::NoOffer: return "no_offer";
+    case Stale::OfferChanged: return "offer_changed";
+    case Stale::NotCurrent: return "not_current_offer";
+    case Stale::SizeMismatch: return "size_mismatch";
+  }
+  return "?";
+}
+// The error code reported for any dropped boot job (status "dropped", never "failed").
+constexpr const char *kStaleJobError = "boot_ota_stale_job";
+constexpr const char *kStatusDropped = "dropped";
+
+// (a) and (b), before Wi-Fi. runningBuild may be empty (unknown): only the version is compared.
+inline Stale staleBeforeCheck(const Job &j, const char *running, const char *runningBuild) {
+  if (!j.stager[0]) return Stale::StagerUnknown;
+  if (!running || strcmp(j.stager, running) != 0) return Stale::StagerChanged;
+  if (j.build[0] && runningBuild && *runningBuild && strcasecmp(j.build, runningBuild) != 0) return Stale::StagerChanged;
+  if (strcmp(j.version, running) == 0) return Stale::SameVersion;
+  return Stale::No;
+}
+
+// (c), after the boot-time offer check. Failed = no usable answer (network, TLS, HTTP != 200,
+// bad JSON); None = update_available false; Offer = an offer with this version and sha256.
+enum class Check : uint8_t { Failed, None, Offer };
+inline const char *checkName(Check c) { return c == Check::Offer ? "offer" : (c == Check::None ? "none" : "failed"); }
+inline Stale staleAfterCheck(const Job &j, const char *running, Check c, const char *offerVersion, const char *offerSha) {
+  if (c == Check::None) return Stale::NoOffer;
+  if (c == Check::Offer) {
+    if (!offerVersion || strcmp(offerVersion, j.version) != 0) return Stale::OfferChanged;
+    if (!offerSha || strcasecmp(offerSha, j.sha) != 0) return Stale::OfferChanged;
+    return Stale::No;  // confirmed by the server (a deliberate downgrade runs too)
+  }
+  // Unconfirmed: never install an older image than the running one from an old job.
+  if (running && pc::lanota::compareVersion(j.version, running) < 0) return Stale::NotNewer;
+  return Stale::No;  // the download carries version/sha256, so a 2.5.26 server still refuses a stale one
+}
+
+// At the download: http = GET result, len = Content-Length (-1 none), expect = job size (0 = unknown).
+inline Stale staleFromDownload(int http, long len, uint32_t expect) {
+  if (http == 409 || http == 410) return Stale::NotCurrent;
+  if (http == 200 && expect && len >= 288 && static_cast<unsigned long>(len) != expect) return Stale::SizeMismatch;
+  return Stale::No;
+}
+
+// A dropped job whose sha256 must not be staged again (until OTA_RETRY or another sha256):
+// an unconfirmed older image would otherwise be re-offered, staged and dropped every period.
+inline bool abandonOnDrop(Stale s) { return s == Stale::NotNewer; }
+
+// last_error_detail of a dropped job: "reason=<r> job=<v> staged_by=<v|unknown>[ <extra>]".
+inline void dropDetail(char *out, size_t cap, Stale s, const Job &j, const char *extra) {
+  if (!out || !cap) return;
+  snprintf(out, cap, "reason=%s job=%s staged_by=%s%s%s", staleName(s), j.version, j.stager[0] ? j.stager : "unknown", extra && *extra ? " " : "",
+           extra && *extra ? extra : "");
+}
+
+// "<path>&version=<v>&sha256=<hex>" (or "?" when the path has no query). Characters outside
+// [A-Za-z0-9._~-] are percent-encoded. A parameter already in the path is not added again.
+// false (out = "") when it does not fit.
+inline bool appendQueryParam(char *out, size_t cap, size_t &n, const char *key, const char *value) {
+  const bool q = memchr(out, '?', n) != nullptr;
+  int w = snprintf(out + n, cap - n, "%c%s=", q ? '&' : '?', key);
+  if (w < 0 || static_cast<size_t>(w) >= cap - n) return false;
+  n += static_cast<size_t>(w);
+  static const char *hex = "0123456789ABCDEF";
+  for (const char *p = value; *p; ++p) {
+    const unsigned char c = static_cast<unsigned char>(*p);
+    const bool plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '~' || c == '-';
+    if (n + (plain ? 1 : 3) >= cap) return false;
+    if (plain) out[n++] = static_cast<char>(c);
+    else { out[n++] = '%'; out[n++] = hex[c >> 4]; out[n++] = hex[c & 15]; }
+  }
+  out[n] = 0;
+  return true;
+}
+inline bool hasQueryParam(const char *path, const char *key) {
+  const char *q = strchr(path, '?');
+  if (!q) return false;
+  const size_t kl = strlen(key);
+  for (const char *p = q + 1; *p;) {
+    if (strncmp(p, key, kl) == 0 && p[kl] == '=') return true;
+    const char *amp = strchr(p, '&');
+    if (!amp) break;
+    p = amp + 1;
+  }
+  return false;
+}
+inline bool withOfferQuery(const char *path, const char *version, const char *sha, char *out, size_t cap) {
+  if (!out || !cap) return false;
+  out[0] = 0;
+  if (!path) return false;
+  size_t n = strlen(path);
+  if (n + 1 > cap) return false;
+  memcpy(out, path, n + 1);
+  if (version && *version && !hasQueryParam(path, "version") && !appendQueryParam(out, cap, n, "version", version)) { out[0] = 0; return false; }
+  if (sha && *sha && !hasQueryParam(path, "sha256") && !appendQueryParam(out, cap, n, "sha256", sha)) { out[0] = 0; return false; }
+  return true;
 }
 
 }  // namespace bootota

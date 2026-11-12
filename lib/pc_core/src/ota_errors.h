@@ -30,6 +30,7 @@ enum class Fail : uint8_t {
   VerifyIdentity,   // verify_identity: POWERCELL_FW|kind|model|version|END not found
   VerifySha,        // verify_sha: SHA-256 differs from the offer
   FinalizeFailed,   // finalize_failed: esp_ota_end or set_boot_partition
+  NotCurrent,       // download_not_current (2.5.26): 409/410 not_current_offer, the server offers another image now
 };
 
 // HTTPClient codes used below (HTTPClient.h).
@@ -54,6 +55,7 @@ inline const char *name(Fail f) {
     case Fail::VerifyIdentity: return "verify_identity";
     case Fail::VerifySha: return "verify_sha";
     case Fail::FinalizeFailed: return "finalize_failed";
+    case Fail::NotCurrent: return "download_not_current";
   }
   return "download_failed";
 }
@@ -76,6 +78,7 @@ inline void code(Fail f, int http, char *out, size_t cap) {
 inline Fail classifyResponse(int http, long len, size_t slot, uint32_t expect) {
   if (http == kHttpReadTimeout) return Fail::Timeout;
   if (http < 0) return Fail::ConnectFailed;
+  if (http == 409 || http == 410) return Fail::NotCurrent;  // 2.5.26: the requested version/sha256 is not the offer
   if (http != 200) return Fail::Http;
   if (len > 0 && static_cast<unsigned long>(len) > slot) return Fail::TooLarge;
   if (len < 288 || (expect && static_cast<unsigned long>(len) != expect)) return Fail::SizeMismatch;
