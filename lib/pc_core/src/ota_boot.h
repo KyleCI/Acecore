@@ -126,5 +126,57 @@ inline bool valid(const Job &j, uint32_t slotSize) {
   return true;
 }
 
+// ---- 2.5.24: one offer check for every staging path ----
+// ACE-000001 (2.5.22, 12 Nov 2026): ota_available 2.5.23 arrived with heap_largest=14836, so
+// the 16384 B "ota" worker stack could not be allocated; service() dropped the offer without
+// a log every check period and the boot path never ran. The main loop now stages such an
+// offer itself. handleOffer() (worker) and the main-loop path use this same rule set, in the
+// order handleOffer() always applied it.
+enum class Offer : uint8_t { Ok, NoVersion, VersionTooLong, SameVersion, BadSha, BadPath, TooBig, Abandoned };
+// version: offered; running: POWERCELL_FIRMWARE_VERSION; sha: lower-cased offer sha256;
+// pathOk: pc::otaDownloadPath accepted the url (or the own-host fallback); size: offered size
+// (0 = unknown); slotSize: next OTA partition size (0 = unknown, size not checked).
+inline Offer checkOffer(const char *version, const char *running, const char *sha, bool pathOk, uint32_t size, uint32_t slotSize,
+                        const char *abandonedSha) {
+  const size_t vl = version ? strlen(version) : 0;
+  if (vl == 0) return Offer::NoVersion;
+  if (vl > 32) return Offer::VersionTooLong;
+  if (running && strcmp(version, running) == 0) return Offer::SameVersion;
+  if (!hex64(sha)) return Offer::BadSha;
+  if (!pathOk) return Offer::BadPath;
+  if (size && slotSize && size > slotSize) return Offer::TooBig;
+  if (offerAbandoned(sha, abandonedSha)) return Offer::Abandoned;
+  return Offer::Ok;
+}
+inline const char *offerName(Offer o) {
+  switch (o) {
+    case Offer::Ok: return "ok";
+    case Offer::NoVersion: return "no_version";
+    case Offer::VersionTooLong: return "version_too_long";
+    case Offer::SameVersion: return "same_version";
+    case Offer::BadSha: return "sha256_invalid";
+    case Offer::BadPath: return "url_invalid";
+    case Offer::TooBig: return "size_exceeds_slot";
+    case Offer::Abandoned: return "abandoned";
+  }
+  return "?";
+}
+
+// The OTA worker task could not be created (no heap block for its stack).
+//  WS offer that passes checkOffer: stage it to the boot path from the main loop (the in-place
+//  gate needs a 35 KB block anyway, so a heap that cannot give the stack cannot give TLS).
+//  Anything else (HTTPS check, rejected offer): log and drop; the next check period retries.
+enum class TaskFail : uint8_t { Stage, Drop };
+inline TaskFail onTaskCreateFailed(bool wsOffer, Offer verdict) {
+  return (wsOffer && verdict == Offer::Ok) ? TaskFail::Stage : TaskFail::Drop;
+}
+// last_error_detail of a job staged because the worker stack did not fit:
+// "in_place_gate=task_stack stack=<bytes>" + appendHeap().
+inline void taskStackDetail(char *out, size_t cap, uint32_t stack, uint32_t freeB, uint32_t largest, uint32_t minB) {
+  if (!out || !cap) return;
+  snprintf(out, cap, "in_place_gate=task_stack stack=%lu", (unsigned long)stack);
+  appendHeap(out, cap, freeB, largest, minB);
+}
+
 }  // namespace bootota
 }  // namespace pc

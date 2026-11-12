@@ -72,6 +72,9 @@ constexpr uint32_t kHandshakeS = 45, kBodyTotalMs = 180000;
 // round-robins the worker with loop/ws/solar/bms (all priority 1).
 constexpr UBaseType_t kOtaPrio = 1;
 constexpr BaseType_t kOtaCore = 1;
+// Stack of the "ota" (WS offer / HTTPS check) and "ota_boot" workers: install() runs the
+// mbedTLS handshake (P-384 ECDHE + chain verify) on it.
+constexpr uint32_t kOtaStack = 16384;
 struct Offer { bool set = false; String version, url, sha256; uint32_t size = 0; };
 Offer g_wsOffer;   // written by wsReply (ws task, app lock), consumed by service (main loop, app lock)
 Offer g_job;       // the worker's copy; Offer.set=false means "run the HTTPS check first"
@@ -342,6 +345,14 @@ void stageAndReboot(const String &version, const char *path, const String &diges
   ESP.restart();
 }
 
+// 2.5.24: true when staging this sha256 again would exceed kMaxTries (stageAndReboot() would
+// abandon it instead of rebooting). Read-only.
+bool stageWouldAbandon(const String &digest) {
+  Job prev; bool prevRun = false;
+  if (!loadJob(prev, prevRun)) return false;
+  return pc::bootota::stageWouldExceed(pc::bootota::stageTries(prev.sha, prev.tries, digest.c_str()));
+}
+
 // Response (FirmwareService::check): {"status":"success","update_available":bool,
 // "device_id","current_version","version","url","sha256","firmware":{version,url,sha256}|null}
 void handleOffer(const String &base, const String &key, String newVersion, String url, String digest, uint32_t size);
@@ -393,32 +404,46 @@ void check() {
   handleOffer(base, key, newVersion, url, digest, size);
 }
 
-// Validate an offer (from the HTTPS check or a WS ota_available) and install it.
-void handleOffer(const String &base, const String &key, String newVersion, String url, String digest, uint32_t size) {
+// 2.5.24: the offer rules (ota_boot.h checkOffer), shared by handleOffer() (worker) and the
+// main-loop staging path (service(), worker task not created). Lower-cases `digest` and puts
+// the checked own-host download path in `path`. Logs JOB_REJECTED for anything but Ok.
+pc::bootota::Offer validateOffer(const String &base, const String &newVersion, String url, String &digest, uint32_t size, char *path, size_t cap) {
+  using pc::bootota::Offer;
   digest.toLowerCase();
-  char path[192];
   if (url.isEmpty()) url = "/api/ota/download?device_id=" + String(settings::id().deviceId);
-  bool pathOk = pc::otaDownloadPath(base.c_str(), url.c_str(), path, sizeof path);
+  bool pathOk = pc::otaDownloadPath(base.c_str(), url.c_str(), path, cap);
   if (!pathOk) {
     // Never follow a url to another host. If APP_URL on the server differs from
     // our base, fetch the documented path from our own base instead.
     LOGW("OTA", "URL_FOREIGN", "ignoring url, using %s/api/ota/download", base.c_str());
     String own = "/api/ota/download?device_id=" + String(settings::id().deviceId);
-    pathOk = pc::otaDownloadPath(base.c_str(), own.c_str(), path, sizeof path);
-  }
-  if (!(newVersion.length() && newVersion.length() <= 32 && newVersion != POWERCELL_FIRMWARE_VERSION &&
-        pc::isSha256Hex(digest.c_str()) && pathOk)) {
-    LOGW("OTA", "JOB_REJECTED", "version=%s sha256=%s url_ok=%d", newVersion.c_str(), pc::isSha256Hex(digest.c_str()) ? "ok" : "missing/invalid", pathOk);
-    return;
+    pathOk = pc::otaDownloadPath(base.c_str(), own.c_str(), path, cap);
   }
   const esp_partition_t *next = esp_ota_get_next_update_partition(nullptr);
-  if (size && next && size > next->size) { LOGW("OTA", "JOB_REJECTED", "size=%lu > partition %lu", (unsigned long)size, (unsigned long)next->size); return; }
-  // 2.5.22: this exact image already used every boot attempt: do not pause the WS for it.
-  if (pc::bootota::offerAbandoned(digest.c_str(), g_abSha.c_str())) {
-    LOGW("OTA", "JOB_REJECTED", "version=%s abandoned after %u boot attempts (new sha256 or console OTA_RETRY to retry)", newVersion.c_str(),
-         (unsigned)pc::bootota::kMaxTries);
-    return;
+  const Offer v = pc::bootota::checkOffer(newVersion.c_str(), POWERCELL_FIRMWARE_VERSION, digest.c_str(), pathOk, size, next ? next->size : 0,
+                                          g_abSha.c_str());
+  switch (v) {
+    case Offer::Ok: break;
+    case Offer::TooBig:
+      LOGW("OTA", "JOB_REJECTED", "size=%lu > partition %lu", (unsigned long)size, (unsigned long)next->size);
+      break;
+    case Offer::Abandoned:
+      // 2.5.22: this exact image already used every boot attempt: do not pause the WS for it.
+      LOGW("OTA", "JOB_REJECTED", "version=%s abandoned after %u boot attempts (new sha256 or console OTA_RETRY to retry)", newVersion.c_str(),
+           (unsigned)pc::bootota::kMaxTries);
+      break;
+    default:
+      LOGW("OTA", "JOB_REJECTED", "%s version=%s sha256=%s url_ok=%d", pc::bootota::offerName(v), newVersion.c_str(),
+           pc::isSha256Hex(digest.c_str()) ? "ok" : "missing/invalid", pathOk);
+      break;
   }
+  return v;
+}
+
+// Validate an offer (from the HTTPS check or a WS ota_available) and install it.
+void handleOffer(const String &base, const String &key, String newVersion, String url, String digest, uint32_t size) {
+  char path[192];
+  if (validateOffer(base, newVersion, url, digest, size, path, sizeof path) != pc::bootota::Offer::Ok) return;
   // Ask the main loop to release the WebSocket, then wait (the socket keeps running meanwhile).
   g_installing = newVersion;  // the main loop announces ota_status installing before granting
   g_gate.requestInstall(millis());
@@ -481,6 +506,40 @@ void worker(void *) {
   g_gate.finish();
   g_running = false;
   vTaskDelete(nullptr);
+}
+
+// 2.5.24: start the "ota" worker; a failure is logged (2.5.22 dropped it silently).
+bool startWorker(const char *forWhat) {
+  if (xTaskCreatePinnedToCore(worker, "ota", kOtaStack, nullptr, kOtaPrio, nullptr, kOtaCore) == pdPASS) return true;
+  LOGW("OTA", "TASK_CREATE_FAILED", "task=ota for=%s stack=%lu free_heap=%lu largest=%lu min=%lu iram=%lu", forWhat, (unsigned long)kOtaStack,
+       (unsigned long)heapguard::freeNow(), (unsigned long)heapguard::largestNow(), (unsigned long)heapguard::heapMin(),
+       (unsigned long)heapguard::iramFree());
+  return false;
+}
+
+// 2.5.24: a WS offer whose worker task could not be created (ACE-000001, 2.5.22: largest
+// block 14836 B < 16384 B stack) goes straight to the boot path from the main loop, with the
+// same offer rules (validateOffer) and the same NVS job / attempt count (stageAndReboot).
+// The WS is never released here, so a rejected or abandoned offer leaves it untouched.
+void stageFromLoop(const Offer &o) {
+  String base = settings::otaBaseUrl(), key = settings::apiKey();
+  while (base.endsWith("/")) base.remove(base.length() - 1);
+  const uint32_t f = heapguard::freeNow(), l = heapguard::largestNow(), m = heapguard::heapMin();
+  String digest = o.sha256;
+  char path[192];
+  if (key.isEmpty()) { LOGW("OTA", "TASK_STAGE_SKIPPED", "version=%s not staged (api_key missing)", o.version.c_str()); return; }
+  const pc::bootota::Offer v = validateOffer(base, o.version, o.url, digest, o.size, path, sizeof path);
+  if (pc::bootota::onTaskCreateFailed(true, v) != pc::bootota::TaskFail::Stage) {
+    LOGW("OTA", "TASK_STAGE_SKIPPED", "version=%s not staged (%s); next check retries", o.version.c_str(), pc::bootota::offerName(v));
+    return;
+  }
+  char d[160];
+  pc::bootota::taskStackDetail(d, sizeof d, kOtaStack, f, l, m);
+  LOGW("OTA", "TASK_STAGE", "version=%s: ota task stack does not fit; staging to the boot path (%s)", o.version.c_str(), d);
+  // Same announcement the worker path makes before the WS is released (not for an image that is abandoned now).
+  if (!stageWouldAbandon(digest)) backend::sendOtaStatus("installing", o.version.c_str());
+  stageAndReboot(o.version, path, digest, o.size, "", d);
+  // Returned: abandoned (status failed/boot_ota_abandoned saved); the WS keeps running.
 }
 
 // Boot-time state, once per boot (bootJob() runs before begin()).
@@ -600,8 +659,13 @@ bool bootJob(bool (*prepare)()) {
   t0 = millis();
   while (fid::hasSecret() && !devauth::clockTrusted() && millis() - t0 < pc::bootota::kClockWaitMs) delay(100);
   if (!devauth::clockTrusted()) LOGW("OTA", "BOOT_CLOCK", "no NTP time after %lu ms; request may be unsigned", (unsigned long)(millis() - t0));
-  if (xTaskCreatePinnedToCore(bootWorker, "ota_boot", 16384, nullptr, kOtaPrio, nullptr, kOtaCore) != pdPASS) {
-    finishBootFail(b, "boot_ota_task_failed", "");
+  if (xTaskCreatePinnedToCore(bootWorker, "ota_boot", kOtaStack, nullptr, kOtaPrio, nullptr, kOtaCore) != pdPASS) {
+    // 2.5.24: heap figures in the log and in last_error_detail (was an empty detail).
+    char det[160];
+    snprintf(det, sizeof det, "stack=%lu", (unsigned long)kOtaStack);
+    pc::bootota::appendHeap(det, sizeof det, heapguard::freeNow(), heapguard::largestNow(), heapguard::heapMin());
+    LOGE("OTA", "TASK_CREATE_FAILED", "task=ota_boot %s", det);
+    finishBootFail(b, "boot_ota_task_failed", det);
     delete g_boot; g_boot = nullptr; return true;
   }
   t0 = millis();
@@ -675,8 +739,13 @@ const char *lanBegin(const char *sha, bool force, int *code) {
   socketsSetPaused(true);
   if (backend::connected() && g_acquire) g_acquire();
   if (!Update.begin(part->size, U_FLASH)) {
-    LOGE("OTA", "OTA_LAN_FAIL", "update_begin err=%u free_heap=%lu", Update.getError(), (unsigned long)heapguard::freeNow());
+    // 2.5.24: Update.begin() mallocs its 4 KB sector buffer and fails with err=0 (UPDATE_ERROR_OK)
+    // when that does not fit: reported as 503 update_begin_out_of_memory (was 500 update_begin_failed).
+    const uint8_t ue = Update.getError();
+    LOGE("OTA", "OTA_LAN_FAIL", "update_begin err=%u free_heap=%lu largest=%lu", ue, (unsigned long)heapguard::freeNow(),
+         (unsigned long)heapguard::largestNow());
     delete g_lan; g_lan = nullptr; socketsSetPaused(false);
+    if (ue == UPDATE_ERROR_OK) { *code = 503; return "update_begin_out_of_memory"; }
     *code = 500; return "update_begin_failed";
   }
   strlcpy(g_lan->sha, sha, sizeof g_lan->sha);
@@ -778,7 +847,11 @@ void service(bool healthy) {
     g_job = g_wsOffer; g_wsOffer = Offer();
     if (!g_gate.start()) { g_job = Offer(); return; }
     g_running = true;
-    if (xTaskCreatePinnedToCore(worker, "ota", 16384, nullptr, kOtaPrio, nullptr, kOtaCore) != pdPASS) { g_running = false; g_gate.finish(); g_job = Offer(); }
+    if (!startWorker("ws_offer")) {
+      g_running = false; g_gate.finish();
+      const Offer o = g_job; g_job = Offer();
+      stageFromLoop(o);  // reboots when staged; returns (WS untouched) when rejected
+    }
     return;
   }
   if (g_tx.waiting()) {
@@ -827,7 +900,7 @@ void service(bool healthy) {
   g_job = Offer();
   if (!g_gate.start()) return;
   g_running = true;  // the WebSocket keeps running during the check
-  if (xTaskCreatePinnedToCore(worker, "ota", 16384, nullptr, kOtaPrio, nullptr, kOtaCore) != pdPASS) { g_running = false; g_gate.finish(); }
+  if (!startWorker("https_check")) { g_running = false; g_gate.finish(); }  // logged; the next check period retries
 }
 
 bool tlsBusy() { return g_running; }

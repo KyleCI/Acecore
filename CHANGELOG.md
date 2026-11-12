@@ -1,5 +1,16 @@
 # Collector firmware changelog
 
+## 2.5.24 (WS offer dropped when the OTA task stack does not fit: stage from the main loop, Caleb 12 Nov 2026)
+
+On top of 2.5.23 (21299fc, = 2.5.22 00db613 code). All four product images. Prompted by ACE-000001 (DSP 5 kW) on 2.5.22: `[OTA][WS_AVAILABLE] version=2.5.23 size=1393408`, then nothing, with `LOOP STATS heap_free=35676 heap_largest=14836 largest_min=9204 iram_free=42844`. `service()` creates the 16384 B `ota` worker for a WS offer; with a 14836 B largest DRAM block `xTaskCreatePinnedToCore` failed and the offer was dropped without a log every check period, so the boot-path staging in `handleOffer()` never ran.
+
+- **Task-create failures are logged:** `[OTA][TASK_CREATE_FAILED] task=ota for=ws_offer|https_check stack=16384 free_heap largest min iram`. The boot path's `ota_boot` task failure logs it too and `boot_ota_task_failed` now carries `stack=16384 heap free=.. largest=.. min=..`.
+- **WS offer staged from the main loop:** when the `ota` task cannot be created, `stageFromLoop()` checks the offer with the same rules as the worker (`validateOffer()` -> `pc::bootota::checkOffer()`: version present, <= 32 chars and not the running one, sha256 hex, own-host download path with the `URL_FOREIGN` fallback, size <= next slot, sha256 not abandoned), sends `ota_status installing` (unless this sha256 is about to be abandoned), then `stageAndReboot()` with `last_error_detail` `in_place_gate=task_stack stack=16384 heap free=<B> largest=<B> min=<B>`, `boot_pending`, `BOOT_STAGED`, reboot. Same NVS job and 3 attempts per sha256. The WS is never released on this path, so a rejected (`JOB_REJECTED`, `TASK_STAGE_SKIPPED`) or abandoned offer cannot block reconnects. `handleOffer()` now uses `validateOffer()` too (identical rules and log lines; `JOB_REJECTED` for the version/sha/path case now starts with the reason name).
+- **HTTPS check task failure** is logged; the check is retried at the next period (unchanged).
+- **Local POST /ota:** no task is created there. `Update.begin()` failing for its 4 KB buffer (err=0) now returns 503 `update_begin_out_of_memory` (was 500 `update_begin_failed`), and the log carries the largest block.
+- **Boot path unchanged:** `bootJob()` in `setup()` still runs the download in a 16384 B `ota_boot` task, created right after `net::begin()` and before ESP-NOW, the web server, the WS and mDNS, so it is allocated on the unfragmented early heap; `setup()` waits for it (6 min cap).
+- Host tests: `test_ota_task_stage` (offer rules, stage/drop decision, attempt cap, detail string, source checks).
+
 ## 2.5.23 (OTA test of the 2.5.22 updater)
 
 Version is 2.5.23 on all four product images so a unit already on 2.5.22 will accept the file. No other functional change on top of 00db613.

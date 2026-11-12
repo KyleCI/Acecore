@@ -1688,6 +1688,80 @@ static void test_ota_boot() {  // 2.5.22 two-phase OTA (ota_boot.h) and 8-bit he
   }
 }
 
+static void test_ota_task_stage() {  // 2.5.24: worker task not created -> stage from the main loop
+  using namespace pc::bootota;
+  const char *A = "41b17e9ac40972bc052884b4fececc3792271dfa9711ee88599195aed7d571d2";
+  const char *B = "1111111111111111111111111111111111111111111111111111111111111111";
+  const uint32_t slot = 0x1E0000;
+  // the ACE-000001 offer (2.5.23 on 2.5.22) passes
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, 1393408, slot, "") == Offer::Ok);
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, 0, slot, "") == Offer::Ok);   // size optional
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, 1393408, 0, "") == Offer::Ok);  // slot unknown: size not checked
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, slot, slot, nullptr) == Offer::Ok);
+  // the handleOffer rules, in its order
+  CHECK(checkOffer("", "2.5.22", A, true, 1, slot, "") == Offer::NoVersion);
+  CHECK(checkOffer(nullptr, "2.5.22", A, true, 1, slot, "") == Offer::NoVersion);
+  CHECK(checkOffer("123456789012345678901234567890123", "2.5.22", A, true, 1, slot, "") == Offer::VersionTooLong);
+  CHECK(checkOffer("12345678901234567890123456789012", "2.5.22", A, true, 1, slot, "") == Offer::Ok);  // 32 chars allowed
+  CHECK(checkOffer("2.5.22", "2.5.22", A, true, 1, slot, "") == Offer::SameVersion);
+  CHECK(checkOffer("2.5.23", "2.5.22", "", true, 1, slot, "") == Offer::BadSha);
+  CHECK(checkOffer("2.5.23", "2.5.22", B + 1, true, 1, slot, "") == Offer::BadSha);
+  {
+    std::string bad(A); bad[5] = 'z';
+    CHECK(checkOffer("2.5.23", "2.5.22", bad.c_str(), true, 1, slot, "") == Offer::BadSha);
+  }
+  CHECK(checkOffer("2.5.23", "2.5.22", A, false, 1, slot, "") == Offer::BadPath);
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, slot + 1, slot, "") == Offer::TooBig);
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, 1, slot, A) == Offer::Abandoned);
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, 1, slot, B) == Offer::Ok);     // another image abandoned
+  CHECK(checkOffer("2.5.22", "2.5.22", A, true, 1, slot, A) == Offer::SameVersion);  // earlier rule wins
+  CHECK(!strcmp(offerName(Offer::Ok), "ok") && !strcmp(offerName(Offer::Abandoned), "abandoned") && !strcmp(offerName(Offer::BadPath), "url_invalid"));
+  for (int i = 0; i <= (int)Offer::Abandoned; ++i) CHECK(strcmp(offerName((Offer)i), "?") != 0);
+  // decision
+  CHECK(onTaskCreateFailed(true, Offer::Ok) == TaskFail::Stage);
+  CHECK(onTaskCreateFailed(false, Offer::Ok) == TaskFail::Drop);  // HTTPS check: no offer yet
+  for (int i = 1; i <= (int)Offer::Abandoned; ++i) CHECK(onTaskCreateFailed(true, (Offer)i) == TaskFail::Drop);
+  // staged from the loop: same attempt cap as the worker path (stageTries / stageWouldExceed)
+  {
+    uint8_t tries = 0; int staged = 0;
+    for (int offer = 0; offer < 10; ++offer) {
+      if (onTaskCreateFailed(true, checkOffer("2.5.23", "2.5.22", A, true, 1393408, slot, "")) != TaskFail::Stage) break;
+      uint8_t carried = stageTries(A, tries, A);
+      if (stageWouldExceed(carried)) break;
+      ++staged; tries = carried + 1;
+    }
+    CHECK(staged == 3 && tries == 3);
+  }
+  // detail
+  {
+    char d[160];
+    taskStackDetail(d, sizeof d, 16384, 35676, 14836, 9024);
+    CHECK(!strcmp(d, "in_place_gate=task_stack stack=16384 heap free=35676 largest=14836 min=9024"));
+    char s8[12]; taskStackDetail(s8, sizeof s8, 16384, 1, 2, 3); CHECK(strlen(s8) == sizeof s8 - 1);
+    taskStackDetail(nullptr, 5, 1, 2, 3, 4);  // no crash
+  }
+  // device glue (source checks)
+  {
+    std::string ota = slurp("../../src/ota.cpp");
+    CHECK(!ota.empty());
+    // one rule set: handleOffer and the loop path both go through validateOffer -> checkOffer
+    CHECK(ota.find("pc::bootota::checkOffer(") != std::string::npos);
+    size_t ho = ota.find("void handleOffer(const String &base, const String &key, String newVersion"),
+           hv = ota.find("validateOffer(base, newVersion, url, digest, size, path, sizeof path)", ho);
+    size_t sl = ota.find("void stageFromLoop("), sv = ota.find("validateOffer(base, o.version, o.url, digest, o.size, path, sizeof path)", sl),
+           ss = ota.find("stageAndReboot(o.version, path, digest, o.size, \"\", d);", sl);
+    CHECK(ho != std::string::npos && hv != std::string::npos && sl != std::string::npos && sv != std::string::npos && ss != std::string::npos && sv < ss);
+    // no silent drop: every "ota" worker start goes through startWorker (logs TASK_CREATE_FAILED)
+    CHECK(ota.find("xTaskCreatePinnedToCore(worker,") == ota.rfind("xTaskCreatePinnedToCore(worker,"));
+    CHECK(ota.find("TASK_CREATE_FAILED") != std::string::npos && ota.find("startWorker(\"ws_offer\")") != std::string::npos &&
+          ota.find("startWorker(\"https_check\")") != std::string::npos);
+    size_t wf = ota.find("if (!startWorker(\"ws_offer\"))"), st = ota.find("stageFromLoop(o);", wf);
+    CHECK(wf != std::string::npos && st != std::string::npos && st - wf < 300);
+    CHECK(ota.find("16384") == ota.find("kOtaStack = 16384") + 12);  // one stack size constant
+    CHECK(ota.find("update_begin_out_of_memory") != std::string::npos);
+  }
+}
+
 static void test_heap_guard() {
   using namespace pc;
   // 2.5.20 gate: record buffer arithmetic (mbedTLS 2.28, 16384 content, light poisoning)
@@ -2682,7 +2756,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.23" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.24" && !s35.found());
   }
 }
 
@@ -2812,7 +2886,7 @@ int main() {
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
-  test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot();
+  test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }
