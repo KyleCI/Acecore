@@ -50,10 +50,16 @@ powercell::thermal::OverTempGuard g_ot;
 bool g_otOff = false;
 uint32_t g_otLastTry = 0;
 
+// 2.5.20 diagnostic only: the reading that tripped the latch (deci-C), kept in NVS
+// next to ot_latch and logged when the latch is restored at boot. -32768 = unknown
+// (latched by an older build). No change to when the latch sets or clears.
+int16_t g_otTripC10 = INT16_MIN;
 void saveOverTemp() {
   Preferences p;
   if (!p.begin(kCutoffNs, false)) return;  // dirty stays set: retried next pass
   p.putUChar("ot_latch", g_ot.latched() ? 1 : 0);
+  if (g_ot.latched()) p.putShort("ot_c10", g_otTripC10);
+  else p.remove("ot_c10");
   p.end();
   g_ot.ackSaved();
 }
@@ -253,11 +259,15 @@ void begin() {
   if (!g_cutoff.outputOnAllowed()) holdAcOff();
   {  // over-temperature latch, same namespace. Missing key = not latched.
     uint8_t ot = 0;
-    if (nvs_open(kCutoffNs, NVS_READONLY, &h) == ESP_OK) { nvs_get_u8(h, "ot_latch", &ot); nvs_close(h); }
+    int16_t tripC10 = INT16_MIN;
+    if (nvs_open(kCutoffNs, NVS_READONLY, &h) == ESP_OK) { nvs_get_u8(h, "ot_latch", &ot); nvs_get_i16(h, "ot_c10", &tripC10); nvs_close(h); }
     g_ot.restore(ot != 0);
     if (g_ot.latched()) {
-      LOGW("PWR", "OVER_TEMP_RESTORED", "over-temperature latch from NVS; output held off until < %.0f C and a user on",
-           powercell::thermal::kOnAllowedBelowC);
+      g_otTripC10 = tripC10;
+      char trip[16];
+      if (tripC10 == INT16_MIN) snprintf(trip, sizeof trip, "unknown"); else snprintf(trip, sizeof trip, "%.1f C", tripC10 / 10.0f);
+      LOGW("PWR", "OVER_TEMP_RESTORED", "over-temperature latch from NVS (tripped at %s); output held off until < %.0f C and a user on",
+           trip, powercell::thermal::kOnAllowedBelowC);
       gateway::Result r = gateway::set(false, "over_temperature");
       g_otOff = r == gateway::Result::Ok;
     }
@@ -298,6 +308,7 @@ void service() {
     const bool ok = thermalNow(&c);
     if (g_ot.update(ok, c)) {
       g_otOff = false; g_otLastTry = 0;
+      g_otTripC10 = static_cast<int16_t>(lroundf(c * 10.0f));
       LOGE("PWR", "OVER_TEMP_CUTOFF", "system temperature %.1f C >= %.0f C: inverter output off (latched)", c, powercell::thermal::kCutoffC);
     }
     if (g_ot.dirty()) saveOverTemp();

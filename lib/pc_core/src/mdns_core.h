@@ -19,6 +19,15 @@ size_t hostLabel(const char *displayId, char *out, size_t cap);
 // usable characters. Always non-empty when mac is given and cap >= 11.
 size_t hostname(const char *displayId, const uint8_t mac[6], char *out, size_t cap);
 
+// 2.5.20: the first mDNS start of a boot waits for the first WS TLS connect (or
+// kTlsFirstMaxMs after the station got its IP), so the mDNS task stack, PCBs and
+// records (~5 KB of heap) are not carved out of the block the first handshake needs.
+// Never waits when the backend is disabled (no API key) or after a WS connect.
+constexpr uint32_t kTlsFirstMaxMs = 60000;
+inline bool waitForTls(bool backendEnabled, bool wsConnectedOnce, uint32_t ipAgeMs) {
+  return backendEnabled && !wsConnectedOnce && ipAgeMs < kTlsFirstMaxMs;
+}
+
 enum class Action : uint8_t { None, Start, Restart, Stop };
 
 // Decides when to (re)announce. allowed = station has an IP on the saved home

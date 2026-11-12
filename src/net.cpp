@@ -5,6 +5,7 @@
 #include "config.h"
 #include "log.h"
 #include "mdns_core.h"
+#include "backend_ws.h"
 #include "onb_core.h"
 #include "settings.h"
 
@@ -64,6 +65,13 @@ void serviceMdns(uint32_t now, bool allowed) {
   char host[pc::mdns::kHostCap];
   pc::mdns::hostname(id.gatewayName, id.mac, host, sizeof host);
   const uint32_t gen = g_gotIpGen;
+  static uint32_t ipGen = 0, ipAt = 0;
+  if (allowed && gen != ipGen) { ipGen = gen; ipAt = now; }
+  static bool waitLogged = false;
+  if (allowed && !g_mdns.running && pc::mdns::waitForTls(backend::enabled(), backend::reconnects() > 0, now - ipAt)) {
+    if (!waitLogged) { waitLogged = true; LOGI("WIFI", "MDNS_WAIT", "first WS TLS connect first (max %lu s)", (unsigned long)(pc::mdns::kTlsFirstMaxMs / 1000)); }
+    return;
+  }
   switch (g_mdns.decide(allowed, gen, host, now)) {
     case pc::mdns::Action::None: return;
     case pc::mdns::Action::Stop:

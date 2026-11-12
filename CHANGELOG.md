@@ -1,5 +1,23 @@
 # Collector firmware changelog
 
+## 2.5.20 (WS and OTA TLS start on a fragmented heap, Caleb 12 Nov 2026)
+
+On top of 2.5.19 (bbc5024). All four product images. Prompted by ACE-000001 (DSP 5 kW) on 2.5.18: `[MEM][HEAP_LOW] ws TLS deferred: largest=40948 < 40960 free=72064 min=47604`, repeating every 60 s, so no WS, no `ota_check`, no OTA.
+
+- **Root cause:** the pre-TLS memory guard demanded one free block of 40960 B. 2.5.18 holds about 2.5 KB more static DRAM than 2.5.13 (mDNS adds about 1.9 KB of `.bss` inside the precompiled `libmdns`, plus the hotspot `Update` object). Static DRAM ends where the first heap region starts, so that region shrank by the same amount. On this unit the largest block ended up 12 B under the threshold, though a 40948 B block holds both mbedTLS record buffers.
+- **New TLS guard** (`lib/pc_core/src/heap_guard.h`), evaluated only right before a new connect:
+  - free heap >= 51200 B (both record buffers 2 x 16736 B, about 13 KB handshake peak, about 4 KB Wi-Fi/lwIP margin; in v10 a second handshake with the WS up, heap_min about 44 KB, failed with -9984);
+  - largest block >= 35520 B (both record buffers + 2 KB): go;
+  - largest block 18432..35519 B: probe by allocating the two 16717 B record buffers with the mbedTLS caps and freeing them, go if both fit;
+  - largest block < 18432 B: wait. Backoff 5 s doubling to 60 s as before.
+  - The record size is derived from the precompiled sdkconfig (16384 content, no dynamic or asymmetric buffers): 13 + 16384 + 16 + 48 + 256 = 16717 B, plus 16 B heap header and light-poisoning canaries.
+- **WS guard only before a connect:** the guard ran on every WS pass until `WStype_CONNECTED`, so during the HTTP upgrade the TLS session's own buffers could fail it and stall the upgrade. It now runs only when `ws.loop()` would open a new TCP + TLS connection.
+- **Less static DRAM (5104 B on the DSP images):** the OTA download's 2 KB receive buffer is allocated after the TLS session is up (512 B stack fallback). The offline queue's restore and checkpoint buffers (3 KB each) are shared.
+- **mDNS waits for the first WS connect:** the first mDNS start of a boot waits until the WS has connected once, or at most 60 s after the IP. Never when the backend has no API key, never in hotspot-only mode (no mDNS there anyway).
+- **Diagnostics:** `WS TLS_UP` / `WS TLS_FAILED` with heap free and largest before and after each connect attempt and the mbedTLS error on failure (every attempt for the first 8, then failures once a minute). `MEM TLS_PROBE_OK` when the probe let a connect through. `HEAP_LOW` now names the reason (`low_free`, `low_block`, `probe_failed`) and both thresholds. `OTA DOWNLOAD_TLS_START` and `DOWNLOAD_TLS_UP` log the heap around the download handshake. `device_hello` carries `heap_free`, `heap_largest`, `heap_min` and `heap_largest_min` (telemetry already had them).
+- **Over-temperature latch (diagnostic only, DSP):** the reading that tripped the 80 C latch is saved as `ot_c10` (deci-C) next to `ot_latch` and logged in `OVER_TEMP_RESTORED` ("tripped at 84.3 C" or "unknown" for a latch set by an older build). When the latch sets and clears is unchanged.
+- Host tests for the guard arithmetic, the verdicts (including the ACE-000001 numbers), the probe path, the backoff and the mDNS wait.
+
 ## 2.5.19 (OTA test of the 2.5.18 updater)
 
 Version is 2.5.19 on all four product images so a unit already on 2.5.18 will accept the file. No other functional change on top of 6446e4d.

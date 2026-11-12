@@ -69,6 +69,21 @@ class DiagWsClient : public WebSocketsClient {
   }
  public:
   void resetProbe() { probeErr_ = probeErrno_ = 0; }
+  // 2.5.20: the next ws.loop() starts a new TCP + TLS connect (same test as
+  // WebSocketsClient::loop: transport down and the reconnect interval elapsed).
+  bool connectDue() {
+    if (_client.tcp && _client.status != WSC_NOT_CONNECTED && _client.tcp->connected()) return false;
+    return (millis() - _lastConnectionFail) >= _reconnectInterval;
+  }
+  bool transportUp() { return _client.tcp && _client.tcp->connected(); }
+  // mbedTLS error of the last connect attempt (the library keeps the client until the next attempt).
+  int lastTlsError(char *buf, size_t n) {
+#if defined(HAS_SSL)
+    if (_client.isSSL && _client.ssl) return _client.ssl->lastError(buf, n);
+#endif
+    if (n) buf[0] = 0;
+    return 0;
+  }
  protected:
   void clientDisconnect(WSclient_t *c) override {
     if (c->status != WSC_NOT_CONNECTED)
@@ -351,6 +366,11 @@ void sendHello() {
   onboarding::buildHello(doc);
   addIdentity(doc);
   addOtaHost(doc);
+  // 2.5.20: heap state at hello (the WS TLS session is already allocated here).
+  doc["heap_free"] = ESP.getFreeHeap();
+  doc["heap_largest"] = heapguard::heapLargest();
+  doc["heap_min"] = heapguard::heapMin();
+  doc["heap_largest_min"] = heapguard::heapLargestMin();
   if (send(doc)) onboarding::helloSent();
   JsonDocument pc_;
   if (onboarding::takePasscodeChanged(pc_)) { addIdentity(pc_); send(pc_); }
@@ -615,6 +635,29 @@ void buildHeaders() {
   g_hdrDirty = false; g_hdrAt = millis();
 }
 
+// 2.5.20 diagnostic: heap before/after each WS TCP+TLS connect attempt, and the mbedTLS
+// error on failure. Every attempt is logged for the first 8 this boot, then failures
+// once a minute (successes always).
+uint32_t g_attempts = 0, g_lastAttemptLog = 0;
+void logConnectAttempt(uint32_t preFree, uint32_t preLargest, uint32_t ms) {
+  ++g_attempts;
+  // the TLS session is up once the transport is connected (WS upgrade may still be pending)
+  const bool up = g_connected || ws.transportUp();
+  const uint32_t now = millis();
+  if (!up && g_attempts > 8 && now - g_lastAttemptLog < 60000) return;
+  g_lastAttemptLog = now;
+  char err[64] = {0};
+  const int tls = up ? 0 : ws.lastTlsError(err, sizeof err);
+  if (up)
+    LOGI("WS", "TLS_UP", "attempt=%lu ms=%lu free %lu->%lu largest %lu->%lu min=%lu", (unsigned long)g_attempts, (unsigned long)ms,
+         (unsigned long)preFree, (unsigned long)ESP.getFreeHeap(), (unsigned long)preLargest, (unsigned long)ESP.getMaxAllocHeap(),
+         (unsigned long)ESP.getMinFreeHeap());
+  else
+    LOGW("WS", "TLS_FAILED", "attempt=%lu ms=%lu tls=%d %s free %lu->%lu largest %lu->%lu min=%lu", (unsigned long)g_attempts, (unsigned long)ms,
+         tls, err, (unsigned long)preFree, (unsigned long)ESP.getFreeHeap(), (unsigned long)preLargest, (unsigned long)ESP.getMaxAllocHeap(),
+         (unsigned long)ESP.getMinFreeHeap());
+}
+
 void serviceOnce(bool locked) {
   if (!g_inited) return;
   if (ota::networkBusy()) return;  // only during an actual firmware install (WS released by pauseForOta)
@@ -644,10 +687,17 @@ void serviceOnce(bool locked) {
     LOGI("WS", "CONNECTING", "%s://%s:%u%s", POWERCELL_WS_TLS ? "wss" : "ws", POWERCELL_WS_HOST, POWERCELL_WS_PORT, g_path.c_str());
   }
   if (!g_connected && ota::tlsBusy()) return;  // one TLS session at a time: no WS (re)handshake during an OTA check
+  // 2.5.20: the memory guard runs only when this ws.loop() would start a new connect.
+  // (Before, it ran on every pass until WStype_CONNECTED, so the TLS session's own
+  // record buffers could fail the guard during the HTTP upgrade and stall it.)
+  const bool attempt = !g_connected && ws.connectDue();
 #if POWERCELL_WS_TLS
-  if (!g_connected && !heapguard::tlsAllowed(g_tlsBackoff, "ws")) return;  // ws.loop() would start the handshake
+  if (attempt && !heapguard::tlsAllowed(g_tlsBackoff, "ws")) return;
 #endif
+  const uint32_t preFree = attempt ? ESP.getFreeHeap() : 0, preLargest = attempt ? ESP.getMaxAllocHeap() : 0;
+  const uint32_t tAttempt = millis();
   ws.loop();
+  if (attempt) logConnectAttempt(preFree, preLargest, millis() - tAttempt);
   if (!g_connected || !locked) return;  // just connected: the next (locked) pass sends
   if (onboarding::helloDue() && millis() - g_connectedAt > 1000) sendHello();
   if (now - g_lastTelemetry >= (powerguard::lowPower() ? TELEMETRY_LOW_POWER_MS : TELEMETRY_PERIOD_MS) || (g_telemetryNow && now - g_lastTelemetry >= 250)) { g_telemetryNow = false; sendTelemetry(); }
@@ -687,6 +737,7 @@ bool sendOtaCheck(bool healthy, const char *lastStatus, const char *lastError, c
 }
 
 bool connected() { return g_inited && g_connected; }
+bool enabled() { return g_inited; }
 uint32_t connectedForMs() { return connected() ? millis() - g_connectedAt : 0; }
 bool healthy() { return connected() && millis() - g_connectedAt > 2000; }
 void publishState() {  // also called from the async web server task

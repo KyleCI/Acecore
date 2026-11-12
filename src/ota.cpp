@@ -12,6 +12,8 @@
 #include <time.h>
 #include <algorithm>
 #include <atomic>
+#include <memory>
+#include <new>
 #include <string>
 #include <string.h>
 #include "ca_cert.h"
@@ -176,6 +178,8 @@ bool install(const String &base, const String &apiKey, const String &path, const
   http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
   int code = -1;
   const uint32_t t0 = millis();
+  LOGI("OTA", "DOWNLOAD_TLS_START", "free_heap=%lu largest=%lu min=%lu", (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(),
+       (unsigned long)ESP.getMinFreeHeap());
   for (int attempt = 0; attempt < 2; ++attempt) {
     if (!http.begin(client, base + path)) { r.fail = Fail::UrlInvalid; LOGE("OTA", "DOWNLOAD", "url refused by http.begin"); return false; }
     addHeaders(http, apiKey, "GET", base + path, String());
@@ -211,8 +215,17 @@ bool install(const String &base, const String &apiKey, const String &path, const
     LOGE("OTA", "DOWNLOAD", "esp_ota_begin err=0x%x", (unsigned)be);
     http.end(); return false;
   }
+  LOGI("OTA", "DOWNLOAD_TLS_UP", "http=%d ms=%lu free_heap=%lu largest=%lu", code, (unsigned long)(millis() - t0), (unsigned long)ESP.getFreeHeap(),
+       (unsigned long)ESP.getMaxAllocHeap());
   mbedtls_sha256_context hash; mbedtls_sha256_init(&hash); mbedtls_sha256_starts_ret(&hash, 0);
-  static uint8_t buf[2048];
+  // 2.5.20: the 2 KB receive buffer is taken from the heap after the TLS session is up
+  // (it was a static array: 2 KB of DRAM held for the whole uptime, which shrinks the heap
+  // every TLS handshake needs). If 2 KB is not available, a 512 B stack buffer is used.
+  std::unique_ptr<uint8_t[]> heapBuf(new (std::nothrow) uint8_t[2048]);
+  uint8_t smallBuf[512];
+  uint8_t *buf = heapBuf ? heapBuf.get() : smallBuf;
+  const size_t bufLen = heapBuf ? 2048 : sizeof smallBuf;
+  if (!heapBuf) LOGW("OTA", "DOWNLOAD_BUF", "2 KB receive buffer unavailable; using 512 B");
   uint8_t result[32];
   size_t received = 0;
   bool identityFound = false;
@@ -226,7 +239,7 @@ bool install(const String &base, const String &apiKey, const String &path, const
     if (millis() - lastByte > kReadMs) { loop = Fail::Stalled; break; }
     int avail = stream->available();
     if (!avail) { vTaskDelay(pdMS_TO_TICKS(2)); continue; }
-    size_t count = std::min(size - received, std::min(sizeof buf, static_cast<size_t>(avail)));
+    size_t count = std::min(size - received, std::min(bufLen, static_cast<size_t>(avail)));
     int rd = stream->read(buf, count);
     if (rd <= 0) { loop = Fail::ReadError; break; }
     if (received == 0 && buf[0] != 0xE9) { loop = Fail::VerifyMagic; break; }
@@ -337,7 +350,8 @@ void handleOffer(const String &base, const String &key, String newVersion, Strin
     vTaskDelay(pdMS_TO_TICKS(100));
   }
   // The WS is now closed (pauseForOta), so only the download's TLS session will be open.
-  // Memory guard: wait (5 s doubling, up to ~75 s total) for a 45 KB block.
+  // Memory guard (2.5.20 rule, heap_guard.h): wait (5 s doubling, up to ~75 s total)
+  // until free >= 50 KB and both mbedTLS record buffers fit.
   {
     uint32_t t0 = millis();
     while (!heapguard::tlsAllowed(g_dlBackoff, "ota_download")) {

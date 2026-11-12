@@ -424,7 +424,7 @@ void buildTelemetry(JsonDocument &doc) {
   sys["uptime_s"] = millis() / 1000;
   sys["free_heap"] = ESP.getFreeHeap();
   sys["heap_min"] = heapguard::heapMin();          // lowest free heap since boot
-  sys["heap_largest"] = heapguard::heapLargest();  // largest free block now (TLS needs >= 45 KB)
+  sys["heap_largest"] = heapguard::heapLargest();  // largest free block now (TLS gate: heap_guard.h)
   sys["heap_largest_min"] = heapguard::heapLargestMin();
   sys["wifi_rssi"] = WiFi.RSSI();
   sys["offline_pending"] = offlineq::pending();

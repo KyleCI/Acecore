@@ -1580,17 +1580,45 @@ static void test_socket_rules() {
 
 static void test_heap_guard() {
   using namespace pc;
+  // 2.5.20 gate: record buffer arithmetic (mbedTLS 2.28, 16384 content, light poisoning)
+  CHECK(kTlsRecordBuf == 13 + 16384 + 16 + 48 + 256);
+  CHECK(kTlsRecordAlloc == 16736 && kTlsPairBlock == 35520 && kTlsMinBlock == 18432 && kTlsMinFree == 51200);
+  // ACE-000001 on 2.5.18 (12 Nov 2026): largest=40948 free=72064 was refused by the old
+  // 40960 rule; it holds both record buffers, so it now goes without a probe.
+  CHECK(tlsHeapVerdict(40948, 72064) == TlsHeap::Ok);
+  CHECK(tlsHeapVerdict(kTlsPairBlock, kTlsMinFree) == TlsHeap::Ok);
+  CHECK(tlsHeapVerdict(kTlsPairBlock - 1, 80000) == TlsHeap::Probe);
+  CHECK(tlsHeapVerdict(kTlsMinBlock, 80000) == TlsHeap::Probe);
+  CHECK(tlsHeapVerdict(kTlsMinBlock - 1, 80000) == TlsHeap::LowBlock);
+  CHECK(tlsHeapVerdict(60000, kTlsMinFree - 1) == TlsHeap::LowFree);  // v10: ~44 KB left -> -9984
+  CHECK(tlsHeapVerdict(44000, 44000) == TlsHeap::LowFree);
+  CHECK(!strcmp(tlsHeapName(TlsHeap::LowBlock), "low_block") && !strcmp(tlsHeapName(TlsHeap::Probe), "probe"));
+  {
+    int probes = 0;
+    auto yes = [&] { ++probes; return true; };
+    auto no = [&] { ++probes; return false; };
+    TlsHeap why = TlsHeap::Ok;
+    CHECK(tlsHeapOk(40948, 72064, no, &why) && why == TlsHeap::Ok && probes == 0);       // no probe needed
+    CHECK(tlsHeapOk(30000, 72064, yes, &why) && why == TlsHeap::Probe && probes == 1);   // two blocks fit
+    CHECK(!tlsHeapOk(30000, 72064, no, &why) && why == TlsHeap::Probe && probes == 2);   // probe failed
+    CHECK(!tlsHeapOk(17000, 72064, yes, &why) && why == TlsHeap::LowBlock && probes == 2);  // never probes
+    CHECK(!tlsHeapOk(60000, 50000, yes, &why) && why == TlsHeap::LowFree && probes == 2);
+  }
   TlsBackoff b;
-  CHECK(b.check(0, 60000) == TlsBackoff::Go);
-  CHECK(b.check(100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 5000);
-  CHECK(b.check(200, 90000) == TlsBackoff::Wait);           // still in backoff even if heap recovered
-  CHECK(b.check(5100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 10000);
-  CHECK(b.check(15100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 20000);
-  CHECK(b.check(35100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 40000);
-  CHECK(b.check(75100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 60000);
-  CHECK(b.check(135100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 60000);  // capped
-  CHECK(b.check(195100, 40960) == TlsBackoff::Go && b.delayMs() == 0);
-  CHECK(b.check(195200, 40959) == TlsBackoff::WaitLog && b.delayMs() == 5000);  // reset after success
+  CHECK(b.due(0) && b.step(0, true) == TlsBackoff::Go);
+  CHECK(b.step(100, false) == TlsBackoff::WaitLog && b.delayMs() == 5000);
+  CHECK(!b.due(200) && b.step(200, true) == TlsBackoff::Wait);  // still in backoff even if heap recovered
+  CHECK(b.due(5100) && b.step(5100, false) == TlsBackoff::WaitLog && b.delayMs() == 10000);
+  CHECK(b.step(15100, false) == TlsBackoff::WaitLog && b.delayMs() == 20000);
+  CHECK(b.step(35100, false) == TlsBackoff::WaitLog && b.delayMs() == 40000);
+  CHECK(b.step(75100, false) == TlsBackoff::WaitLog && b.delayMs() == 60000);
+  CHECK(b.step(135100, false) == TlsBackoff::WaitLog && b.delayMs() == 60000);  // capped
+  CHECK(b.step(195100, true) == TlsBackoff::Go && b.delayMs() == 0);
+  CHECK(b.step(195200, false) == TlsBackoff::WaitLog && b.delayMs() == 5000);  // reset after success
+  // mDNS waits for the first WS TLS connect, at most 60 s after the IP, only with a backend
+  CHECK(pc::mdns::waitForTls(true, false, 0) && pc::mdns::waitForTls(true, false, 59999));
+  CHECK(!pc::mdns::waitForTls(true, false, 60000));
+  CHECK(!pc::mdns::waitForTls(true, true, 0) && !pc::mdns::waitForTls(false, false, 0));
   OtaTransport t;
   CHECK(t.support() == OtaTransport::Unknown && t.useWs(true) && !t.useWs(false));
   t.sent(1000);
@@ -2544,7 +2572,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.19" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.20" && !s35.found());
   }
 }
 
