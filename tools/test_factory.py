@@ -63,7 +63,7 @@ class T(unittest.TestCase):
         self.assertIsNone(f.model_hw_mismatch_warning("PC5K", ""))
 
     def test_ota_model_from_info(self):
-        text = ("device_id=F42DC9C090A8 mac=F4:2D:C9:C0:90:A8 gateway=ACE-000001 fw=2.5.13\n"
+        text = ("device_id=F42DC9C090A8 mac=F4:2D:C9:C0:90:A8 gateway=ACE-000001 fw=2.5.17\n"
                 "model=PC5K rated_kva=5.0 usable_kw=4.5\n"
                 "hardware_model=pc-dsp011-5kw\n")
         st = f.parse_info(text)
@@ -77,7 +77,7 @@ class T(unittest.TestCase):
         with self.assertRaises(ValueError):
             f.require_ota_model({})
         body = f.register_payload("F42DC9C090A8", "ab" * 32, "F4:2D:C9:C0:90:A8",
-                                  "ACE-000001", "2.5.13", "pc-dsp011-5kw")
+                                  "ACE-000001", "2.5.17", "pc-dsp011-5kw")
         self.assertEqual(body["onboarding_version"], 2)
         self.assertIs(body["passcode_is_default"], True)
         self.assertNotIn("passcode_fingerprint", body)
@@ -86,14 +86,14 @@ class T(unittest.TestCase):
             "device_secret": "ab" * 32,
             "mac": "F4:2D:C9:C0:90:A8",
             "gateway_id": "ACE-000001",
-            "firmware_version": "2.5.13",
+            "firmware_version": "2.5.17",
             "device_kind": "collector",
             "model": "pc-dsp011-5kw",
             "onboarding_version": 2,
             "passcode_is_default": True,
         })
         with self.assertRaises(ValueError):
-            f.register_payload("F42DC9C090A8", "secret", "", "ACE-000001", "2.5.13", "PC5K")
+            f.register_payload("F42DC9C090A8", "secret", "", "ACE-000001", "2.5.17", "PC5K")
         label = f.label_file_text("PWC2;S=Powercell-000001;P=abc;D=ACE-000001",
                                   ["LABEL ap_pass=abc", "LABEL_QR WIFI:T:WPA;S:x;P:y;;"],
                                   "pc-stm01-35kw")

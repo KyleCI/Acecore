@@ -1,8 +1,12 @@
 # Collector firmware changelog
 
+## 2.5.17 (OTA test of the 12 Nov "one build with everything" image)
+
+Version is 2.5.17 on all four product images so a unit already on 2.5.13 (or an earlier test image 2.5.14 / 2.5.15 / 2.5.16) will accept the file. No other functional change on top of 3a56262.
+
 ## Unreleased (one build with everything Caleb asked for, 12 Nov 2026)
 
-Version stays 2.5.13.
+Shipped as 2.5.17 for the OTA test (this tree was held at 2.5.13 until Caleb asked for the bump).
 
 **Battery warnings, Caleb's 8 Nov policy, all four images**
 - The local `/events` battery notification and the cloud `battery_soc` event used 20/10/5. Now: `battery_low` at <= 25 %, `battery_critical` at <= 15 % (the one-time shutdown warning, one per episode), output off at <= 10 % (the existing `battery_critical` latch event, code `soc_10pct`), restart blocked until 15 %.

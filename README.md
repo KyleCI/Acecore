@@ -233,7 +233,7 @@ REBOOT
 - **Gateway name:** it changes from `ACE4447` / `ACE9678` to `ACE-XXXXXX` unless you `SET gw_name ACE9678` on that unit. The backend should accept MAC-based gateway targets, which 2.0 accepts.
 - **Network:** the static IP from 1.0.x is replaced by DHCP. The setup AP SSID changes to `Powercell-XXXXXX`.
 - **Not migrated:** the old `energy_wh`, and the 2.0.0 ESP energy counter (`pc_energy` NVS) is no longer used; the old offline queue (JSON in `offline_sync/events`).
-- **Version:** the four product images report `2.5.13`. Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
+- **Version:** the four product images report `2.5.17`. Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
 - **STM32 link:** the STM32 still sends 9600 text, so the default `legacy_text` works with today's STM32 firmware. Switch both sides to framed together.
 
 ## Telemetry fields (WS `telemetry`, additive to 1.0.x)
