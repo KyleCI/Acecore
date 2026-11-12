@@ -25,9 +25,19 @@ namespace pc {
 //  - largest block in [kTlsMinBlock, kTlsPairBlock): the caller probes by allocating the
 //    two record buffers for real (same caps as mbedTLS) and freeing them: go if both fit.
 //  - largest block < kTlsMinBlock: no record buffer fits anywhere: wait.
+// Inputs (2.5.22): free and largest of the heap mbedTLS allocates from, i.e.
+// MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT. Up to 2.5.21 they came from ESP.getFreeHeap() /
+// ESP.getMaxAllocHeap(), which use MALLOC_CAP_INTERNAL alone and so also count the IRAM
+// heap (0x400A0000 minus the end of IRAM code, 43660 B on the 2.5.20 image, one 40948 B
+// free block after the allocator's own header). That block is 32-bit access only and is
+// never used by mbedTLS, Strings or JSON, so it never changes: the 40948 in every
+// ACE-000001 log (2.5.18 HEAP_LOW, 2.5.20 TLS_UP after, 2.5.20 DOWNLOAD_TLS_START) is
+// that IRAM block, and "free" was about 41 KB higher than the DRAM really available.
+// The 2.5.20 gate therefore passed (largest 40948 >= 35520) and skipped the probe while
+// DRAM could not hold the two record buffers: DOWNLOAD_TLS tls=-32512 (-0x7F00
+// SSL_ALLOC_FAILED) at ssl_setup, 235 ms after the start.
 // History: v12..2.5.19 used one fixed 40960 B block threshold. ACE-000001 on 2.5.18
-// (12 Nov 2026) sat at largest=40948 free=72064, 12 B short, and never connected,
-// although 40948 B holds both record buffers.
+// (12 Nov 2026) sat at largest=40948 free=72064 (IRAM block, see above) and never connected.
 constexpr uint32_t kTlsRecordBuf = 16717;    // MBEDTLS_SSL_IN_BUFFER_LEN == MBEDTLS_SSL_OUT_BUFFER_LEN
 constexpr uint32_t kHeapAllocOverhead = 16;  // multi_heap block header 4 + light poisoning 12
 constexpr uint32_t kTlsRecordAlloc = (kTlsRecordBuf + kHeapAllocOverhead + 3u) & ~3u;  // 16736

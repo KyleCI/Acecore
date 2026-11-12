@@ -18,6 +18,14 @@
 // (free heap > 30 KB) confirms instead, within the same OTA_VERIFY_DEADLINE_MS.
 namespace ota {
 void begin(bool (*prepareUpdate)(), bool (*acquireNetwork)());
+// 2.5.22 two-phase OTA (lib/pc_core/src/ota_boot.h). Call from setup() right after
+// net::begin(), before the web server, ESP-NOW and the backend WS. If a staged job is in
+// NVS it waits for the station IP and NTP, downloads and verifies the image (same TLS,
+// CA, sha256, identity and version checks) and reboots into it; on failure it records
+// last_status/last_error/last_error_detail and returns so the boot continues.
+// Returns true if a job was attempted. Blocks for at most about 7 minutes.
+bool bootJob(bool (*prepareUpdate)());
+void clearBootJob();  // console OTA_RETRY: forget the staged job and the abandoned sha256
 void service(bool healthy);
 bool busy();         // an image is being downloaded/installed
 bool networkBusy();  // an install owns the network: the WebSocket is paused

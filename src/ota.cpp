@@ -29,8 +29,9 @@
 #include "lan_ota.h"
 #include "power_guard.h"
 #include "sockets/sockets.h"
+#include "factory_id.h"
+#include <ota_boot.h>
 #include <Update.h>
-#include <new>
 
 // Keep a new image in PENDING_VERIFY until the application decides.
 extern "C" bool verifyRollbackLater() { return true; }
@@ -52,7 +53,7 @@ pc::OtaGate g_gate;
 String g_status = "idle", g_error, g_detail, g_deployment, g_installing;
 // OTA check transport (WS first, HTTPS fallback) and the TLS memory guards.
 pc::OtaTransport g_tx;
-pc::TlsBackoff g_checkBackoff, g_dlBackoff;
+pc::TlsBackoff g_checkBackoff;
 bool g_forceHttps = false;
 // 2.5.18 timeouts (were 10 s connect / 10 s handshake / 15 s read in v11..2.5.17):
 // TCP connect 15 s, TLS handshake 45 s, socket read and body stall 30 s, body total 180 s.
@@ -161,11 +162,12 @@ bool checkRequest(const String &base, const String &apiKey, String *response) {
   bool ok = code == 200 && size != 0 && size <= 4096;  // -1 = chunked, bounded below
   if (ok && response) { *response = http.getString(); ok = response->length() > 0 && response->length() <= 4096; }
   http.end();
-  LOGI("OTA", "CHECK", "http=%d free_heap=%lu largest=%lu", code, (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+  LOGI("OTA", "CHECK", "http=%d free_heap=%lu largest=%lu", code, (unsigned long)heapguard::freeNow(), (unsigned long)heapguard::largestNow());
   return ok;
 }
 
-struct DlResult { pc::otaerr::Fail fail = pc::otaerr::Fail::None; int http = 0; char detail[128] = {0}; };
+// 2.5.22: detail grew to 160 B for the heap numbers; tls = mbedTLS error of a failed connect.
+struct DlResult { pc::otaerr::Fail fail = pc::otaerr::Fail::None; int http = 0, tls = 0; char detail[160] = {0}; };
 
 bool install(const String &base, const String &apiKey, const String &path, const String &digest, const String &newVersion, uint32_t expectSize,
              DlResult &r) {
@@ -178,8 +180,10 @@ bool install(const String &base, const String &apiKey, const String &path, const
   http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
   int code = -1;
   const uint32_t t0 = millis();
-  LOGI("OTA", "DOWNLOAD_TLS_START", "free_heap=%lu largest=%lu min=%lu", (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(),
-       (unsigned long)ESP.getMinFreeHeap());
+  // 2.5.22: DRAM (8-bit) numbers, the heap mbedTLS allocates from; iram = 32-bit-only heap.
+  const uint32_t f0 = heapguard::freeNow(), l0 = heapguard::largestNow(), m0 = heapguard::heapMin();
+  LOGI("OTA", "DOWNLOAD_TLS_START", "free_heap=%lu largest=%lu min=%lu iram=%lu", (unsigned long)f0, (unsigned long)l0, (unsigned long)m0,
+       (unsigned long)heapguard::iramFree());
   for (int attempt = 0; attempt < 2; ++attempt) {
     if (!http.begin(client, base + path)) { r.fail = Fail::UrlInvalid; LOGE("OTA", "DOWNLOAD", "url refused by http.begin"); return false; }
     addHeaders(http, apiKey, "GET", base + path, String());
@@ -195,8 +199,12 @@ bool install(const String &base, const String &apiKey, const String &path, const
       // Same diagnostic as checkRequest. tls=0: failed before TLS (DNS / TCP); tls=-1: handshake timeout.
       char err[96] = {0};
       int tlsErr = client.lastError(err, sizeof err);
-      LOGW("OTA", "DOWNLOAD_TLS", "http=%d tls=%d %s ms=%lu", code, tlsErr, err, (unsigned long)(millis() - t0));
-      snprintf(r.detail, sizeof r.detail, "http=%d tls=%d %s", code, tlsErr, err);
+      r.tls = tlsErr;
+      LOGW("OTA", "DOWNLOAD_TLS", "http=%d tls=%d %s ms=%lu free_heap=%lu largest=%lu", code, tlsErr, err, (unsigned long)(millis() - t0),
+           (unsigned long)heapguard::freeNow(), (unsigned long)heapguard::largestNow());
+      // 2.5.22: the heap at the handshake start goes into last_error_detail.
+      snprintf(r.detail, sizeof r.detail, "http=%d tls=%d %.48s", code, tlsErr, err);
+      pc::bootota::appendHeap(r.detail, sizeof r.detail, f0, l0, m0);
 #else
       snprintf(r.detail, sizeof r.detail, "http=%d", code);
 #endif
@@ -204,7 +212,7 @@ bool install(const String &base, const String &apiKey, const String &path, const
       snprintf(r.detail, sizeof r.detail, "http=%d length=%d expect=%lu slot=%u", code, len, (unsigned long)expectSize, (unsigned)part->size);
     }
     LOGE("OTA", "DOWNLOAD", "http=%d length=%d partition=%u free_heap=%lu largest=%lu", code, len, (unsigned)part->size,
-         (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+         (unsigned long)heapguard::freeNow(), (unsigned long)heapguard::largestNow());
     http.end(); return false;
   }
   const size_t size = static_cast<size_t>(len);
@@ -215,8 +223,8 @@ bool install(const String &base, const String &apiKey, const String &path, const
     LOGE("OTA", "DOWNLOAD", "esp_ota_begin err=0x%x", (unsigned)be);
     http.end(); return false;
   }
-  LOGI("OTA", "DOWNLOAD_TLS_UP", "http=%d ms=%lu free_heap=%lu largest=%lu", code, (unsigned long)(millis() - t0), (unsigned long)ESP.getFreeHeap(),
-       (unsigned long)ESP.getMaxAllocHeap());
+  LOGI("OTA", "DOWNLOAD_TLS_UP", "http=%d ms=%lu free_heap=%lu largest=%lu", code, (unsigned long)(millis() - t0), (unsigned long)heapguard::freeNow(),
+       (unsigned long)heapguard::largestNow());
   mbedtls_sha256_context hash; mbedtls_sha256_init(&hash); mbedtls_sha256_starts_ret(&hash, 0);
   // 2.5.20: the 2 KB receive buffer is taken from the heap after the TLS session is up
   // (it was a static array: 2 KB of DRAM held for the whole uptime, which shrinks the heap
@@ -269,6 +277,69 @@ bool install(const String &base, const String &apiKey, const String &path, const
   if (ee != ESP_OK) { r.fail = Fail::FinalizeFailed; snprintf(r.detail, sizeof r.detail, "set_boot=0x%x", (unsigned)ee); return false; }
   LOGI("OTA", "DOWNLOAD_OK", "bytes=%u ms=%lu", (unsigned)size, (unsigned long)(millis() - t0));
   return true;
+}
+
+// ---- 2.5.22 two-phase OTA: the boot job (lib/pc_core/src/ota_boot.h) ----
+// NVS pc_ota: bj_ver, bj_path (path on the OTA base), bj_sha, bj_size, bj_try (attempts
+// started), bj_run (true = run at the next boot; false = spent, kept for the count),
+// ab_sha (abandoned sha256: never staged again until cleared).
+using pc::bootota::Job;
+String g_abSha;
+bool loadJob(Job &j, bool &run) {
+  Preferences p;
+  run = false;
+  if (!prefsOpenRO(p, NS)) return false;
+  String v = prefsStr(p, "bj_ver"), path = prefsStr(p, "bj_path"), sha = prefsStr(p, "bj_sha");
+  j.size = p.getUInt("bj_size", 0); j.tries = p.getUChar("bj_try", 0); run = p.getBool("bj_run", false);
+  p.end();
+  if (v.isEmpty() && sha.isEmpty()) return false;
+  strlcpy(j.version, v.c_str(), sizeof j.version); strlcpy(j.path, path.c_str(), sizeof j.path); strlcpy(j.sha, sha.c_str(), sizeof j.sha);
+  return true;
+}
+void saveJob(const Job &j, bool run) {
+  Preferences p;
+  if (!p.begin(NS, false)) return;
+  p.putString("bj_ver", j.version); p.putString("bj_path", j.path); p.putString("bj_sha", j.sha);
+  p.putUInt("bj_size", j.size); p.putUChar("bj_try", j.tries); p.putBool("bj_run", run);
+  p.end();
+}
+void clearJob() {
+  Preferences p;
+  if (!p.begin(NS, false)) return;
+  for (const char *k : {"bj_ver", "bj_path", "bj_sha", "bj_size", "bj_try", "bj_run"}) if (p.isKey(k)) p.remove(k);
+  p.end();
+}
+void setAbandoned(const char *sha) {
+  g_abSha = sha ? sha : "";
+  Preferences p;
+  if (!p.begin(NS, false)) return;
+  if (g_abSha.length()) p.putString("ab_sha", g_abSha); else if (p.isKey("ab_sha")) p.remove("ab_sha");
+  p.end();
+}
+// Store the job and reboot into the boot path. Returns only when it was not staged (the
+// same sha256 already used every attempt): the caller lets the WS reconnect.
+void stageAndReboot(const String &version, const char *path, const String &digest, uint32_t size, const char *err, const char *detail) {
+  Job prev; bool prevRun = false;
+  const bool havePrev = loadJob(prev, prevRun);
+  Job j;
+  strlcpy(j.version, version.c_str(), sizeof j.version); strlcpy(j.path, path, sizeof j.path); strlcpy(j.sha, digest.c_str(), sizeof j.sha);
+  j.size = size;
+  j.tries = pc::bootota::stageTries(havePrev ? prev.sha : "", havePrev ? prev.tries : 0, j.sha);
+  if (pc::bootota::stageWouldExceed(j.tries)) {
+    LOGE("OTA", "BOOT_ABANDONED", "version=%s: %u boot attempts used; not staged again", j.version, (unsigned)j.tries);
+    setAbandoned(j.sha); clearJob();
+    char d[160]; snprintf(d, sizeof d, "%s", detail && *detail ? detail : "");
+    pc::bootota::appendBoot(d, sizeof d, j.tries, true);
+    saveStatus("failed", err && *err ? err : "boot_ota_abandoned", d);
+    return;
+  }
+  saveJob(j, true);
+  g_deployment = version;
+  saveStatus("boot_pending", err ? err : "", detail ? detail : "");
+  LOGW("OTA", "BOOT_STAGED", "version=%s attempt=%u/%u: rebooting to download before the WS, mDNS and web start (free_heap=%lu largest=%lu)",
+       j.version, (unsigned)(j.tries + 1), (unsigned)pc::bootota::kMaxTries, (unsigned long)heapguard::freeNow(), (unsigned long)heapguard::largestNow());
+  delay(250);
+  ESP.restart();
 }
 
 // Response (FirmwareService::check): {"status":"success","update_available":bool,
@@ -342,6 +413,12 @@ void handleOffer(const String &base, const String &key, String newVersion, Strin
   }
   const esp_partition_t *next = esp_ota_get_next_update_partition(nullptr);
   if (size && next && size > next->size) { LOGW("OTA", "JOB_REJECTED", "size=%lu > partition %lu", (unsigned long)size, (unsigned long)next->size); return; }
+  // 2.5.22: this exact image already used every boot attempt: do not pause the WS for it.
+  if (pc::bootota::offerAbandoned(digest.c_str(), g_abSha.c_str())) {
+    LOGW("OTA", "JOB_REJECTED", "version=%s abandoned after %u boot attempts (new sha256 or console OTA_RETRY to retry)", newVersion.c_str(),
+         (unsigned)pc::bootota::kMaxTries);
+    return;
+  }
   // Ask the main loop to release the WebSocket, then wait (the socket keeps running meanwhile).
   g_installing = newVersion;  // the main loop announces ota_status installing before granting
   g_gate.requestInstall(millis());
@@ -350,13 +427,24 @@ void handleOffer(const String &base, const String &key, String newVersion, Strin
     vTaskDelay(pdMS_TO_TICKS(100));
   }
   // The WS is now closed (pauseForOta), so only the download's TLS session will be open.
-  // Memory guard (2.5.20 rule, heap_guard.h): wait (5 s doubling, up to ~75 s total)
-  // until free >= 50 KB and both mbedTLS record buffers fit.
+  // 2.5.22: give the WS task and lwIP a moment to free the old session, log what came back,
+  // then the strict gate (8-bit DRAM: free >= 50 KB and both record buffers fit, probed).
+  // No room: the job goes to the boot path (ota_boot.h) instead of waiting for a heap
+  // that a fragmented DRAM does not give back.
   {
-    uint32_t t0 = millis();
-    while (!heapguard::tlsAllowed(g_dlBackoff, "ota_download")) {
-      if (millis() - t0 > 75000) { LOGW("OTA", "DEFERRED", "heap too fragmented for the download; WS reconnects, retry next check"); return; }
-      vTaskDelay(pdMS_TO_TICKS(500));
+    const uint32_t f1 = heapguard::freeNow(), l1 = heapguard::largestNow();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    pc::TlsHeap why = pc::TlsHeap::Ok;
+    const bool fits = heapguard::tlsFitsNow(&why);
+    LOGI("OTA", "HEAP_WS_RELEASED", "free_heap %lu->%lu largest %lu->%lu min=%lu iram=%lu gate=%s%s", (unsigned long)f1,
+         (unsigned long)heapguard::freeNow(), (unsigned long)l1, (unsigned long)heapguard::largestNow(), (unsigned long)heapguard::heapMin(),
+         (unsigned long)heapguard::iramFree(), pc::tlsHeapName(why), (why == pc::TlsHeap::Probe && !fits) ? "_failed" : "");
+    if (pc::bootota::route(fits) == pc::bootota::Route::Stage) {
+      char d[160];
+      snprintf(d, sizeof d, "in_place_gate=%s%s", pc::tlsHeapName(why), why == pc::TlsHeap::Probe ? "_failed" : "");
+      pc::bootota::appendHeap(d, sizeof d, heapguard::freeNow(), heapguard::largestNow(), heapguard::heapMin());
+      stageAndReboot(newVersion, path, digest, size, "", d);
+      return;  // abandoned: the WS reconnects
     }
   }
   g_deployment = newVersion;
@@ -379,6 +467,11 @@ void handleOffer(const String &base, const String &key, String newVersion, Strin
     pc::otaerr::code(dl.fail == pc::otaerr::Fail::None ? pc::otaerr::Fail::FinalizeFailed : dl.fail, dl.http, ec, sizeof ec);
     saveStatus("failed", ec, dl.detail);
     LOGE("OTA", "FAILED", "%s %s", ec, dl.detail);
+    // 2.5.22: the handshake ran out of heap in place: retry the same job on the boot path.
+    if (pc::bootota::inPlaceFallback(dl.fail == pc::otaerr::Fail::ConnectFailed, dl.tls)) {
+      g_updating = false;
+      stageAndReboot(newVersion, path, digest, size, ec, dl.detail);
+    }
   }
   g_updating = false;
 }
@@ -389,10 +482,12 @@ void worker(void *) {
   g_running = false;
   vTaskDelete(nullptr);
 }
-}  // namespace
 
-void begin(bool (*prepare)(), bool (*acquire)()) {
-  g_prepare = prepare; g_acquire = acquire;
+// Boot-time state, once per boot (bootJob() runs before begin()).
+bool g_loaded = false;
+void loadState() {
+  if (g_loaded) return;
+  g_loaded = true;
   Preferences p;
   String expected;
   if (prefsOpenRO(p, NS)) {
@@ -408,6 +503,123 @@ void begin(bool (*prepare)(), bool (*acquire)()) {
   g_pending = esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
   g_confirmed = !g_pending;
   if (g_status == "rebooting" && expected != POWERCELL_FIRMWARE_VERSION) saveStatus("failed", "rolled_back");
+  if (prefsOpenRO(p, NS)) { g_abSha = prefsStr(p, "ab_sha"); p.end(); }
+}
+
+// ---- 2.5.22 boot path ----
+struct BootRun { Job job; String base, key; bool (*prepare)() = nullptr; volatile bool done = false; };
+BootRun *g_boot = nullptr;
+
+void finishBootFail(BootRun &b, const char *ec, const char *detailIn) {
+  const bool abandon = b.job.tries >= pc::bootota::kMaxTries;
+  char d[160]; snprintf(d, sizeof d, "%s", detailIn ? detailIn : "");
+  pc::bootota::appendBoot(d, sizeof d, b.job.tries, abandon);
+  if (abandon) { setAbandoned(b.job.sha); clearJob(); }
+  else saveJob(b.job, false);  // spent: kept only for the attempt count of a re-stage
+  saveStatus("failed", ec, d);
+  LOGE("OTA", "BOOT_FAILED", "%s %s", ec, d);
+}
+
+void bootWorker(void *) {
+  BootRun &b = *g_boot;
+  g_deployment = b.job.version;
+  g_updating = true;
+  { Preferences p; if (p.begin(NS, false)) { p.putString("expected", b.job.version); p.end(); } }
+  saveStatus("downloading");
+  const bool prepared = !b.prepare || b.prepare();
+  DlResult dl;
+  if (prepared && install(b.base, b.key, String(b.job.path), String(b.job.sha), String(b.job.version), b.job.size, dl)) {
+    clearJob(); setAbandoned("");
+    saveStatus("rebooting");
+    LOGI("OTA", "REBOOT", "installed %s (boot path, attempt %u)", b.job.version, (unsigned)b.job.tries);
+    delay(250);
+    ESP.restart();
+  }
+  if (!prepared) finishBootFail(b, "safe_output_storage_failed", "");
+  else {
+    char ec[40];
+    pc::otaerr::code(dl.fail == pc::otaerr::Fail::None ? pc::otaerr::Fail::FinalizeFailed : dl.fail, dl.http, ec, sizeof ec);
+    finishBootFail(b, ec, dl.detail);
+  }
+  g_updating = false;
+  b.done = true;
+  vTaskDelete(nullptr);
+}
+}  // namespace
+
+bool bootJob(bool (*prepare)()) {
+  using pc::bootota::Boot;
+  loadState();
+  Job j; bool run = false;
+  if (!loadJob(j, run)) return false;
+  String base = settings::otaBaseUrl(), key = settings::apiKey();
+  while (base.endsWith("/")) base.remove(base.length() - 1);
+  const esp_partition_t *next = esp_ota_get_next_update_partition(nullptr);
+  char path[192];
+  const bool ok = pc::bootota::valid(j, next ? next->size : 0) && next && key.length() &&
+                  pc::otaDownloadPath(base.c_str(), j.path, path, sizeof path) && !strcmp(path, j.path);
+  const Boot d = pc::bootota::atBoot(run, ok, !strcmp(j.version, POWERCELL_FIRMWARE_VERSION), g_pending, j.tries);
+  if (d == Boot::None) return false;
+  if (d == Boot::Discard) {
+    LOGW("OTA", "BOOT_JOB_DISCARDED", "version=%s valid=%d running=%s pending_verify=%d", j.version, ok, POWERCELL_FIRMWARE_VERSION, g_pending);
+    clearJob(); return false;
+  }
+  if (d == Boot::Abandon) {
+    // Every attempt was started and none reported back (crash, watchdog or power cut).
+    LOGE("OTA", "BOOT_ABANDONED", "version=%s: %u attempts started without a result", j.version, (unsigned)j.tries);
+    char det[160]; snprintf(det, sizeof det, "last=%s", g_error.length() ? g_error.c_str() : "none");
+    pc::bootota::appendBoot(det, sizeof det, j.tries, true);
+    setAbandoned(j.sha); clearJob();
+    saveStatus("failed", "boot_ota_abandoned", det);
+    return false;
+  }
+  // Run: count the attempt first, so a crash during it is counted too.
+  ++j.tries;
+  saveJob(j, true);
+  LOGI("OTA", "BOOT_JOB", "version=%s attempt=%u/%u free_heap=%lu largest=%lu min=%lu iram=%lu", j.version, (unsigned)j.tries,
+       (unsigned)pc::bootota::kMaxTries, (unsigned long)heapguard::freeNow(), (unsigned long)heapguard::largestNow(),
+       (unsigned long)heapguard::heapMin(), (unsigned long)heapguard::iramFree());
+  g_boot = new (std::nothrow) BootRun();
+  if (!g_boot) { saveJob(j, false); return false; }
+  BootRun &b = *g_boot;
+  b.job = j; b.base = base; b.key = key; b.prepare = prepare;
+  if (net::networkMode() == pc::onb::NetMode::HotspotOnly) {
+    finishBootFail(b, "boot_ota_no_wifi", "hotspot_only");
+    delete g_boot; g_boot = nullptr; return true;
+  }
+  uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < pc::bootota::kWifiWaitMs) delay(100);
+  if (WiFi.status() != WL_CONNECTED) {
+    char det[64]; snprintf(det, sizeof det, "no station ip within %lu s", (unsigned long)(pc::bootota::kWifiWaitMs / 1000));
+    finishBootFail(b, "boot_ota_no_wifi", det);
+    delete g_boot; g_boot = nullptr; return true;
+  }
+  LOGI("OTA", "BOOT_WIFI", "ip=%s rssi=%d after %lu ms", WiFi.localIP().toString().c_str(), WiFi.RSSI(), (unsigned long)(millis() - t0));
+  // Signed request: same SNTP servers and 30 s budget as the WS (backend::begin starts them again later).
+  configTime(0, 0, "pool.ntp.org", "time.google.com", "time.nist.gov");
+  t0 = millis();
+  while (fid::hasSecret() && !devauth::clockTrusted() && millis() - t0 < pc::bootota::kClockWaitMs) delay(100);
+  if (!devauth::clockTrusted()) LOGW("OTA", "BOOT_CLOCK", "no NTP time after %lu ms; request may be unsigned", (unsigned long)(millis() - t0));
+  if (xTaskCreatePinnedToCore(bootWorker, "ota_boot", 16384, nullptr, kOtaPrio, nullptr, kOtaCore) != pdPASS) {
+    finishBootFail(b, "boot_ota_task_failed", "");
+    delete g_boot; g_boot = nullptr; return true;
+  }
+  t0 = millis();
+  while (!b.done) {
+    if (millis() - t0 > pc::bootota::kRunCapMs) { LOGE("OTA", "BOOT_HUNG", "no result after %lu s; rebooting (attempt counted)", (unsigned long)(pc::bootota::kRunCapMs / 1000)); delay(250); ESP.restart(); }
+    delay(100);
+  }
+  delete g_boot; g_boot = nullptr;
+  return true;
+}
+
+void clearBootJob() { clearJob(); setAbandoned(""); LOGI("OTA", "BOOT_JOB_CLEARED", "boot job and abandoned image cleared (console)"); }
+
+void begin(bool (*prepare)(), bool (*acquire)()) {
+  g_prepare = prepare; g_acquire = acquire;
+  loadState();
+  // A staged job that bootJob() did not run (cleared, invalid or never reached): not pending any more.
+  if (g_status == "boot_pending") saveStatus("failed", "boot_ota_not_run", g_detail);
   g_nextCheck = millis() + 35000;
   LOGI("OTA", "BEGIN", "%s pending_verify=%d status=%s api_key=%s", kIdentity, g_pending, g_status.c_str(), settings::apiKey().length() ? "set" : "missing");
 }
@@ -463,7 +675,7 @@ const char *lanBegin(const char *sha, bool force, int *code) {
   socketsSetPaused(true);
   if (backend::connected() && g_acquire) g_acquire();
   if (!Update.begin(part->size, U_FLASH)) {
-    LOGE("OTA", "OTA_LAN_FAIL", "update_begin err=%u free_heap=%lu", Update.getError(), (unsigned long)ESP.getFreeHeap());
+    LOGE("OTA", "OTA_LAN_FAIL", "update_begin err=%u free_heap=%lu", Update.getError(), (unsigned long)heapguard::freeNow());
     delete g_lan; g_lan = nullptr; socketsSetPaused(false);
     *code = 500; return "update_begin_failed";
   }
@@ -474,7 +686,7 @@ const char *lanBegin(const char *sha, bool force, int *code) {
   g_updating = true;
   saveStatus("lan_uploading");
   LOGI("OTA", "OTA_LAN_BEGIN", "running=%s model=%s partition=%s size=%u force=%d free_heap=%lu", POWERCELL_FIRMWARE_VERSION,
-       POWERCELL_HARDWARE_MODEL, part->label, (unsigned)part->size, force, (unsigned long)ESP.getFreeHeap());
+       POWERCELL_HARDWARE_MODEL, part->label, (unsigned)part->size, force, (unsigned long)heapguard::freeNow());
   *code = 0;
   return nullptr;
 }
@@ -609,7 +821,7 @@ void service(bool healthy) {
   // memory guard is evaluated after that, on the heap the HTTPS session will really get.
   if (backend::connected() && !backend::pauseForOta()) { g_nextCheck = now + 5000; return; }
   if (!heapguard::tlsAllowed(g_checkBackoff, "ota_check")) { g_nextCheck = now + g_checkBackoff.delayMs(); return; }
-  LOGI("OTA", "HTTPS_CHECK", "ws released; free_heap=%lu largest=%lu", (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+  LOGI("OTA", "HTTPS_CHECK", "ws released; free_heap=%lu largest=%lu", (unsigned long)heapguard::freeNow(), (unsigned long)heapguard::largestNow());
   g_forceHttps = false;
   g_nextCheck = now + OTA_CHECK_PERIOD_MS + (esp_random() % 30000);
   g_job = Offer();

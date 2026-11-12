@@ -367,10 +367,11 @@ void sendHello() {
   addIdentity(doc);
   addOtaHost(doc);
   // 2.5.20: heap state at hello (the WS TLS session is already allocated here).
-  doc["heap_free"] = ESP.getFreeHeap();
+  doc["heap_free"] = heapguard::freeNow();
   doc["heap_largest"] = heapguard::heapLargest();
   doc["heap_min"] = heapguard::heapMin();
   doc["heap_largest_min"] = heapguard::heapLargestMin();
+  doc["heap_iram_free"] = heapguard::iramFree();  // 2.5.22: heap_* are 8-bit DRAM; the 32-bit-only IRAM heap is reported apart
   if (send(doc)) onboarding::helloSent();
   JsonDocument pc_;
   if (onboarding::takePasscodeChanged(pc_)) { addIdentity(pc_); send(pc_); }
@@ -650,12 +651,12 @@ void logConnectAttempt(uint32_t preFree, uint32_t preLargest, uint32_t ms) {
   const int tls = up ? 0 : ws.lastTlsError(err, sizeof err);
   if (up)
     LOGI("WS", "TLS_UP", "attempt=%lu ms=%lu free %lu->%lu largest %lu->%lu min=%lu", (unsigned long)g_attempts, (unsigned long)ms,
-         (unsigned long)preFree, (unsigned long)ESP.getFreeHeap(), (unsigned long)preLargest, (unsigned long)ESP.getMaxAllocHeap(),
-         (unsigned long)ESP.getMinFreeHeap());
+         (unsigned long)preFree, (unsigned long)heapguard::freeNow(), (unsigned long)preLargest, (unsigned long)heapguard::largestNow(),
+         (unsigned long)heapguard::heapMin());
   else
     LOGW("WS", "TLS_FAILED", "attempt=%lu ms=%lu tls=%d %s free %lu->%lu largest %lu->%lu min=%lu", (unsigned long)g_attempts, (unsigned long)ms,
-         tls, err, (unsigned long)preFree, (unsigned long)ESP.getFreeHeap(), (unsigned long)preLargest, (unsigned long)ESP.getMaxAllocHeap(),
-         (unsigned long)ESP.getMinFreeHeap());
+         tls, err, (unsigned long)preFree, (unsigned long)heapguard::freeNow(), (unsigned long)preLargest, (unsigned long)heapguard::largestNow(),
+         (unsigned long)heapguard::heapMin());
 }
 
 void serviceOnce(bool locked) {
@@ -694,7 +695,7 @@ void serviceOnce(bool locked) {
 #if POWERCELL_WS_TLS
   if (attempt && !heapguard::tlsAllowed(g_tlsBackoff, "ws")) return;
 #endif
-  const uint32_t preFree = attempt ? ESP.getFreeHeap() : 0, preLargest = attempt ? ESP.getMaxAllocHeap() : 0;
+  const uint32_t preFree = attempt ? heapguard::freeNow() : 0, preLargest = attempt ? heapguard::largestNow() : 0;
   const uint32_t tAttempt = millis();
   ws.loop();
   if (attempt) logConnectAttempt(preFree, preLargest, millis() - tAttempt);

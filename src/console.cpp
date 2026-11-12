@@ -28,6 +28,7 @@
 #include "dsp011_pzem.h"
 #include "pzem_route.h"
 #include "telemetry.h"
+#include "heapguard.h"
 
 namespace console {
 namespace {
@@ -270,7 +271,7 @@ void selftest() {
   JsonObject jw = d["wifi"].to<JsonObject>();
   jw["connected"] = WiFi.status() == WL_CONNECTED; jw["state"] = net::stateName(); jw["hotspot"] = net::apActive();
   if (WiFi.status() == WL_CONNECTED) jw["rssi"] = WiFi.RSSI(); else jw["rssi"] = nullptr;
-  d["heap_free"] = ESP.getFreeHeap(); d["heap_largest"] = ESP.getMaxAllocHeap();
+  d["heap_free"] = heapguard::freeNow(); d["heap_largest"] = heapguard::largestNow(); d["heap_iram_free"] = heapguard::iramFree();  // 2.5.22: DRAM (8-bit); IRAM separate
   JsonObject jc = d["cloud"].to<JsonObject>();
   jc["api_key"] = settings::apiKey().length() > 0; jc["ws_connected"] = backend::connected(); jc["clock_trusted"] = devauth::clockTrusted();
   serializeJson(d, Serial); Serial.println();
@@ -369,10 +370,11 @@ void handle(String cmd) {
   else if (cmd == "SOCKETS") Serial.println(buildMetricsJson());
   else if (cmd.startsWith("STM32 ")) stm32(cmd.substring(6));
   else if (cmd == "REBOOT") { ESP.restart(); }
+  else if (cmd == "OTA_RETRY") { ota::clearBootJob(); Serial.println("OK boot OTA job and abandoned image cleared; the next offer is tried again"); }
 #if POWERCELL_DSP011
   else if (cmd.startsWith("BBTAIL") || cmd.startsWith("BBEXPORT")) hwLogExport(cmd.startsWith("BBEXPORT"));
 #endif
-  else Serial.println("ERR unknown command (INFO, SERIAL, SECRET, ROTATE_SECRET, SELFTEST, BMS RAW, STM VER, STM CAL?, SET, OTA_CONFIG, LOCK, AP ON, PAYMENT_UNLOCK, FACTORY_RESET, FACTORY_WIPE, REGISTER:, UNREGISTER:, RELAY:, SOCKETS, STM32, REBOOT)");
+  else Serial.println("ERR unknown command (INFO, SERIAL, SECRET, ROTATE_SECRET, SELFTEST, BMS RAW, STM VER, STM CAL?, SET, OTA_CONFIG, LOCK, AP ON, PAYMENT_UNLOCK, FACTORY_RESET, FACTORY_WIPE, REGISTER:, UNREGISTER:, RELAY:, SOCKETS, STM32, REBOOT, OTA_RETRY)");
 }
 }  // namespace
 

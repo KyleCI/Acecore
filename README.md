@@ -162,6 +162,17 @@ When the BMS is silent for 10 s, every BMS field is `null` (never 0) and voltage
   | `finalize_failed` | `esp_ota_end` or setting the boot partition failed |
 
   Unchanged: `safe_output_storage_failed`, `interrupted_download`, `rolled_back`, `not_healthy_rolled_back`, `lan_*`.
+
+  **Two-phase OTA on boot (2.5.22).** If the heap has no room for the download's TLS session after the WS is released (8-bit DRAM: free >= 50 KB and both 16717 B mbedTLS record buffers must fit), or an in-place connect fails with an mbedTLS out-of-memory error, the unit stores the job in NVS, reports `last_status: "boot_pending"` and reboots. Early in boot (after Wi-Fi starts, before ESP-NOW, the web server, the WS and mDNS) it downloads with the same TLS, CA bundle, sha256, identity and version checks; on success it reboots into the new image, on failure it reports the usual code and boots normally. Up to 3 attempts per sha256 (counted before each attempt), then that sha256 is refused until a different sha256, a successful update or console `OTA_RETRY`. Extra codes:
+
+  | `last_error` | Meaning |
+  |---|---|
+  | `boot_ota_no_wifi` | Boot path: no station IP within 40 s, or hotspot-only mode |
+  | `boot_ota_abandoned` | Boot path: 3 attempts were started without a result (crash, watchdog, power cut) |
+  | `boot_ota_not_run` | A staged job was not run at boot (cleared or invalid) |
+  | `boot_ota_task_failed` | Boot path: the download task could not be created |
+
+  A failed connect's `last_error_detail` ends with ` heap free=<B> largest=<B> min=<B>` (DRAM at the handshake start), and on the boot path ` boot=<n>/3` (` abandoned` on the last).
 - **Hello OTA host (2.5.18):** `device_hello` carries `ota_host` (`scheme://host[:port]` of the effective OTA base URL, no path, query or credentials; `null` if unparsable) and `ota_url_override` (true when a saved `ota_url` differs from the compiled default `https://api-dev.acecore.tech`).
 
 ## Local API (port 80, PR #3 "Local device web server")
@@ -245,7 +256,7 @@ INFO                      # prints LABEL ap_pass=... admin_token=... for the lab
 LOCK                      # secrets can no longer be read or changed over USB (local_tok excepted)
 REBOOT
 ```
-`OTA_CONFIG {json}` from 1.0.x is still accepted (`token` is ignored). `FACTORY_RESET` (typed twice) wipes everything.
+`OTA_CONFIG {json}` from 1.0.x is still accepted (`token` is ignored). `FACTORY_RESET` (typed twice) wipes everything. `OTA_RETRY` (2.5.22) clears a staged boot OTA job and an abandoned image so the next offer is tried again.
 
 ## Migration notes (1.0.x → 2.0 by OTA)
 - **Secrets:** on first boot, 2.0 copies the 1.0.x NVS values into `pc_secure`:
@@ -257,7 +268,7 @@ REBOOT
 - **Gateway name:** it changes from `ACE4447` / `ACE9678` to `ACE-XXXXXX` unless you `SET gw_name ACE9678` on that unit. The backend should accept MAC-based gateway targets, which 2.0 accepts.
 - **Network:** the static IP from 1.0.x is replaced by DHCP. The setup AP SSID changes to `Powercell-XXXXXX`.
 - **Not migrated:** the old `energy_wh`, and the 2.0.0 ESP energy counter (`pc_energy` NVS) is no longer used; the old offline queue (JSON in `offline_sync/events`).
-- **Version:** the four product images report `2.5.21`. Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
+- **Version:** the four product images report `2.5.22`. Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
 - **STM32 link:** the STM32 still sends 9600 text, so the default `legacy_text` works with today's STM32 firmware. Switch both sides to framed together.
 
 ## Telemetry fields (WS `telemetry`, additive to 1.0.x)

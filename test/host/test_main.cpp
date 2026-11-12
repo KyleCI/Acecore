@@ -25,6 +25,7 @@
 #include "ac_output_policy.h"
 #include "lan_ota.h"
 #include "ota_errors.h"
+#include "ota_boot.h"
 #include <string>
 #include <algorithm>
 
@@ -1578,13 +1579,122 @@ static void test_socket_rules() {
   CHECK(parseSocketPacket(p2, strlen(p2), k) && !k.hasLimit);
 }
 
+static std::string slurp(const char *path) {
+  std::string out;
+  FILE *f = fopen(path, "rb");
+  if (!f) return out;
+  char b[4096]; size_t k;
+  while ((k = fread(b, 1, sizeof b, f)) > 0) out.append(b, k);
+  fclose(f);
+  return out;
+}
+
+static void test_ota_boot() {  // 2.5.22 two-phase OTA (ota_boot.h) and 8-bit heap numbers
+  using namespace pc::bootota;
+  using pc::otaerr::Fail;
+  CHECK(kMaxTries == 3 && kWifiWaitMs == 40000 && kClockWaitMs == 30000);
+  // run cap covers install(): 15 s connect + 45 s handshake + 30 s headers, x2 on a 401 skew, + 180 s body
+  CHECK(kRunCapMs >= 2 * (15000 + 45000 + 30000) + 180000);
+  // at boot
+  CHECK(atBoot(false, true, false, false, 0) == Boot::None);
+  CHECK(atBoot(true, true, false, false, 0) == Boot::Run);
+  CHECK(atBoot(true, true, false, false, 2) == Boot::Run);
+  CHECK(atBoot(true, true, false, false, 3) == Boot::Abandon);   // 3 started without a result
+  CHECK(atBoot(true, false, false, false, 0) == Boot::Discard);  // invalid
+  CHECK(atBoot(true, true, true, false, 0) == Boot::Discard);    // already running that version
+  CHECK(atBoot(true, true, false, true, 0) == Boot::Discard);    // running image not confirmed
+  CHECK(atBoot(true, false, false, false, 9) == Boot::Discard);  // invalid beats abandon
+  // offers
+  const char *A = "687594cab6c9aa3d10294f61970f06796e96e388fd22905ce5d7800d831851af";
+  const char *B = "1111111111111111111111111111111111111111111111111111111111111111";
+  CHECK(!offerAbandoned(A, "") && !offerAbandoned(A, nullptr) && !offerAbandoned(nullptr, A));
+  CHECK(offerAbandoned(A, A) && !offerAbandoned(B, A));
+  {
+    std::string up(A); for (auto &c : up) c = (char)toupper((unsigned char)c);
+    CHECK(offerAbandoned(up.c_str(), A));  // case-insensitive (offers are lower-cased anyway)
+  }
+  CHECK(route(true) == Route::InPlace && route(false) == Route::Stage);
+  CHECK(stageTries(A, 2, A) == 2 && stageTries(A, 2, B) == 0 && stageTries("", 2, A) == 0 && stageTries(nullptr, 2, A) == 0);
+  CHECK(!stageWouldExceed(0) && !stageWouldExceed(2) && stageWouldExceed(3));
+  // three failed boot attempts of one image, re-staged by the server each time, then abandoned
+  {
+    uint8_t tries = 0; int reboots = 0;
+    for (int offer = 0; offer < 10; ++offer) {
+      uint8_t carried = stageTries(A, tries, A);
+      if (stageWouldExceed(carried)) break;
+      ++reboots;                                              // staged: reboot
+      CHECK(atBoot(true, true, false, false, carried) == Boot::Run);
+      tries = carried + 1;                                    // counted before the attempt
+    }
+    CHECK(reboots == 3 && tries == 3);
+    CHECK(atBoot(true, true, false, false, tries) == Boot::Abandon);  // a crash on attempt 3 also ends it
+  }
+  // in-place fallback only for mbedTLS out-of-memory on the connect
+  CHECK(isTlsMemoryError(-32512));        // ACE-000001 2.5.20: -0x7F00 SSL - Memory allocation failed
+  CHECK(isTlsMemoryError(-0x2880) && isTlsMemoryError(-0x3F80) && isTlsMemoryError(-0x4D80) && isTlsMemoryError(-0x0010));
+  CHECK(isTlsMemoryError(-0x6180) && isTlsMemoryError(-0x5180) && isTlsMemoryError(-0x1180) && isTlsMemoryError(-0x3400));
+  CHECK(isTlsMemoryError(-(0x2180 + 0x6A)));  // X509 invalid format + ASN1 alloc failed
+  CHECK(isTlsMemoryError(-(0x3B00 + 0x10)));  // PK key error + MPI alloc failed
+  CHECK(!isTlsMemoryError(0) && !isTlsMemoryError(-1) && !isTlsMemoryError(-9984) && !isTlsMemoryError(-0x7780) && !isTlsMemoryError(32512));
+  CHECK(inPlaceFallback(true, -32512) && !inPlaceFallback(false, -32512) && !inPlaceFallback(true, -9984) && !inPlaceFallback(true, 0));
+  // detail strings (last_error_detail), bounded
+  {
+    char d[160] = "http=-1 tls=-32512 SSL - Memory allocation failed";
+    appendHeap(d, sizeof d, 60312, 15872, 7872);
+    appendBoot(d, sizeof d, 2, false);
+    CHECK(!strcmp(d, "http=-1 tls=-32512 SSL - Memory allocation failed heap free=60312 largest=15872 min=7872 boot=2/3"));
+    char e[160] = "x"; appendBoot(e, sizeof e, 3, true); CHECK(!strcmp(e, "x boot=3/3 abandoned"));
+    char small[20] = "0123456789"; appendHeap(small, sizeof small, 1, 2, 3);
+    CHECK(strlen(small) == sizeof small - 1 && !strncmp(small, "0123456789 heap", 15));
+    char full[8] = "1234567"; appendBoot(full, sizeof full, 1, false); CHECK(!strcmp(full, "1234567"));
+    appendHeap(nullptr, 10, 1, 2, 3); appendBoot(d, 0, 1, false);  // no crash
+  }
+  // job validation
+  {
+    Job j;
+    strcpy(j.version, "2.5.21"); strcpy(j.sha, A); strcpy(j.path, "/api/ota/download?device_id=20500DD26158"); j.size = 1385712;
+    CHECK(valid(j, 0x1E0000));
+    Job k = j; k.version[0] = 0; CHECK(!valid(k, 0x1E0000));
+    k = j; k.sha[10] = 'g'; CHECK(!valid(k, 0x1E0000));
+    k = j; k.sha[63] = 0; CHECK(!valid(k, 0x1E0000));
+    k = j; strcpy(k.path, "https://evil/x"); CHECK(!valid(k, 0x1E0000));
+    k = j; k.size = 0x1E0001; CHECK(!valid(k, 0x1E0000));
+    k = j; k.size = 0; CHECK(valid(k, 0x1E0000));     // size optional, as in the offer
+    CHECK(hex64(A) && !hex64(B + 1) && !hex64(nullptr));
+    // the stored path is the checked output of otaDownloadPath and re-checks to itself at boot
+    char out[192], again[192];
+    CHECK(pc::otaDownloadPath("https://api-dev.acecore.tech", "https://api-dev.acecore.tech/api/ota/download?device_id=20500DD26158", out, sizeof out));
+    CHECK(pc::otaDownloadPath("https://api-dev.acecore.tech", out, again, sizeof again) && !strcmp(out, again) && out[0] == '/');
+    CHECK(!pc::otaDownloadPath("https://api-dev.acecore.tech", "https://other.example/api/ota/download", out, sizeof out));
+  }
+  // device glue (source checks, the code needs the ESP32 SDK to run)
+  {
+    std::string hg = slurp("../../src/heapguard.cpp"), ota = slurp("../../src/ota.cpp"), mainc = slurp("../../src/main.cpp");
+    CHECK(!hg.empty() && !ota.empty() && !mainc.empty());
+    // the gate and watermarks read the 8-bit DRAM heap, not MALLOC_CAP_INTERNAL (which counts IRAM)
+    CHECK(hg.find("MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT") != std::string::npos);
+    CHECK(hg.find("getMaxAllocHeap") == std::string::npos && hg.find("getFreeHeap") == std::string::npos && hg.find("getMinFreeHeap") == std::string::npos);
+    CHECK(ota.find("getMaxAllocHeap") == std::string::npos);
+    // TLS and certificate verification kept on the boot path: same install(), same CA bundle
+    CHECK(ota.find("c.setCACert(POWERCELL_CA_CERT)") != std::string::npos && ota.find("setInsecure") == std::string::npos);
+    CHECK(ota.find("install(b.base, b.key, String(b.job.path), String(b.job.sha), String(b.job.version), b.job.size, dl)") != std::string::npos);
+    // the attempt is counted before it runs
+    size_t inc = ota.find("++j.tries;"), save = ota.find("saveJob(j, true);", inc), task = ota.find("xTaskCreatePinnedToCore(bootWorker", inc);
+    CHECK(inc != std::string::npos && save != std::string::npos && task != std::string::npos && save < task);
+    // setup(): the boot job runs after Wi-Fi starts and before ESP-NOW, the web server and the WS
+    size_t n = mainc.find("net::begin();"), j = mainc.find("ota::bootJob(prepareForUpdate);"), so = mainc.find("socketsStart();"),
+           w = mainc.find("web::begin();"), be = mainc.find("backend::begin();");
+    CHECK(n != std::string::npos && j != std::string::npos && n < j && j < so && j < w && j < be);
+  }
+}
+
 static void test_heap_guard() {
   using namespace pc;
   // 2.5.20 gate: record buffer arithmetic (mbedTLS 2.28, 16384 content, light poisoning)
   CHECK(kTlsRecordBuf == 13 + 16384 + 16 + 48 + 256);
   CHECK(kTlsRecordAlloc == 16736 && kTlsPairBlock == 35520 && kTlsMinBlock == 18432 && kTlsMinFree == 51200);
-  // ACE-000001 on 2.5.18 (12 Nov 2026): largest=40948 free=72064 was refused by the old
-  // 40960 rule; it holds both record buffers, so it now goes without a probe.
+  // Pure rule: a 40948 B 8-bit block holds both record buffers. (2.5.22: the 40948 in the
+  // ACE-000001 logs was the IRAM heap, not DRAM; the inputs are now 8-bit DRAM, see test_ota_boot.)
   CHECK(tlsHeapVerdict(40948, 72064) == TlsHeap::Ok);
   CHECK(tlsHeapVerdict(kTlsPairBlock, kTlsMinFree) == TlsHeap::Ok);
   CHECK(tlsHeapVerdict(kTlsPairBlock - 1, 80000) == TlsHeap::Probe);
@@ -2572,7 +2682,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.21" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.22" && !s35.found());
   }
 }
 
@@ -2702,7 +2812,7 @@ int main() {
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
-  test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors();
+  test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }
