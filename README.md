@@ -248,8 +248,8 @@ Same flat keys in four places: `metrics.*` of GET /data and the SSE `state` even
 
 | key | unit | source |
 |---|---|---|
-| `source` | battery\|grid\|solar\|none | STM32 SYS + PV power (>= 20 W) + BMS current sign |
-| `status` | inverting\|idle\|charging\|fault\|standby\|unknown | STM32 SYS/CHR/fault, BMS current > 0.5 A; `unknown` = no STM32 data in 5 s |
+| `source` | battery\|grid\|solar\|none | STM32 SYS + PV power (>= 20 W) + BMS current sign. Grid presence (DSP debounced GPIO39; STM grid_v >= 160 V) gives `grid` when SYS is the DSP placeholder or unknown and the pack is not discharging (> -0.5 A) |
+| `status` | inverting\|idle\|charging\|fault\|standby\|unknown | STM32 SYS/CHR/fault, BMS current > 0.5 A; `unknown` = no STM32 data in 5 s (DSP: no PZEM sample). With the grid override: `charging` or `idle` (pass-through) |
 | `output_voltage`, `output_current` | V, A | STM32 `VOUT`/`IOUT` (sent only while SYS=INVERTER) |
 | `output_power_w` | W (VA) | inverting: VOUT x IOUT; if IOUT missing, abs(BMS W) x 0.9 (`output_power_source` = `bms_estimate`); output off: 0 (`off`); grid pass-through: null (STM32 has no AC load meter in GRID mode) |
 | `load_pct` | % | output_power_w / (usable_kw x 1000) |

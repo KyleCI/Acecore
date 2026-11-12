@@ -1,5 +1,14 @@
 # Collector firmware changelog
 
+## Unreleased (live source/status follow grid presence on DSP)
+
+Caleb approved 2026-11-12 13:05 WAT. DSP v0.1.1 units showed `live.source` = battery and `live.status` = inverting with grid connected, because `stm32link::status()` on DSP sets `sys = Inverter` from any PZEM sample and grid presence was not an input to `live::source()` / `live::status()`.
+
+- `pc::live::Inputs` gains `gridKnown` / `gridPresent` (tri-state) and `sysAssumed`. DSP fills them from the debounced GPIO39 presence (`dspGridRead().present`, 170 V on / 160 V off, 2 s), never raw volts, and marks `sys` as assumed. STM fills them from `has_grid && grid_v >= 160 V`, the same rule as `grid_available`.
+- Grid override: when grid is known present, the BMS is online and the pack is not discharging (current above -0.5 A), and `sys` is the DSP placeholder or Unknown, `source` = `grid` and `status` = `charging` (BMS current above +0.5 A or charger CHR state) or `idle` (grid pass-through). Existing strings only. A fault still gives `fault`.
+- Unchanged: grid present but pack discharging (battery + inverting, or solar when PV covers it), grid unknown or absent, BMS offline, stale PZEM/STM32 data, and every real STM32 SYS report (Inverter, Grid, Idle, Reserve, Fault). `output_power_w`, `load_pct`, payment lock, protections and battery policy are unchanged.
+- Units on 2.5.13 builds before grid_sense still publish `grid_available` null and keep the old labels.
+
 ## Unreleased (PV energy saved more often)
 
 - Solar NVS (`solar` / tot_wh, tdy_wh, day; same keys so existing totals still load) now saves when unsaved energy is at least 10 Wh and 5 minutes have passed since the last save, or when any unsaved energy above 0.5 Wh has waited 15 minutes, or on a day change. Was 50 Wh and 30 minutes, both required. A power cut now loses at most about 5 minutes of production (~250 Wh at 3 kW). Worst case is 288 writes/day of those 3 small keys, within ESP32 NVS wear levelling. STM estimated-energy (15 min) and PZEM energy-today (baseline/day changes only) are unchanged.

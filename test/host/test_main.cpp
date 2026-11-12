@@ -2217,6 +2217,85 @@ static void test_dsp_bms_select() {
   CHECK(!flag_in_env(buf, "esp32dev_stm01_35kw", "DSP_BMS_JKPB"));
 }
 
+static void test_live_grid() {  // grid_available as an input to live source/status
+  using namespace pc; using namespace pc::live;
+  enum G { kUnknown, kAbsent, kPresent };
+  const float amps[3] = {5.0f, -7.0f, 0.0f};  // charging, discharging, idle
+  auto mk = [](bool dsp, SysState sys, G g, float a) {
+    Inputs in; in.stmFresh = true; in.sys = sys; in.sysAssumed = dsp;
+    in.hasVout = in.hasIout = (sys == SysState::Inverter); in.vout = 230; in.iout = 2;
+    in.bmsOn = true; in.bmsCurrentA = a; in.bmsPowerW = a * 52;
+    in.gridKnown = g != kUnknown; in.gridPresent = g == kPresent;
+    return in;
+  };
+  // Baseline: what source/status were before the grid input existed.
+  auto legacy = [](Inputs in) { in.gridKnown = false; in.gridPresent = false; return in; };
+  // DSP: sys is the hardcoded Inverter placeholder.
+  for (int g = 0; g < 3; ++g) for (float a : amps) {
+    Inputs in = mk(true, SysState::Inverter, (G)g, a);
+    Source src = source(in); Status st = status(in);
+    if (g == kPresent && a > -kChargeA) {
+      CHECK(src == Source::Grid);
+      CHECK(st == (a > kChargeA ? Status::Charging : Status::Idle));
+    } else {
+      CHECK(src == source(legacy(in)) && st == status(legacy(in)));
+      CHECK(src == Source::Battery && st == Status::Inverting);  // unknown/absent or discharging: unchanged
+    }
+  }
+  {  // DSP grid present, small idle drain inside the +-0.5 A band: idle pass-through
+    Inputs in = mk(true, SysState::Inverter, kPresent, -0.3f);
+    CHECK(source(in) == Source::Grid && status(in) == Status::Idle);
+    in.bmsCurrentA = -0.5f; CHECK(source(in) == Source::Battery && status(in) == Status::Inverting);
+  }
+  {  // DSP grid present but BMS offline: cannot tell discharge, keep today
+    Inputs in = mk(true, SysState::Inverter, kPresent, 0); in.bmsOn = false;
+    CHECK(source(in) == Source::Battery && status(in) == Status::Inverting);
+  }
+  {  // DSP grid present, fault still wins on status
+    Inputs in = mk(true, SysState::Inverter, kPresent, 5); in.faultActive = true;
+    CHECK(status(in) == Status::Fault && source(in) == Source::Grid);
+  }
+  {  // DSP grid present + PV active, pack charging: grid (was solar)
+    Inputs in = mk(true, SysState::Inverter, kPresent, 3); in.solarOk = true; in.solarW = 500;
+    CHECK(source(in) == Source::Grid && status(in) == Status::Charging);
+    in.gridPresent = false; CHECK(source(in) == Source::Solar && status(in) == Status::Inverting);
+    in.gridKnown = false; CHECK(source(in) == Source::Solar && status(in) == Status::Inverting);
+  }
+  {  // DSP stale PZEM: unchanged (unknown / none)
+    Inputs in = mk(true, SysState::Inverter, kPresent, 5); in.stmFresh = false;
+    CHECK(source(in) == Source::None && status(in) == Status::Unknown);
+  }
+  {  // DSP output power path untouched by the grid input
+    Inputs in = mk(true, SysState::Inverter, kPresent, 5); float w = 0;
+    CHECK(outputPowerW(in, w) == PowerSrc::Stm32); NEAR(w, 460, 0.1);
+  }
+  // STM: a real SYS report is authoritative for Inverter/Grid/Idle/Reserve/Fault.
+  const SysState sysAll[] = {SysState::Inverter, SysState::Grid, SysState::Idle, SysState::Reserve, SysState::Fault};
+  for (SysState sys : sysAll) for (int g = 0; g < 3; ++g) for (float a : amps) {
+    Inputs in = mk(false, sys, (G)g, a);
+    CHECK(source(in) == source(legacy(in)) && status(in) == status(legacy(in)));
+  }
+  {  // STM explicit expectations, grid present
+    Inputs in = mk(false, SysState::Inverter, kPresent, 5);
+    CHECK(source(in) == Source::Battery && status(in) == Status::Inverting);
+    in = mk(false, SysState::Grid, kPresent, 5); CHECK(source(in) == Source::Grid && status(in) == Status::Charging);
+    in = mk(false, SysState::Grid, kPresent, 0); CHECK(source(in) == Source::Grid && status(in) == Status::Idle);
+    in = mk(false, SysState::Idle, kPresent, 0); CHECK(source(in) == Source::None && status(in) == Status::Standby);
+  }
+  // STM with SYS Unknown (framed sys > 5): grid input applies like DSP.
+  for (int g = 0; g < 3; ++g) for (float a : amps) {
+    Inputs in = mk(false, SysState::Unknown, (G)g, a);
+    if (g == kPresent && a > -kChargeA) {
+      CHECK(source(in) == Source::Grid && status(in) == (a > kChargeA ? Status::Charging : Status::Idle));
+    } else {
+      CHECK(source(in) == Source::None);
+      CHECK(status(in) == (a > kChargeA ? Status::Charging : Status::Unknown));
+    }
+  }
+  CHECK(!strcmp(statusName(Status::Idle), "idle") && !strcmp(sourceName(Source::Grid), "grid") &&
+        !strcmp(statusName(Status::Charging), "charging"));
+}
+
 static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x/1000 : x
   auto displayKw = [](double x) { return fabs(x) > 20.0 ? x / 1000.0 : x; };
   const float ws[] = {0.0f, 5.0f, 15.0f, 20.0f, 21.0f, 127.9f, 3000.0f, 19999.0f};
@@ -2230,7 +2309,7 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
 }
 
 int main() {
-  test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
+  test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
   test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_dsp_thermal(); test_dsp_over_temp(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_dsp_status_led(); test_pzem_route(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();

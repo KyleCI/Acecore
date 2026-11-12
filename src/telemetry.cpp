@@ -318,6 +318,15 @@ void liveToJson(JsonObject o) {
   if (in.bmsOn) { in.bmsCurrentA = d.currentMa / 1000.0f; in.bmsPowerW = d.powerMw / 1000.0f; }
   solar::Reading sr = solar::read();
   in.solarOk = sr.ok; in.solarW = sr.power;
+#if POWERCELL_DSP011
+  in.sysAssumed = true;  // stm32link::status() sets sys = Inverter from any PZEM sample
+  {
+    DspGridReading g;
+    if (dspGridRead(&g) && g.valid) { in.gridKnown = true; in.gridPresent = g.present; }  // debounced, not raw volts
+  }
+#else
+  if (in.stmFresh && s.has_grid) { in.gridKnown = true; in.gridPresent = s.grid_v >= 160.0f; }  // same rule as grid_available
+#endif
 
   o["source"] = pc::live::sourceName(pc::live::source(in));
   o["status"] = pc::live::statusName(pc::live::status(in));
