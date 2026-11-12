@@ -71,7 +71,7 @@ No authentication. `passcode_set` is the boolean the app should trust.
 from the image rating.
 
 ```json
-{"device_id":"ACE-DDEEFF","model":"pc-dsp011-5kw","fw":"2.5.18","state":"unconfigured","claimed":false,"passcode_default":false,"passcode_set":false,"hotspot":false,"onboarding_version":2,"powercell_model":"PC5K","rated_kva":null,"usable_kw":4.5,"units":{"power":"W","energy":"Wh"},"data_format_version":1}
+{"device_id":"ACE-DDEEFF","model":"pc-dsp011-5kw","fw":"2.5.19","state":"unconfigured","claimed":false,"passcode_default":false,"passcode_set":false,"hotspot":false,"onboarding_version":2,"powercell_model":"PC5K","rated_kva":null,"usable_kw":4.5,"units":{"power":"W","energy":"Wh"},"data_format_version":1}
 ```
 
 `units` and integer `data_format_version` are fixed for the build. They match

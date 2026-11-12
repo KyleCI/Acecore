@@ -1,5 +1,9 @@
 # Collector firmware changelog
 
+## 2.5.19 (OTA test of the 2.5.18 updater)
+
+Version is 2.5.19 on all four product images so a unit already on 2.5.18 will accept the file. No other functional change on top of 6446e4d.
+
 ## 2.5.18 (OTA download robustness, Caleb 12 Nov 2026 16:44 WAT)
 
 On top of 2.5.17 (da2a0a9). All four product images. Prompted by the ACE-000001 OTA of 2.5.17 failing with `download_or_verification_failed` before any download request reached api-dev.
