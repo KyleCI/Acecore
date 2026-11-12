@@ -14,6 +14,7 @@
 #include "hw_output.h"
 #include "log.h"
 #include "events_core.h"
+#include "local_auth.h"
 #include "soc_guard.h"
 #include "socket_cfg.h"
 #include "sockets/sockets.h"
@@ -32,6 +33,7 @@ float g_soc = 0; bool g_socValid = false;
 bool g_gridDown = true;   // STM32 grid < 160 V (restore 170 V); unknown/stale = down
 bool g_overload = false;  // inverter overload (STM32 bit16 or iout >= 19 A, clear 17 A)
 const char *NS = "pwr_guard";
+float g_alertLow = pc::BatteryAlertPolicy::kLow, g_alertWarn = pc::BatteryAlertPolicy::kCritical;
 #if POWERCELL_DSP011
 powercell::BatteryAlertPolicy g_cutoff;
 bool g_cutoffOff = false;
@@ -111,14 +113,25 @@ bool latched() {
 #endif
 }
 bool lowPower() { return g_low; }
+// Saved Manual battery-low / shutdown-warning percents (manual_limits, /v1/battery-settings).
+// All builds: they drive the /events battery_low|battery_critical notifications and the
+// cloud battery_soc event. DSP: also the BatteryAlertPolicy warning. The 10 % cutoff and the
+// 15 % restart are fixed. A pair that is out of range or misordered (bad NVS) uses 25/15.
 void setAlertThresholds(float lowPercent, float warningPercent) {
+  if (!pc::BatteryAlertPolicy::validThresholds(lowPercent, warningPercent)) {
+    LOGW("PWR", "ALERT_THRESHOLDS", "saved low=%.0f warning=%.0f invalid; using %.0f/%.0f", lowPercent, warningPercent,
+         pc::BatteryAlertPolicy::kLow, pc::BatteryAlertPolicy::kCritical);
+    lowPercent = pc::BatteryAlertPolicy::kLow;
+    warningPercent = pc::BatteryAlertPolicy::kCritical;
+  }
+  g_alertLow = lowPercent;
+  g_alertWarn = warningPercent;
 #if POWERCELL_DSP011
   g_cutoff.setThresholds(lowPercent, warningPercent);
-#else
-  (void)lowPercent;
-  (void)warningPercent;
 #endif
 }
+float alertLowPercent() { return g_alertLow; }
+float alertWarningPercent() { return g_alertWarn; }
 
 bool overloadLatched() {
 #if POWERCELL_DSP011
@@ -181,12 +194,12 @@ bool refuseOn(const char *origin) {
   if (stm32link::status(s, &age) && age < STM32_STALE_MS && s.has_bat) { in.vbatValid = true; in.vbat = s.bat_v; }
   OnGate g = onGate(in);
   if (g != OnGate::Allow) {
-    LOGW("PWR", "ON_REFUSED", "%s soc=%u vbat=%.2f", g == OnGate::RefuseSoc ? "bms soc <= 10%" : g == OnGate::RefuseVoltage ? "no bms, vbat < 48.0 V" : "no soc/voltage, latched", (unsigned)b.soc, in.vbat);
+    LOGW("PWR", "ON_REFUSED", "%s soc=%u vbat=%.2f", g == OnGate::RefuseSoc ? (in.espLatched ? "latched, bms soc < 15%" : "bms soc <= 10%") : g == OnGate::RefuseVoltage ? "no bms, vbat < 48.0 V" : "no soc/voltage, latched", (unsigned)b.soc, in.vbat);
     return true;
   }
-  if (g_guard.latched()) {  // manual ON above 10 % clears the ESP latch; it re-latches at <= 10 %
+  if (g_guard.latched()) {  // manual ON at >= 15 % BMS SoC (or the 48 V fallback) clears the ESP latch; it re-latches at <= 10 %
     g_guard.restore(false); g_restorePending = false; saveLatch();
-    LOGW("PWR", "CRITICAL_OVERRIDE", "on above 10%% (origin=%s): ESP latch cleared", origin ? origin : "?");
+    LOGW("PWR", "CRITICAL_OVERRIDE", "on at restart level (origin=%s): ESP latch cleared", origin ? origin : "?");
   }
   if (g_stmRsv) {  // 2.5.6: gate passed, ask the STM32 (XFER4) to clear its reserve latch first
     char rep[48] = {};
@@ -210,8 +223,10 @@ bool refuseOn(const char *origin) {
 void setPriority(const String &id, bool essential) { socketcfg::setPriority(id, essential); }  // console PRIO fallback
 
 void begin() {
+  manualLimitsBegin();  // saved Manual battery-low / warning percents, all builds (was DSP first service only)
 #if POWERCELL_DSP011
   g_cutoff = powercell::BatteryAlertPolicy(millis());
+  g_cutoff.setThresholds(g_alertLow, g_alertWarn);
   // A read-only open of a namespace that was never written returns NOT_FOUND.
   // That is "no latch saved", not a failed read. Treating it as unreadable
   // made outputOnAllowed() false on every boot, so cloud ON was rejected with

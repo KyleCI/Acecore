@@ -19,7 +19,9 @@ bool overTempLatched();
 bool overTempBlocksOn();               // ON would be refused now (no state change)
 bool overTempRefuseOn(const char *origin);  // ON gate: clears the latch when valid and < 70 C  // battery gate only. "soc_restore" passes while the ESP latch is set.
 void setPriority(const String &socketId, bool essential);  // console PRIO fallback: writes the socket config priority
-void setAlertThresholds(float lowPercent, float warningPercent);
+void setAlertThresholds(float lowPercent, float warningPercent);  // saved Manual low / warning (validated, else 25/15)
+float alertLowPercent();      // battery_low notification percent (default 25)
+float alertWarningPercent();  // battery_critical one-time shutdown warning percent (default 15)
 void toJson(JsonObject o);
 String debugJson();
 }  // namespace powerguard

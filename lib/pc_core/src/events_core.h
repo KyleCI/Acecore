@@ -67,6 +67,9 @@ struct Inputs {
   bool hasGrid = false; float gridV = 0;
   bool bmsOnline = false; uint32_t bmsAlarms = 0; float bmsCurrentA = 0;
   bool socValid = false; float soc = 0; const char *socSource = "bms";
+  // battery_soc thresholds: the saved Manual low / shutdown-warning percents (power_guard),
+  // else the 25/15 defaults. An invalid pair falls back to 25/15.
+  float batLowPct = BatteryAlertPolicy::kLow, batCritPct = BatteryAlertPolicy::kCritical;
   // SoC critical latch (ESP, soc_guard.h) and the STM32 reserve latch (legacy RSV:1)
   bool critLatched = false;
   bool stmReserve = false;

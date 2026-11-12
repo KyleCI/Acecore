@@ -166,8 +166,11 @@ void Engine::update(const Inputs &in, uint32_t now, uint32_t ts) {
       cond({"battery_full", Type::BatteryFull, Sev::Info, in.socValid, in.soc, flag ? "charger_full" : "soc_100", nullptr, src, false, 10000, 10000}, raw, now, ts);
     }
   }
-  // ---- Battery low (SoC policy 20/10/5 %, hysteresis 3) -----------------------
-  bat_.update(in.socValid, in.soc, now);
+  // ---- Battery low (SoC policy 25/15/10 %, Caleb 8 Nov; saved Manual low/warning) --
+  // battery_low at <= low, battery_critical at <= warning (one-time shutdown warning,
+  // held while the output latch holds). The 10 % shutdown itself is battery_critical below.
+  bat_.setThresholds(in.batLowPct, in.batCritPct);
+  bat_.update(in.socValid, in.soc, now, in.critLatched || in.stmReserve);
   {
     BatteryLevel l = bat_.level();
     Sev s = l == BatteryLevel::Low ? Sev::Warning : Sev::Critical;

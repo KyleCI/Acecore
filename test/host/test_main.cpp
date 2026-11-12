@@ -289,19 +289,53 @@ static void test_ota_gate() {
 }
 
 static void test_battery_policy() {
+  // Caleb 8 Nov 2026: low 25, critical 15 (one-time shutdown warning), shutdown 10, restart 15.
+  CHECK(BatteryAlertPolicy::kLow == 25 && BatteryAlertPolicy::kCritical == 15 && BatteryAlertPolicy::kShutdown == 10 &&
+        BatteryAlertPolicy::kRestart == 15);
   BatteryAlertPolicy p;
+  CHECK(p.lowPercent() == 25 && p.criticalPercent() == 15);
   CHECK(p.update(true, 80, 0) == 0 && p.level() == BatteryLevel::None);
-  CHECK(p.update(true, 19, 1000) == BatteryAlertPolicy::BatteryChanged && p.level() == BatteryLevel::Low);
-  CHECK(p.update(true, 21, 2000) == 0 && p.level() == BatteryLevel::Low);     // hysteresis
-  CHECK(p.update(true, 9, 3000) && p.level() == BatteryLevel::Critical);
-  CHECK(p.update(true, 4, 4000) && p.level() == BatteryLevel::ShutdownRisk);
-  CHECK(p.update(true, 7, 5000) == 0 && p.level() == BatteryLevel::ShutdownRisk);
-  CHECK(p.update(true, 9, 6000) && p.level() == BatteryLevel::Critical);
-  CHECK(p.update(true, 30, 7000) && p.level() == BatteryLevel::None);
-  CHECK(p.update(false, 0, 8000) == 0 && p.available());
-  CHECK(p.update(false, 0, 8000 + BatteryAlertPolicy::kUnavailableAfterMs) == BatteryAlertPolicy::AvailabilityChanged && !p.available());
-  CHECK(p.update(true, 50, 30000) == BatteryAlertPolicy::AvailabilityChanged && p.available());
+  CHECK(p.update(true, 26, 500) == 0 && p.level() == BatteryLevel::None);
+  CHECK(p.update(true, 25, 1000) == BatteryAlertPolicy::BatteryChanged && p.level() == BatteryLevel::Low);
+  CHECK(p.update(true, 27, 2000) == 0 && p.level() == BatteryLevel::Low);     // hysteresis 3
+  CHECK(p.update(true, 16, 2500) == 0 && p.level() == BatteryLevel::Low);
+  CHECK(p.update(true, 15, 3000) == BatteryAlertPolicy::BatteryChanged && p.level() == BatteryLevel::Critical);
+  // No 5 % level any more: 10 % and below stay Critical (the 10 % shutdown is the battery_critical event).
+  CHECK(p.update(true, 10, 4000) == 0 && p.level() == BatteryLevel::Critical);
+  CHECK(p.update(true, 4, 5000) == 0 && p.level() == BatteryLevel::Critical);
+  // One-time: a wobble across 15/16 % does not repeat it.
+  CHECK(p.update(true, 16, 6000) == 0 && p.update(true, 15, 7000) == 0 && p.update(true, 17, 8000) == 0);
+  // Latch held (restart blocked until 15 %): stays Critical even at 30 %.
+  CHECK(p.update(true, 30, 9000, true) == 0 && p.update(true, 30, 200000, true) == 0 && p.level() == BatteryLevel::Critical);
+  // Released: Critical clears only after > 18 % held 60 s.
+  CHECK(p.update(true, 30, 210000) == 0);
+  CHECK(p.update(true, 30, 269999) == 0 && p.level() == BatteryLevel::Critical);
+  CHECK(p.update(true, 30, 270000) == BatteryAlertPolicy::BatteryChanged && p.level() == BatteryLevel::None);
+  // Leaving at 20 % goes to Low, not None.
+  BatteryAlertPolicy q;
+  q.update(true, 14, 0);
+  CHECK(q.level() == BatteryLevel::Critical);
+  q.update(true, 20, 1000);
+  CHECK(q.update(true, 20, 61000) == BatteryAlertPolicy::BatteryChanged && q.level() == BatteryLevel::Low);
+  // A dip back to <= 18 % restarts the 60 s hold.
+  BatteryAlertPolicy h; h.update(true, 14, 0); h.update(true, 20, 1000); h.update(true, 18, 30000); h.update(true, 20, 40000);
+  CHECK(h.update(true, 20, 61000) == 0 && h.update(true, 20, 100000) == BatteryAlertPolicy::BatteryChanged);
+  // Unavailable after 15 s of invalid readings.
+  CHECK(p.update(false, 0, 280000) == 0 && p.available());
+  CHECK(p.update(false, 0, 280000 + BatteryAlertPolicy::kUnavailableAfterMs) == BatteryAlertPolicy::AvailabilityChanged && !p.available());
+  CHECK(p.update(true, 50, 300000) == BatteryAlertPolicy::AvailabilityChanged && p.available());
   CHECK(!strcmp(batteryLevelType(BatteryLevel::Critical), "battery_critical"));
+  CHECK(!strcmp(batteryLevelType(BatteryLevel::Low), "battery_low"));
+  CHECK(!strcmp(batteryLevelType(BatteryLevel::None), "battery_low"));
+  // Saved Manual values (/v1/battery-settings low 40, warning 20) drive the levels.
+  BatteryAlertPolicy m;
+  CHECK(m.setThresholds(40, 20) && m.lowPercent() == 40 && m.criticalPercent() == 20);
+  CHECK(m.update(true, 40, 0) == BatteryAlertPolicy::BatteryChanged && m.level() == BatteryLevel::Low);
+  CHECK(m.update(true, 20, 1000) == BatteryAlertPolicy::BatteryChanged && m.level() == BatteryLevel::Critical);
+  // Invalid pairs fall back to 25/15.
+  CHECK(!m.setThresholds(15, 20) && m.lowPercent() == 25 && m.criticalPercent() == 15);
+  CHECK(!m.setThresholds(30, 10) && !m.setThresholds(96, 20) && !m.setThresholds(30, 81) && !m.setThresholds(NAN, 15));
+  CHECK(m.setThresholds(12, 11) && !BatteryAlertPolicy::validThresholds(11, 11));
 }
 
 // ---- JK-BMS (JK-PB 300-byte frames) --------------------------------------------
@@ -649,10 +683,19 @@ static void test_events_engine() {
   Engine b; Inputs bi; bi.stmOnline = true; bi.fault = kStatusChargerFull; bi.socValid = true; bi.soc = 98;
   b.update(bi, 0, 1); b.update(bi, 10100, 2); n = b.drain(e, 24);
   CHECK(n == 1 && e[0].type == Type::BatteryFull && e[0].severity == Sev::Info && !strcmp(e[0].code, "charger_full"));
-  bi.fault = 0; bi.soc = 15; b.update(bi, 11000, 3); b.update(bi, 21100, 4); n = b.drain(e, 24);
+  bi.fault = 0; bi.soc = 25; b.update(bi, 11000, 3); b.update(bi, 21100, 4); n = b.drain(e, 24);
   CHECK(countType(e, n, Type::BatteryFull, false) == 1 && countType(e, n, Type::BatteryLow, true) == 1);
-  bi.soc = 8; b.update(bi, 22000, 5); n = b.drain(e, 24);
+  for (size_t i = 0; i < n; ++i) if (e[i].type == Type::BatteryLow) CHECK(!strcmp(e[i].code, "battery_low") && e[i].severity == Sev::Warning);
+  bi.soc = 15; b.update(bi, 22000, 5); n = b.drain(e, 24);
   CHECK(n == 1 && e[0].type == Type::BatteryLow && e[0].severity == Sev::Critical && !strcmp(e[0].code, "battery_critical"));
+  bi.soc = 5; b.update(bi, 23000, 6); CHECK(b.drain(e, 24) == 0);  // no shutdown_imminent level any more
+  // Saved Manual thresholds (low 40, warning 20) feed battery_soc.
+  Engine sv; Inputs svi; svi.socValid = true; svi.soc = 35; svi.batLowPct = 40; svi.batCritPct = 20;
+  sv.update(svi, 0, 1); n = sv.drain(e, 24);
+  CHECK(n == 1 && !strcmp(e[0].id, "battery_soc") && !strcmp(e[0].code, "battery_low"));
+  svi.soc = 20; sv.update(svi, 1000, 2); n = sv.drain(e, 24);
+  CHECK(n == 1 && !strcmp(e[0].code, "battery_critical"));
+  Engine dv; Inputs di; di.socValid = true; di.soc = 35; dv.update(di, 0, 1); CHECK(dv.drain(e, 24) == 0);  // default 25: none
   // BMS alarms
   Engine m; Inputs mi; mi.bmsOnline = true; mi.bmsAlarms = (1u << 13) | (1u << 21);
   m.update(mi, 0, 1); n = m.drain(e, 24);
@@ -772,7 +815,11 @@ static void test_soc_guard() {
   v.bmsOnline = false; v.stmCharging = true; q.update(v, 700001); CHECK(q.update(v, 760001) == Change::Released);
   { // 2.5.5 power-on gate
     OnGateIn o; o.bmsSocValid = true; o.bmsSoc = 11; o.stmReserve = true; o.espLatched = true; o.vbatValid = true; o.vbat = 49;
-    CHECK(onGate(o) == OnGate::Allow);
+    CHECK(onGate(o) == OnGate::RefuseSoc);   // 2.5.13: latched, restart blocked until 15 %
+    o.bmsSoc = 14.9f; CHECK(onGate(o) == OnGate::RefuseSoc);
+    o.bmsSoc = 15; CHECK(onGate(o) == OnGate::Allow);
+    o.espLatched = false; o.bmsSoc = 11; CHECK(onGate(o) == OnGate::Allow);  // not latched: > 10 %
+    o.espLatched = true;
     o.bmsSoc = 10; CHECK(onGate(o) == OnGate::RefuseSoc);
     o.bmsSoc = 5; o.vbat = 53; CHECK(onGate(o) == OnGate::RefuseSoc);
     o.bmsSoc = 50; o.vbat = 47; CHECK(onGate(o) == OnGate::Allow);

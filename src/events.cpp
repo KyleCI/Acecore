@@ -128,6 +128,8 @@ void service() {
   battery::Reading b = battery::read();
   in.socValid = b.valid; in.soc = b.soc; in.socSource = b.source;
   in.critLatched = powerguard::espLatched();
+  in.batLowPct = powerguard::alertLowPercent();
+  in.batCritPct = powerguard::alertWarningPercent();
 #if POWERCELL_DSP011
   {
     DspThermalReading t;

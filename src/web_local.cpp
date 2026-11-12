@@ -250,7 +250,10 @@ void alertJson(JsonObject o, bool availability, const battery::Reading &b) {
   if (g_policy.available() && b.valid) {
     o["battery_percentage"] = b.soc;
     String m = "Battery is at " + String(b.soc) + "%.";
-    if (active) m += " Reduce non-essential loads and recharge.";
+    if (critical && powerguard::latched())
+      m += " Output is off to protect the battery. It can turn on again once the battery is back to 15%.";
+    else if (critical) m += " Output turns off at 10% and stays off until the battery is back to 15%. Recharge now.";
+    else if (active) m += " Reduce non-essential loads and recharge.";
     o["message"] = m;
   } else {
     o["battery_percentage"] = nullptr;
@@ -263,7 +266,9 @@ void sample(bool force) {
   if (!force && g_sampled && now - g_lastSample < 1000) return;
   g_sampled = true; g_lastSample = now;
   battery::Reading b = battery::read();
-  uint8_t ch = g_policy.update(b.valid, b.soc, now);
+  // 25/15/10 policy; low / warning follow the saved Manual battery settings (power_guard).
+  g_policy.setThresholds(powerguard::alertLowPercent(), powerguard::alertWarningPercent());
+  uint8_t ch = g_policy.update(b.valid, b.soc, now, powerguard::latched());
   if (ch & pc::BatteryAlertPolicy::BatteryChanged) g_batSeq = ++g_seq;
   if (ch & pc::BatteryAlertPolicy::AvailabilityChanged) g_unavailSeq = ++g_seq;
 
