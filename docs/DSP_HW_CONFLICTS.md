@@ -10,13 +10,13 @@ These apply to `esp32dev_dsp011_5kw` and `esp32dev_dsp011_35kw` only. STM images
 
 4. GPIO33 was the DSP SD chip select and is also `PIN_STM32_RX` on the original map. DSP images do not start the STM32 UART. SD moved to GPIO5. GPIO33 is unused on DSP images since 10 Nov 2026 (PZEM moved to TX 32 / RX 35).
 
-5. GPIO32 was `PIN_LED_AMBER`. It is now PZEM TX (ESP TX -> PZEM RX). PZEM RX is GPIO35, input-only with no internal pull-up, so the board needs a pull-up on the PZEM TX line. The DSP image has no amber LED. The warning indication uses the blue LED on GPIO13.
+5. GPIO32 was `PIN_LED_AMBER`. It is now PZEM TX (ESP TX -> PZEM RX). PZEM RX is GPIO35, input-only with no internal pull-up, so the board needs a pull-up on the PZEM TX line. The DSP image has no amber LED. The mid-SOC / warning channel is the orange light (`PIN_LED_BLUE`), now on GPIO12 after the 2026-11-12 orange/red swap.
 
 6. GPIO14 was the original SD chip select. On the DSP board it is the green LED. Dubem notes that GPIO14 emits a PWM burst during ROM boot, so the green LED can flicker before `setup()`. The DSP image does not use GPIO14 as a chip select.
 
 7. GPIO27 was the green LED. It is now the front light (NPN, HIGH = ON). Since 2026-11-10 21:10 WAT (Caleb approved) it follows the inverter exactly as Dubem's firmware does (`provisioning.cpp` `applyDeviceState`): HIGH with GPIO15 ON, LOW with every OFF (boot latch, battery cutoff, overload, payment lock, OTA prepare, factory reset/wipe). `gateway` owns the pin (`frontLight()` with `pinMode`/`digitalWrite`); `leds` no longer touches it.
 
-8. GPIO12 is the red LED and a strapping pin (MTDI). The firmware writes it low before `pinMode` and does not enable a pull-up.
+8. GPIO12 is a strapping pin (MTDI). Since 2026-11-12 it is the orange (mid-SOC) status light, not red. The firmware still writes it low before `pinMode` and does not enable a pull-up. Red is GPIO13.
 
 9. DS3231 is not in Dubem's pin file. I2C stays SDA GPIO21 / SCL GPIO22. None of the new DSP pins use 21 or 22.
 
@@ -36,7 +36,9 @@ These apply to `esp32dev_dsp011_5kw` and `esp32dev_dsp011_35kw` only. STM images
 
 ## 16. Battery status light (GPIO12/13/14)
 
-Dubem's lighting.cpp drives red 12, blue 13, green 14 through LEDC (5 kHz, 8-bit), one lit at a time: SOC >= 70 green, 40-69 blue, < 40 red, red with no BMS data or data older than 15 s. With grid present the lit LED breathes on a 4 s triangle, otherwise solid. Our DSP build now does the same (include/dsp_status_led.h, src/leds.cpp), using our GPIO39 grid presence (170 V on, 160 V off) where Dubem used a single 160 V threshold. Caleb confirmed 2026-11-10 21:13 WAT.
+Dubem's lighting.cpp drove red 12, blue 13, green 14 through LEDC (5 kHz, 8-bit), one lit at a time: SOC >= 70 green, 40-69 mid colour, < 40 red, red with no BMS data or data older than 15 s. With grid present the lit LED breathes on a 4 s triangle, otherwise solid. Our DSP build does the same (include/dsp_status_led.h, src/leds.cpp), using our GPIO39 grid presence (170 V on, 160 V off) where Dubem used a single 160 V threshold. Caleb confirmed that behaviour 2026-11-10 21:13 WAT.
+
+Caleb 2026-11-12 asked to swap the orange and red light pins. Orange is the mid-SOC channel (schematic Y, firmware `PIN_LED_BLUE`). The DSP map is now red GPIO13, orange GPIO12, green GPIO14. The front light stays GPIO27. STM images are unchanged.
 
 Replaced on DSP: the critical-latch red blink, STM32 fault red, and the blue offline / hotspot / SOC < 25 % indication. GPIO12 is still driven low before it becomes an output and has no pull-up (MTDI strap), and LEDC is attached only after boot.
 

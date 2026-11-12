@@ -1,8 +1,10 @@
 #pragma once
 // DSP v0.1.1 battery status light (thunderbolt): three single-colour LEDs,
 // one lit at a time, matching Dubem's working firmware (lighting.cpp/.h).
-// Caleb confirmed 2026-11-10 21:13 WAT.
-//   SOC >= 70 %  GREEN     SOC 40..69 %  BLUE     SOC < 40 %  RED
+// Caleb confirmed the colour rules 2026-11-10 21:13 WAT, then on 2026-11-12
+// swapped the orange and red pins (see pins.h): red GPIO13, orange GPIO12
+// (PIN_LED_BLUE, mid-SOC, schematic Y), green GPIO14.
+//   SOC >= 70 %  GREEN     SOC 40..69 %  BLUE/orange     SOC < 40 %  RED
 //   No BMS data, or older than 15 s: RED
 //   Grid present: the lit LED breathes (4 s triangle). No grid: solid.
 // Pure logic, host-tested. Pins and LEDC live in src/leds.cpp.

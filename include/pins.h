@@ -95,10 +95,13 @@
 // (MTDI): keep it low at reset and never enable a pull-up, or the flash
 // runs at 1.8 V and boot fails.
 #if POWERCELL_DSP011
-// Dubem DSP board: red 12, blue 13, green 14. No amber. GPIO32 is PZEM TX, GPIO35 is PZEM RX.
+// DSP status lights. Caleb 2026-11-12: swap orange and red.
+// Orange is the mid-SOC channel (schematic Y, firmware PIN_LED_BLUE). Green stays 14.
+// No amber. GPIO32 is PZEM TX, GPIO35 is PZEM RX.
+// GPIO12 is a strapping pin (MTDI): drive it low at boot and never enable a pull-up.
 // GPIO14 flickers during boot (ROM PWM). GPIO27 is the front light, not green.
-#define PIN_LED_RED 12
-#define PIN_LED_BLUE 13
+#define PIN_LED_RED 13
+#define PIN_LED_BLUE 12
 #define PIN_LED_GREEN 14
 // No PIN_PWR_LIGHT on DSP: GPIO25 is the cooling fan (PIN_FAN).
 #else
@@ -140,7 +143,7 @@ static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "5 kW DSP uses JK-PB
 #if defined(POWERCELL_FACTORY_RATED_ACTIVE_W) && POWERCELL_FACTORY_RATED_ACTIVE_W == 3500
 static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "3.5 kW DSP uses JK-PB (Dubem working firmware)");
 #endif
-static_assert(PIN_LED_RED == 12 && PIN_LED_BLUE == 13 && PIN_LED_GREEN == 14, "DSP RGB");
+static_assert(PIN_LED_RED == 13 && PIN_LED_BLUE == 12 && PIN_LED_GREEN == 14, "DSP status lights: red 13, orange 12, green 14");
 static_assert(PIN_FRONT_LIGHT == 27 && PIN_LED_GREEN != PIN_FRONT_LIGHT, "front light is not the green LED");
 static_assert(PIN_GRID_SENSE == 39, "DSP grid sense is GPIO39");
 static_assert(PIN_NTC == 33 && PIN_FAN == 25, "DSP NTC GPIO33 (Caleb 2026-11-11), fan GPIO25");

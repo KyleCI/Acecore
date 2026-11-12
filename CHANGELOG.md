@@ -1,5 +1,13 @@
 # Collector firmware changelog
 
+## Unreleased (DSP orange and red status light pins swapped)
+
+Caleb 2026-11-12: "Change the light pins swap orange and red on the firmware".
+
+- DSP images only: the orange (mid-SOC, schematic Y, firmware `PIN_LED_BLUE`) and red status lights swap GPIOs. Red is now GPIO13. Orange is now GPIO12. Green stays GPIO14. The front light stays GPIO27. SOC colours are unchanged (70 % and up green, 40-69 % orange/blue channel, under 40 % or no/stale BMS data red).
+- GPIO12 is still a strapping pin (MTDI). `leds::begin()` still writes it low before it becomes an output and does not enable a pull-up.
+- STM images are unchanged (`LED_MAP_OLD_CODE=1`, red GPIO13, yellow GPIO12, green GPIO27, amber GPIO32).
+
 ## Unreleased (live source/status follow grid presence on DSP)
 
 Caleb approved 2026-11-12 13:05 WAT. DSP v0.1.1 units showed `live.source` = battery and `live.status` = inverting with grid connected, because `stm32link::status()` on DSP sets `sys = Inverter` from any PZEM sample and grid presence was not an input to `live::source()` / `live::status()`.
