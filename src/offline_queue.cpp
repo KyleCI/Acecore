@@ -30,8 +30,13 @@ uint32_t dropCount = 0;
 
 bool isLifecycle(const Event &e) { return !strncmp(e.action, "socket_", 7); }
 
+// 2.5.20: one staging buffer for the NVS image, shared by begin() (restore, once, in
+// setup before anything can checkpoint) and checkpoint() (main loop only). Was two
+// separate 3 KB statics; DRAM saved goes straight to the heap TLS needs.
+Event g_stage[OFFLINE_QUEUE_CAPACITY];
+
 void checkpoint() {
-  static Event snap[OFFLINE_QUEUE_CAPACITY];
+  Event *snap = g_stage;
   size_t n;
   xSemaphoreTake(mx, portMAX_DELAY);
   n = q.size();
@@ -55,7 +60,7 @@ void begin() {
     p.putUShort("boots", bootCount);
     size_t len = prefsLen(p, "events");
     if (len && len % sizeof(Event) == 0 && len <= sizeof(Event) * OFFLINE_QUEUE_CAPACITY) {
-      static Event tmp[OFFLINE_QUEUE_CAPACITY];
+      Event *tmp = g_stage;
       p.getBytes("events", tmp, len);
       for (size_t i = 0; i < len / sizeof(Event); ++i) q.push(tmp[i]);
     }

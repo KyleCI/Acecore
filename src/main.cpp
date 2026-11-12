@@ -26,6 +26,8 @@
 #include "dsp011_pzem.h"
 #include "stm32_link.h"
 #include "stm_energy.h"
+#include "grid_sense.h"
+#include "dsp_thermal.h"
 #include "stm32_updater.h"
 #include "web_local.h"
 
@@ -38,7 +40,7 @@ bool prepareForUpdate() {
 }  // namespace
 
 void setup() {
-  gateway::earlyInit();  // GPIO15 latch before pinMode. Stock holds LOW. v0.1.1 holds HIGH (AC off).
+  gateway::earlyInit();  // GPIO15 off latch. STM drives LOW. DSP drives LOW (HIGH = ON) and holds it.
   Serial.begin(115200);
   delay(50);
   esp_reset_reason_t why = esp_reset_reason();
@@ -57,6 +59,8 @@ void setup() {
 #endif
 #if POWERCELL_DSP011
   hwPzemBegin();
+  dspGridBegin();
+  dspThermalBegin();  // NTC GPIO36 + fan GPIO25 task (Dubem dspic collector_2)
 #endif
   battery::begin();
   bms::begin();
@@ -72,6 +76,9 @@ void setup() {
   powerguard::begin();  // after gateway/sockets: a latched shutdown is re-applied from NVS
   stmEnergyBegin();
   net::begin();
+  // 2.5.22: a staged cloud OTA runs here, on the early heap: before ESP-NOW, the web server,
+  // the WS and mDNS allocate. Output stays off (prepareForUpdate); no-op without a job.
+  ota::bootJob(prepareForUpdate);
   socketsStart();     // ESP-NOW follows the STA/AP channel; retries until the radio is up
   web::begin();
   backend::begin();
@@ -102,6 +109,6 @@ void loop() {
   uint32_t dt = millis() - t0;
   if (dt > worst) worst = dt;
   if (dt > LOOP_SLOW_MS) LOGW("LOOP", "SLOW", "pass took %lu ms", (unsigned long)dt);
-  if (millis() - lastReport > 60000) { lastReport = millis(); LOGI("LOOP", "STATS", "worst pass %lu ms in the last minute heap_free=%lu heap_min=%lu heap_largest=%lu largest_min=%lu", (unsigned long)worst, (unsigned long)ESP.getFreeHeap(), (unsigned long)heapguard::heapMin(), (unsigned long)heapguard::heapLargest(), (unsigned long)heapguard::heapLargestMin()); worst = 0; }
+  if (millis() - lastReport > 60000) { lastReport = millis(); LOGI("LOOP", "STATS", "worst pass %lu ms in the last minute heap_free=%lu heap_min=%lu heap_largest=%lu largest_min=%lu iram_free=%lu", (unsigned long)worst, (unsigned long)heapguard::freeNow(), (unsigned long)heapguard::heapMin(), (unsigned long)heapguard::heapLargest(), (unsigned long)heapguard::heapLargestMin(), (unsigned long)heapguard::iramFree()); worst = 0; }
   delay(2);
 }

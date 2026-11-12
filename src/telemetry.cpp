@@ -18,13 +18,22 @@
 #include "solar.h"
 #include "dsp011_pzem.h"
 #include "stm_energy.h"
+#include "grid_sense.h"
+#include "dsp_thermal.h"
+#include "pins.h"
 #include "stm32_link.h"
 #include "factory_id.h"
 #include "live.h"
 #include "unit_model.h"
 
 namespace telemetry {
+#if POWERCELL_DSP011
+void dspGridPublish(JsonObject o, const char *voltKey, const char *availKey);
+#endif
 namespace {
+#if POWERCELL_DSP011
+void dspGridKeys(JsonObject o);
+#endif
 void faultList(JsonArray arr, uint32_t bits) {
   static const char *names[8] = {"overcurrent", "short_circuit", "dc_overvoltage", "dc_undervoltage",
                                  "output_overvoltage", "thermal", "ntc_open", "no_feedback"};
@@ -59,13 +68,22 @@ void inverterBlock(JsonObject inv) {
   stmEnergyToJson(inv, "energy_today_kwh", false);
 #endif
   num("grid_voltage", s.has_grid, s.grid_v);
+#if POWERCELL_DSP011
+  dspGridKeys(inv);
+#endif
+#if POWERCELL_DSP011
+  dspThermalKeys(inv, "temperature");  // system NTC, not an STM32 reading
+#else
   num("temperature", s.has_temp, s.temp_c);
+#endif
   num("battery_voltage", s.has_bat, s.bat_v);  // STM32 PA3 (cross-check)
   if (!fresh) return;
   inv["system"] = pc::sysStateName(s.sys);
   inv["switch"] = pc::switchName(s.sw);
   inv["charge_state"] = pc::chargeName(s.chr);
+#if !POWERCELL_DSP011
   if (s.has_grid) inv["grid_available"] = s.grid_v >= 160.0f;
+#endif
   inv["fault_code"] = s.fault;
   inv["fault_active"] = pc::ev::faultActive(s.fault);  // bits 16-19 are status flags, not faults
   faultList(inv["faults"].to<JsonArray>(), s.fault);
@@ -133,6 +151,10 @@ void batteryBlock(JsonObject b) {
   bmsAlarms(b["alarms"].to<JsonArray>(), d.alarms);
 }
 
+#if POWERCELL_DSP011
+void dspGridKeys(JsonObject o) { dspGridPublish(o, "grid_voltage", "grid_available"); }
+#endif
+
 void solarBlock(JsonObject o) {
   solar::Reading r = solar::read();
   o["online"] = r.ok;
@@ -148,6 +170,79 @@ void solarEnergyKeys(JsonObject o) {  // 2.5.8 PV only. DSP AC energy is not wri
   else { o["energy_today_kwh"] = nullptr; o["energy_total_kwh"] = nullptr; }
 }
 }  // namespace
+
+#if POWERCELL_DSP011
+void dspGridPublish(JsonObject o, const char *voltKey, const char *availKey) {
+  DspGridReading g;
+  o["grid_v_calibrated"] = false;
+  o["grid_v_source"] = "adc_gpio39_k357";
+  // Below the 170/160 window the published volts are null, not the GPIO39
+  // crosstalk reading. Raw ADC stays on grid_sense_raw_v and in SELFTEST.
+  if (dspGridRead(&g) && g.valid) {
+    if (g.present) o[voltKey] = g.vrms;
+    else o[voltKey] = nullptr;
+    o[availKey] = g.present;
+    o["grid_v_clipped"] = g.clipped;
+    o["grid_sense_raw_v"] = g.raw_vrms;
+  } else {
+    o[voltKey] = nullptr;
+    o[availKey] = nullptr;
+    o["grid_v_clipped"] = nullptr;
+    o["grid_sense_raw_v"] = nullptr;
+  }
+}
+#endif
+
+#if POWERCELL_DSP011
+// System NTC (GPIO36) and fan (GPIO25). Ported from Dubem's dspic collector_2.
+// The DSP board has no STM32 temperature, so the installed app's
+// inverter_temperature / inverter.temperature keys carry this NTC, as in
+// Dubem's metrics.cpp and websocket_commands.cpp. tempKey may be null.
+void dspThermalKeys(JsonObject o, const char *tempKey) {
+  DspThermalReading t;
+  const bool ok = dspThermalRead(&t);
+  const bool running = t.sampled;
+  if (ok) o["system_temperature_c"] = t.temp_c; else o["system_temperature_c"] = nullptr;
+  if (tempKey) {
+    if (ok) o[tempKey] = t.temp_c; else o[tempKey] = nullptr;
+  }
+  const bool faulted = powercell::thermal::sensorFaulted(t.sampled, t.fault, t.age_ms);
+  if (running) { o["temp_sensor_fault"] = faulted; o["fan_on"] = t.fan_on; }
+  else { o["temp_sensor_fault"] = nullptr; o["fan_on"] = nullptr; }
+  const bool cut = powerguard::overTempLatched();
+  o["over_temp_cutoff"] = cut;
+  // One alert name for the app: the cutoff wins over a sensor fault.
+  if (cut) o["temp_alert"] = "over_temperature";
+  else if (faulted) o["temp_alert"] = "temp_sensor_fault";
+  else o["temp_alert"] = nullptr;
+}
+
+void dspThermalBlock(JsonObject o) {
+  DspThermalReading t;
+  const bool ok = dspThermalRead(&t);
+  o["sensor"] = "ntc10k_b3950_2k7_gpio33";
+  o["ntc_pin"] = PIN_NTC;
+  o["fan_pin"] = PIN_FAN;
+  o["valid"] = ok;
+  if (ok) o["temperature_c"] = t.temp_c; else o["temperature_c"] = nullptr;
+  const bool faulted = powercell::thermal::sensorFaulted(t.sampled, t.fault, t.age_ms);
+  const bool cut = powerguard::overTempLatched();
+  o["over_temp_cutoff"] = cut;
+  o["on_blocked"] = powerguard::overTempBlocksOn();
+  if (cut) o["alert"] = "over_temperature";
+  else if (faulted) o["alert"] = "temp_sensor_fault";
+  else o["alert"] = nullptr;
+  o["cutoff_c"] = powercell::thermal::kCutoffC;
+  o["on_allowed_below_c"] = powercell::thermal::kOnAllowedBelowC;
+  if (t.sampled) {
+    o["fault"] = faulted; o["fan_on"] = t.fan_on; o["ntc_mv"] = roundf(t.mv); o["age_ms"] = t.age_ms;
+  } else {
+    o["fault"] = nullptr; o["fan_on"] = nullptr; o["ntc_mv"] = nullptr; o["age_ms"] = nullptr;
+  }
+  o["fan_on_c"] = powercell::thermal::kFanOnC;
+  o["fan_off_c"] = powercell::thermal::kFanOffC;
+}
+#endif
 
 void stmEnergyToJson(JsonObject o, const char *kwhKey, bool includeLifetime) {
 #if !POWERCELL_DSP011
@@ -223,6 +318,15 @@ void liveToJson(JsonObject o) {
   if (in.bmsOn) { in.bmsCurrentA = d.currentMa / 1000.0f; in.bmsPowerW = d.powerMw / 1000.0f; }
   solar::Reading sr = solar::read();
   in.solarOk = sr.ok; in.solarW = sr.power;
+#if POWERCELL_DSP011
+  in.sysAssumed = true;  // stm32link::status() sets sys = Inverter from any PZEM sample
+  {
+    DspGridReading g;
+    if (dspGridRead(&g) && g.valid) { in.gridKnown = true; in.gridPresent = g.present; }  // debounced, not raw volts
+  }
+#else
+  if (in.stmFresh && s.has_grid) { in.gridKnown = true; in.gridPresent = s.grid_v >= 160.0f; }  // same rule as grid_available
+#endif
 
   o["source"] = pc::live::sourceName(pc::live::source(in));
   o["status"] = pc::live::statusName(pc::live::status(in));
@@ -246,10 +350,15 @@ void liveToJson(JsonObject o) {
     o["output_power_source"] = nullptr;
     o["lifetime_wh"] = nullptr;
   }
+  dspGridPublish(o, "grid_voltage", "grid_available");
 #endif
   float pct = 0;
   num("load_pct", ps != pc::live::PowerSrc::None && pc::live::loadPct(w, unitmodel::get(), pct), pct);
+#if POWERCELL_DSP011
+  dspThermalKeys(o, "inverter_temperature");
+#else
   num("inverter_temperature", in.stmFresh && s.has_temp, s.temp_c);
+#endif
   {  // 2.5.7 PV in the live block (cloud telemetry.live, /v2/status live, /data+SSE metrics)
     pc::live::SolarView pv = pc::live::solarView(sr.ok, sr.voltage, sr.current);
     o["solar_valid"] = pv.valid;
@@ -286,14 +395,21 @@ void buildTelemetry(JsonDocument &doc) {
   {  // 2.2 top-level fields, every cycle, null when unknown
     battery::Reading b = battery::read();
     if (b.valid) doc["soc"] = b.soc; else doc["soc"] = nullptr;
+#if POWERCELL_DSP011
+    DspGridReading grid;
+    if (dspGridRead(&grid) && grid.valid) doc["grid_available"] = grid.present;
+    else doc["grid_available"] = nullptr;
+#else
     pc::Stm32Status s; uint32_t age = 0;
     if (stm32link::status(s, &age) && age < STM32_STALE_MS && s.has_grid) doc["grid_available"] = s.grid_v >= 160.0f;
     else doc["grid_available"] = nullptr;
+#endif
     events::activeToJson(doc["active_events"].to<JsonArray>());
   }
   batteryBlock(doc["battery"].to<JsonObject>());
   inverterBlock(doc["inverter"].to<JsonObject>());
 #if POWERCELL_DSP011
+  dspThermalBlock(doc["thermal"].to<JsonObject>());
   acEnergyTodayToJson(doc.as<JsonObject>(), "energy_today_kwh");
 #else
   stmEnergyToJson(doc.as<JsonObject>(), "energy_today_kwh", false);
@@ -308,7 +424,7 @@ void buildTelemetry(JsonDocument &doc) {
   sys["uptime_s"] = millis() / 1000;
   sys["free_heap"] = ESP.getFreeHeap();
   sys["heap_min"] = heapguard::heapMin();          // lowest free heap since boot
-  sys["heap_largest"] = heapguard::heapLargest();  // largest free block now (TLS needs >= 45 KB)
+  sys["heap_largest"] = heapguard::heapLargest();  // largest free block now (TLS gate: heap_guard.h)
   sys["heap_largest_min"] = heapguard::heapLargestMin();
   sys["wifi_rssi"] = WiFi.RSSI();
   sys["offline_pending"] = offlineq::pending();
@@ -362,8 +478,18 @@ void buildMetrics(JsonDocument &doc) {
   num("inverterLoad", fresh && s.has_vout && s.has_iout, s.vout * s.iout);
   num("inverterVoltage", fresh && s.has_vout, s.vout);
   num("inverterCurrent", fresh && s.has_iout, s.iout);
+#if POWERCELL_DSP011
+  dspThermalKeys(doc.as<JsonObject>(), "inverter_temperature");
+#else
   num("inverter_temperature", fresh && s.has_temp, s.temp_c);
+#endif
+#if POWERCELL_DSP011
+  {
+    dspGridPublish(doc.as<JsonObject>(), "gridVoltage", "grid_available");
+  }
+#else
   num("gridVoltage", fresh && s.has_grid, s.grid_v);
+#endif
   if (fresh) { doc["inverter_mode"] = pc::sysStateName(s.sys); doc["fault_code"] = s.fault; }
   solar::Reading sr = solar::read();
   num("solarVoltage", sr.ok, sr.voltage);

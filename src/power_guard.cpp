@@ -14,10 +14,12 @@
 #include "hw_output.h"
 #include "log.h"
 #include "events_core.h"
+#include "local_auth.h"
 #include "soc_guard.h"
 #include "socket_cfg.h"
 #include "sockets/sockets.h"
 #include "stm32_link.h"
+#include "dsp_thermal.h"
 
 namespace powerguard {
 namespace {
@@ -31,6 +33,7 @@ float g_soc = 0; bool g_socValid = false;
 bool g_gridDown = true;   // STM32 grid < 160 V (restore 170 V); unknown/stale = down
 bool g_overload = false;  // inverter overload (STM32 bit16 or iout >= 19 A, clear 17 A)
 const char *NS = "pwr_guard";
+float g_alertLow = pc::BatteryAlertPolicy::kLow, g_alertWarn = pc::BatteryAlertPolicy::kCritical;
 #if POWERCELL_DSP011
 powercell::BatteryAlertPolicy g_cutoff;
 bool g_cutoffOff = false;
@@ -42,6 +45,29 @@ void saveCutoff() {
   p.putUChar("latch", g_cutoff.outputLatched() ? 1 : 0);
   p.end();
   g_cutoff.ackLatchSave(true);
+}
+powercell::thermal::OverTempGuard g_ot;
+bool g_otOff = false;
+uint32_t g_otLastTry = 0;
+
+// 2.5.20 diagnostic only: the reading that tripped the latch (deci-C), kept in NVS
+// next to ot_latch and logged when the latch is restored at boot. -32768 = unknown
+// (latched by an older build). No change to when the latch sets or clears.
+int16_t g_otTripC10 = INT16_MIN;
+void saveOverTemp() {
+  Preferences p;
+  if (!p.begin(kCutoffNs, false)) return;  // dirty stays set: retried next pass
+  p.putUChar("ot_latch", g_ot.latched() ? 1 : 0);
+  if (g_ot.latched()) p.putShort("ot_c10", g_otTripC10);
+  else p.remove("ot_c10");
+  p.end();
+  g_ot.ackSaved();
+}
+bool thermalNow(float *c) {
+  DspThermalReading t;
+  const bool ok = dspThermalRead(&t);
+  *c = t.temp_c;
+  return ok;
 }
 void holdAcOff() {
   if (!powercell::battery_ac_output_auto_off(powercell::HardwareProfile::V011)) return;
@@ -93,19 +119,68 @@ bool latched() {
 #endif
 }
 bool lowPower() { return g_low; }
+// Saved Manual battery-low / shutdown-warning percents (manual_limits, /v1/battery-settings).
+// All builds: they drive the /events battery_low|battery_critical notifications and the
+// cloud battery_soc event. DSP: also the BatteryAlertPolicy warning. The 10 % cutoff and the
+// 15 % restart are fixed. A pair that is out of range or misordered (bad NVS) uses 25/15.
 void setAlertThresholds(float lowPercent, float warningPercent) {
+  if (!pc::BatteryAlertPolicy::validThresholds(lowPercent, warningPercent)) {
+    LOGW("PWR", "ALERT_THRESHOLDS", "saved low=%.0f warning=%.0f invalid; using %.0f/%.0f", lowPercent, warningPercent,
+         pc::BatteryAlertPolicy::kLow, pc::BatteryAlertPolicy::kCritical);
+    lowPercent = pc::BatteryAlertPolicy::kLow;
+    warningPercent = pc::BatteryAlertPolicy::kCritical;
+  }
+  g_alertLow = lowPercent;
+  g_alertWarn = warningPercent;
 #if POWERCELL_DSP011
   g_cutoff.setThresholds(lowPercent, warningPercent);
-#else
-  (void)lowPercent;
-  (void)warningPercent;
 #endif
 }
+float alertLowPercent() { return g_alertLow; }
+float alertWarningPercent() { return g_alertWarn; }
 
 bool overloadLatched() {
 #if POWERCELL_DSP011
   return powercell::acOutputPolicy().shutdownLatched();
 #else
+  return false;
+#endif
+}
+
+bool overTempLatched() {
+#if POWERCELL_DSP011
+  return g_ot.latched();
+#else
+  return false;
+#endif
+}
+bool overTempBlocksOn() {
+#if POWERCELL_DSP011
+  float c = 0;
+  const bool ok = thermalNow(&c);
+  return g_ot.blocksOn(ok, c);
+#else
+  return false;
+#endif
+}
+bool overTempRefuseOn(const char *origin) {
+#if POWERCELL_DSP011
+  float c = 0;
+  const bool ok = thermalNow(&c);
+  const bool was = g_ot.latched();
+  if (!g_ot.acceptOn(ok, c)) {
+    if (ok) LOGW("PWR", "OVER_TEMP_REFUSED", "on refused at %.1f C (origin=%s latched=%d)", c, origin ? origin : "?", (int)was);
+    else LOGW("PWR", "OVER_TEMP_REFUSED", "on refused: no valid temperature (origin=%s latched=%d)", origin ? origin : "?", (int)was);
+    return true;
+  }
+  if (was) {
+    saveOverTemp();
+    g_otOff = false;
+    LOGW("PWR", "OVER_TEMP_CLEARED", "user on at %.1f C (< %.0f C, origin=%s)", c, powercell::thermal::kOnAllowedBelowC, origin ? origin : "?");
+  }
+  return false;
+#else
+  (void)origin;
   return false;
 #endif
 }
@@ -125,12 +200,12 @@ bool refuseOn(const char *origin) {
   if (stm32link::status(s, &age) && age < STM32_STALE_MS && s.has_bat) { in.vbatValid = true; in.vbat = s.bat_v; }
   OnGate g = onGate(in);
   if (g != OnGate::Allow) {
-    LOGW("PWR", "ON_REFUSED", "%s soc=%u vbat=%.2f", g == OnGate::RefuseSoc ? "bms soc <= 10%" : g == OnGate::RefuseVoltage ? "no bms, vbat < 48.0 V" : "no soc/voltage, latched", (unsigned)b.soc, in.vbat);
+    LOGW("PWR", "ON_REFUSED", "%s soc=%u vbat=%.2f", g == OnGate::RefuseSoc ? (in.espLatched ? "latched, bms soc < 15%" : "bms soc <= 10%") : g == OnGate::RefuseVoltage ? "no bms, vbat < 48.0 V" : "no soc/voltage, latched", (unsigned)b.soc, in.vbat);
     return true;
   }
-  if (g_guard.latched()) {  // manual ON above 10 % clears the ESP latch; it re-latches at <= 10 %
+  if (g_guard.latched()) {  // manual ON at >= 15 % BMS SoC (or the 48 V fallback) clears the ESP latch; it re-latches at <= 10 %
     g_guard.restore(false); g_restorePending = false; saveLatch();
-    LOGW("PWR", "CRITICAL_OVERRIDE", "on above 10%% (origin=%s): ESP latch cleared", origin ? origin : "?");
+    LOGW("PWR", "CRITICAL_OVERRIDE", "on at restart level (origin=%s): ESP latch cleared", origin ? origin : "?");
   }
   if (g_stmRsv) {  // 2.5.6: gate passed, ask the STM32 (XFER4) to clear its reserve latch first
     char rep[48] = {};
@@ -154,8 +229,10 @@ bool refuseOn(const char *origin) {
 void setPriority(const String &id, bool essential) { socketcfg::setPriority(id, essential); }  // console PRIO fallback
 
 void begin() {
+  manualLimitsBegin();  // saved Manual battery-low / warning percents, all builds (was DSP first service only)
 #if POWERCELL_DSP011
   g_cutoff = powercell::BatteryAlertPolicy(millis());
+  g_cutoff.setThresholds(g_alertLow, g_alertWarn);
   // A read-only open of a namespace that was never written returns NOT_FOUND.
   // That is "no latch saved", not a failed read. Treating it as unreadable
   // made outputOnAllowed() false on every boot, so cloud ON was rejected with
@@ -180,6 +257,21 @@ void begin() {
   }
   g_cutoff.applyLatchStore(powercell::BatteryAlertPolicy::classifyLatchStore(opened, not_found, has_key, held));
   if (!g_cutoff.outputOnAllowed()) holdAcOff();
+  {  // over-temperature latch, same namespace. Missing key = not latched.
+    uint8_t ot = 0;
+    int16_t tripC10 = INT16_MIN;
+    if (nvs_open(kCutoffNs, NVS_READONLY, &h) == ESP_OK) { nvs_get_u8(h, "ot_latch", &ot); nvs_get_i16(h, "ot_c10", &tripC10); nvs_close(h); }
+    g_ot.restore(ot != 0);
+    if (g_ot.latched()) {
+      g_otTripC10 = tripC10;
+      char trip[16];
+      if (tripC10 == INT16_MIN) snprintf(trip, sizeof trip, "unknown"); else snprintf(trip, sizeof trip, "%.1f C", tripC10 / 10.0f);
+      LOGW("PWR", "OVER_TEMP_RESTORED", "over-temperature latch from NVS (tripped at %s); output held off until < %.0f C and a user on",
+           trip, powercell::thermal::kOnAllowedBelowC);
+      gateway::Result r = gateway::set(false, "over_temperature");
+      g_otOff = r == gateway::Result::Ok;
+    }
+  }
   return;
 #else
   Preferences p;
@@ -211,9 +303,26 @@ void service() {
   if (g_cutoff.latchDirty()) saveCutoff();
   if (!g_cutoff.outputOnAllowed()) holdAcOff();
   else g_cutoffOff = false;  // eligible again; do not turn the output on
+  {  // over-temperature cutoff: >= 80 C latches, GPIO15 off, no auto-on
+    float c = 0;
+    const bool ok = thermalNow(&c);
+    if (g_ot.update(ok, c)) {
+      g_otOff = false; g_otLastTry = 0;
+      g_otTripC10 = static_cast<int16_t>(lroundf(c * 10.0f));
+      LOGE("PWR", "OVER_TEMP_CUTOFF", "system temperature %.1f C >= %.0f C: inverter output off (latched)", c, powercell::thermal::kCutoffC);
+    }
+    if (g_ot.dirty()) saveOverTemp();
+    if (g_ot.latched() && (gateway::state() || (!g_otOff && (!g_otLastTry || now - g_otLastTry >= 5000)))) {
+      g_otLastTry = now;
+      gateway::Result r = gateway::set(false, "over_temperature");
+      g_otOff = r == gateway::Result::Ok;
+    }
+  }
   manualLimitsService(now);
   if (powercell::acOutputPolicy().shutdownLatched()) {
     const bool edge = powercell::acOutputPolicy().takeShutdownEdge();
+    if (edge) LOGW("PWR", "AC_LIMIT_SHUTDOWN", "%s: inverter output off (ac_output_shutdown event)",
+                   powercell::acOutputPolicy().systemOverloadLatched() ? "usable rating exceeded 8 s" : "Manual ceiling exceeded 8 s");
     if (gateway::state() || edge) gateway::set(false, "ac_overload");
   }
   return;
@@ -281,6 +390,10 @@ void toJson(JsonObject o) {
   o["physical_shutdown_verified"] = powercell::kPhysicalShutdownVerified;
   o["stm32_reserve_latched"] = false;
   o["charging_stopped"] = powercell::battery_cutoff_stops_charging();
+  o["over_temp_cutoff"] = g_ot.latched();
+  o["over_temp_blocks_on"] = overTempBlocksOn();
+  o["over_temp_cutoff_c"] = powercell::thermal::kCutoffC;
+  o["over_temp_on_below_c"] = powercell::thermal::kOnAllowedBelowC;
   return;
 #else
   o["critical_latched"] = g_guard.latched();

@@ -187,6 +187,25 @@ const char *setPasscodeError(const char *rid, bool tls, uint64_t now, uint64_t e
 }
 bool validUnclaimReason(const char *r) { return r && (!strcmp(r, "owner_request") || !strcmp(r, "transfer") || !strcmp(r, "support")); }
 bool unclaimClearsPairs(const char *r) { return r && (!strcmp(r, "transfer") || !strcmp(r, "support")); }
+// Never listed: pc_ident (serial, secret, label hotspot password, reset/payment state),
+// pc_cfg (model, calibration, protocol), system_cfg (factory rating), pc_ota, pwr_guard
+// (battery protection latch), battery_alerts (sequence), solar and clock (tz key only).
+const char *const kFactoryResetNamespaces[] = {"pc_onb", "pc_offline", "registry", "forgotten",
+                                              "sock_cfg", "sock_prio", "ac_out", "bat_set"};
+const size_t kFactoryResetNamespaceCount = sizeof kFactoryResetNamespaces / sizeof kFactoryResetNamespaces[0];
+// Kept in pc_secure: api_key, ota_url, admin_tok, espnow_keys, locked, migrated.
+const char *const kFactoryResetUserKeys[] = {"wifi_ssid", "wifi_pass", "local_tok", "net_mode", "label_pc", "gw_name", "ap_pass"};
+const size_t kFactoryResetUserKeyCount = sizeof kFactoryResetUserKeys / sizeof kFactoryResetUserKeys[0];
+bool factoryResetErasesNamespace(const char *ns) {
+  if (!ns) return false;
+  for (size_t i = 0; i < kFactoryResetNamespaceCount; ++i) if (!strcmp(ns, kFactoryResetNamespaces[i])) return true;
+  return false;
+}
+bool factoryResetRemovesKey(const char *key) {
+  if (!key) return false;
+  for (size_t i = 0; i < kFactoryResetUserKeyCount; ++i) if (!strcmp(key, kFactoryResetUserKeys[i])) return true;
+  return false;
+}
 bool validOwnerId(const char *o) {
   size_t n = o ? strlen(o) : 0;
   if (!n || n > 64) return false;

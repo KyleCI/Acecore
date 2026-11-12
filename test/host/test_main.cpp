@@ -4,6 +4,7 @@
 #include <math.h>
 #include "crc.h"
 #include "identity.h"
+#include "mdns_core.h"
 #include "ota_identity.h"
 #include "jk_bms.h"
 #include "power_policy.h"
@@ -21,6 +22,12 @@
 #include "../../smart-socket-firmware/src/trip_lockout.h"
 #include "payment_lock.h"
 #include "hw_output.h"
+#include "ac_output_policy.h"
+#include "lan_ota.h"
+#include "ota_errors.h"
+#include "ota_boot.h"
+#include <string>
+#include <algorithm>
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(c) do { if (c) ++g_pass; else { ++g_fail; printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -288,19 +295,53 @@ static void test_ota_gate() {
 }
 
 static void test_battery_policy() {
+  // Caleb 8 Nov 2026: low 25, critical 15 (one-time shutdown warning), shutdown 10, restart 15.
+  CHECK(BatteryAlertPolicy::kLow == 25 && BatteryAlertPolicy::kCritical == 15 && BatteryAlertPolicy::kShutdown == 10 &&
+        BatteryAlertPolicy::kRestart == 15);
   BatteryAlertPolicy p;
+  CHECK(p.lowPercent() == 25 && p.criticalPercent() == 15);
   CHECK(p.update(true, 80, 0) == 0 && p.level() == BatteryLevel::None);
-  CHECK(p.update(true, 19, 1000) == BatteryAlertPolicy::BatteryChanged && p.level() == BatteryLevel::Low);
-  CHECK(p.update(true, 21, 2000) == 0 && p.level() == BatteryLevel::Low);     // hysteresis
-  CHECK(p.update(true, 9, 3000) && p.level() == BatteryLevel::Critical);
-  CHECK(p.update(true, 4, 4000) && p.level() == BatteryLevel::ShutdownRisk);
-  CHECK(p.update(true, 7, 5000) == 0 && p.level() == BatteryLevel::ShutdownRisk);
-  CHECK(p.update(true, 9, 6000) && p.level() == BatteryLevel::Critical);
-  CHECK(p.update(true, 30, 7000) && p.level() == BatteryLevel::None);
-  CHECK(p.update(false, 0, 8000) == 0 && p.available());
-  CHECK(p.update(false, 0, 8000 + BatteryAlertPolicy::kUnavailableAfterMs) == BatteryAlertPolicy::AvailabilityChanged && !p.available());
-  CHECK(p.update(true, 50, 30000) == BatteryAlertPolicy::AvailabilityChanged && p.available());
+  CHECK(p.update(true, 26, 500) == 0 && p.level() == BatteryLevel::None);
+  CHECK(p.update(true, 25, 1000) == BatteryAlertPolicy::BatteryChanged && p.level() == BatteryLevel::Low);
+  CHECK(p.update(true, 27, 2000) == 0 && p.level() == BatteryLevel::Low);     // hysteresis 3
+  CHECK(p.update(true, 16, 2500) == 0 && p.level() == BatteryLevel::Low);
+  CHECK(p.update(true, 15, 3000) == BatteryAlertPolicy::BatteryChanged && p.level() == BatteryLevel::Critical);
+  // No 5 % level any more: 10 % and below stay Critical (the 10 % shutdown is the battery_critical event).
+  CHECK(p.update(true, 10, 4000) == 0 && p.level() == BatteryLevel::Critical);
+  CHECK(p.update(true, 4, 5000) == 0 && p.level() == BatteryLevel::Critical);
+  // One-time: a wobble across 15/16 % does not repeat it.
+  CHECK(p.update(true, 16, 6000) == 0 && p.update(true, 15, 7000) == 0 && p.update(true, 17, 8000) == 0);
+  // Latch held (restart blocked until 15 %): stays Critical even at 30 %.
+  CHECK(p.update(true, 30, 9000, true) == 0 && p.update(true, 30, 200000, true) == 0 && p.level() == BatteryLevel::Critical);
+  // Released: Critical clears only after > 18 % held 60 s.
+  CHECK(p.update(true, 30, 210000) == 0);
+  CHECK(p.update(true, 30, 269999) == 0 && p.level() == BatteryLevel::Critical);
+  CHECK(p.update(true, 30, 270000) == BatteryAlertPolicy::BatteryChanged && p.level() == BatteryLevel::None);
+  // Leaving at 20 % goes to Low, not None.
+  BatteryAlertPolicy q;
+  q.update(true, 14, 0);
+  CHECK(q.level() == BatteryLevel::Critical);
+  q.update(true, 20, 1000);
+  CHECK(q.update(true, 20, 61000) == BatteryAlertPolicy::BatteryChanged && q.level() == BatteryLevel::Low);
+  // A dip back to <= 18 % restarts the 60 s hold.
+  BatteryAlertPolicy h; h.update(true, 14, 0); h.update(true, 20, 1000); h.update(true, 18, 30000); h.update(true, 20, 40000);
+  CHECK(h.update(true, 20, 61000) == 0 && h.update(true, 20, 100000) == BatteryAlertPolicy::BatteryChanged);
+  // Unavailable after 15 s of invalid readings.
+  CHECK(p.update(false, 0, 280000) == 0 && p.available());
+  CHECK(p.update(false, 0, 280000 + BatteryAlertPolicy::kUnavailableAfterMs) == BatteryAlertPolicy::AvailabilityChanged && !p.available());
+  CHECK(p.update(true, 50, 300000) == BatteryAlertPolicy::AvailabilityChanged && p.available());
   CHECK(!strcmp(batteryLevelType(BatteryLevel::Critical), "battery_critical"));
+  CHECK(!strcmp(batteryLevelType(BatteryLevel::Low), "battery_low"));
+  CHECK(!strcmp(batteryLevelType(BatteryLevel::None), "battery_low"));
+  // Saved Manual values (/v1/battery-settings low 40, warning 20) drive the levels.
+  BatteryAlertPolicy m;
+  CHECK(m.setThresholds(40, 20) && m.lowPercent() == 40 && m.criticalPercent() == 20);
+  CHECK(m.update(true, 40, 0) == BatteryAlertPolicy::BatteryChanged && m.level() == BatteryLevel::Low);
+  CHECK(m.update(true, 20, 1000) == BatteryAlertPolicy::BatteryChanged && m.level() == BatteryLevel::Critical);
+  // Invalid pairs fall back to 25/15.
+  CHECK(!m.setThresholds(15, 20) && m.lowPercent() == 25 && m.criticalPercent() == 15);
+  CHECK(!m.setThresholds(30, 10) && !m.setThresholds(96, 20) && !m.setThresholds(30, 81) && !m.setThresholds(NAN, 15));
+  CHECK(m.setThresholds(12, 11) && !BatteryAlertPolicy::validThresholds(11, 11));
 }
 
 // ---- JK-BMS (JK-PB 300-byte frames) --------------------------------------------
@@ -648,10 +689,19 @@ static void test_events_engine() {
   Engine b; Inputs bi; bi.stmOnline = true; bi.fault = kStatusChargerFull; bi.socValid = true; bi.soc = 98;
   b.update(bi, 0, 1); b.update(bi, 10100, 2); n = b.drain(e, 24);
   CHECK(n == 1 && e[0].type == Type::BatteryFull && e[0].severity == Sev::Info && !strcmp(e[0].code, "charger_full"));
-  bi.fault = 0; bi.soc = 15; b.update(bi, 11000, 3); b.update(bi, 21100, 4); n = b.drain(e, 24);
+  bi.fault = 0; bi.soc = 25; b.update(bi, 11000, 3); b.update(bi, 21100, 4); n = b.drain(e, 24);
   CHECK(countType(e, n, Type::BatteryFull, false) == 1 && countType(e, n, Type::BatteryLow, true) == 1);
-  bi.soc = 8; b.update(bi, 22000, 5); n = b.drain(e, 24);
+  for (size_t i = 0; i < n; ++i) if (e[i].type == Type::BatteryLow) CHECK(!strcmp(e[i].code, "battery_low") && e[i].severity == Sev::Warning);
+  bi.soc = 15; b.update(bi, 22000, 5); n = b.drain(e, 24);
   CHECK(n == 1 && e[0].type == Type::BatteryLow && e[0].severity == Sev::Critical && !strcmp(e[0].code, "battery_critical"));
+  bi.soc = 5; b.update(bi, 23000, 6); CHECK(b.drain(e, 24) == 0);  // no shutdown_imminent level any more
+  // Saved Manual thresholds (low 40, warning 20) feed battery_soc.
+  Engine sv; Inputs svi; svi.socValid = true; svi.soc = 35; svi.batLowPct = 40; svi.batCritPct = 20;
+  sv.update(svi, 0, 1); n = sv.drain(e, 24);
+  CHECK(n == 1 && !strcmp(e[0].id, "battery_soc") && !strcmp(e[0].code, "battery_low"));
+  svi.soc = 20; sv.update(svi, 1000, 2); n = sv.drain(e, 24);
+  CHECK(n == 1 && !strcmp(e[0].code, "battery_critical"));
+  Engine dv; Inputs di; di.socValid = true; di.soc = 35; dv.update(di, 0, 1); CHECK(dv.drain(e, 24) == 0);  // default 25: none
   // BMS alarms
   Engine m; Inputs mi; mi.bmsOnline = true; mi.bmsAlarms = (1u << 13) | (1u << 21);
   m.update(mi, 0, 1); n = m.drain(e, 24);
@@ -771,7 +821,11 @@ static void test_soc_guard() {
   v.bmsOnline = false; v.stmCharging = true; q.update(v, 700001); CHECK(q.update(v, 760001) == Change::Released);
   { // 2.5.5 power-on gate
     OnGateIn o; o.bmsSocValid = true; o.bmsSoc = 11; o.stmReserve = true; o.espLatched = true; o.vbatValid = true; o.vbat = 49;
-    CHECK(onGate(o) == OnGate::Allow);
+    CHECK(onGate(o) == OnGate::RefuseSoc);   // 2.5.13: latched, restart blocked until 15 %
+    o.bmsSoc = 14.9f; CHECK(onGate(o) == OnGate::RefuseSoc);
+    o.bmsSoc = 15; CHECK(onGate(o) == OnGate::Allow);
+    o.espLatched = false; o.bmsSoc = 11; CHECK(onGate(o) == OnGate::Allow);  // not latched: > 10 %
+    o.espLatched = true;
     o.bmsSoc = 10; CHECK(onGate(o) == OnGate::RefuseSoc);
     o.bmsSoc = 5; o.vbat = 53; CHECK(onGate(o) == OnGate::RefuseSoc);
     o.bmsSoc = 50; o.vbat = 47; CHECK(onGate(o) == OnGate::Allow);
@@ -868,6 +922,15 @@ static void put_rtc(uint8_t frame[16], int y, int mo, int d, int h, int mi, int 
 #include "battery_alert_policy.h"
 #include "ac_energy_today.h"
 #include "stm_energy.h"
+#include "jbd_bms.h"
+#include "grid_sense.h"
+#include "dsp_thermal.h"
+#include "pzem_stats.h"
+#include "pzem_route.h"
+#include "dsp_status_led.h"
+#include "hw_output.h"
+#include "config.h"
+#include "pins.h"
 static powercell::BatteryReading soc_at(float percent, uint32_t at, bool bms_own = true) {
   return {true, percent, 51.2f, at, false, bms_own};
 }
@@ -920,7 +983,7 @@ static void test_factory_rating() {
 
 static void test_sd_energy() {
   using namespace powercell;
-  CHECK(profile_sd_cs(HardwareProfile::V011) == 33);
+  CHECK(profile_sd_cs(HardwareProfile::V011) == 5);
   CHECK(profile_sd_cs(HardwareProfile::Original) == 14);
   CHECK(profile_sd_cs(HardwareProfile::V011) != 25 && profile_sd_cs(HardwareProfile::V011) != 26);
   CHECK(!diag_kind_allowed(HardwareProfile::V011, KindDiagStm32));
@@ -974,7 +1037,7 @@ static void test_battery_cutoff() {
   CHECK(!P::kPhysicalAutoOffEnabled);
   CHECK(!powercell::battery_cutoff_writes_bms_fets() && !powercell::battery_cutoff_stops_charging());
   CHECK(!powercell::battery_recovery_drives_on());
-  CHECK(powercell::battery_cutoff_pin_level(powercell::HardwareProfile::V011, true) == 1);
+  CHECK(powercell::battery_cutoff_pin_level(powercell::HardwareProfile::V011, true) == 0);
   CHECK(powercell::battery_cutoff_pin_level(powercell::HardwareProfile::Original, true) == -1);
   CHECK(!powercell::battery_ac_output_auto_off(powercell::HardwareProfile::Original));
   CHECK(powercell::battery_ac_output_auto_off(powercell::HardwareProfile::V011));
@@ -1088,11 +1151,38 @@ static void test_ac_energy_today() {
   o = t.observe(in);
   CHECK(!o.known && !o.persist && !t.baselineValid());
 
-  in.clock = TodayClock::Anchored;
-  in.day_id = 100;
+  // Offline, no trusted clock: first valid PZEM sample starts a session baseline.
+  in.clock = TodayClock::Session;
+  in.day_id = kSessionDayId;
   o = t.observe(in);
   CHECK(o.known && o.persist && o.kwh == 0);
+  CHECK(t.baselineWh() == 5000 && t.dayId() == kSessionDayId && t.known());
+
+  in.lifetime_wh = 6350;  // 1.35 kWh since the first sample (Caleb's 1350 Wh case)
+  in.mono_ms = 1000 + 3600 * 1000;
+  o = t.observe(in);
+  CHECK(o.known && !o.persist);
+  NEAR(o.kwh, 1.35, 1e-9);
+
+  // A trusted clock later in the same run adopts the session; energy stays.
+  in.clock = TodayClock::Anchored;
+  in.day_id = 100;
+  in.lifetime_wh = 6350;
+  in.mono_ms = 1000 + 3600 * 1000 + 1000;
+  o = t.observe(in);
+  CHECK(o.known && o.persist);
+  NEAR(o.kwh, 1.35, 1e-9);
   CHECK(t.baselineWh() == 5000 && t.dayId() == 100);
+
+  AcEnergyToday fresh;
+  in.clock = TodayClock::Anchored;
+  in.day_id = 100;
+  in.lifetime_wh = 5000;
+  in.mono_ms = 1000;
+  o = fresh.observe(in);
+  CHECK(o.known && o.persist && o.kwh == 0);
+  CHECK(fresh.baselineWh() == 5000 && fresh.dayId() == 100);
+  t = fresh;
 
   in.lifetime_wh = 6500;
   in.mono_ms = 1000 + 3600 * 1000;
@@ -1145,20 +1235,227 @@ static void test_ac_energy_today() {
   in.clock = TodayClock::Untrusted;
   in.lifetime_wh = 9500;
   o = booted.observe(in);
-  CHECK(!o.known && !o.persist);
+  CHECK(o.known && !o.persist);  // keep the established day if the clock drops
+  NEAR(o.kwh, 0.0, 1e-9);
+  CHECK(booted.dayId() == 101 && booted.baselineWh() == 9000);
+
+  in.clock = TodayClock::Session;
+  in.day_id = kSessionDayId;
+  in.lifetime_wh = 9500;
+  in.mono_ms = 8000 + 3600 * 1000;  // 500 Wh over an hour is a plausible step
+  o = booted.observe(in);
+  CHECK(o.known);
+  NEAR(o.kwh, 0.5, 1e-9);
   CHECK(booted.dayId() == 101 && booted.baselineWh() == 9000);
 }
 
 static void test_v011_gpio() {
   using namespace powercell;
-  CHECK(v011_dsp_level(true) == 0 && v011_dsp_level(false) == 1);
+  CHECK(DSP_PWR_ACTIVE_LEVEL == 1);
+  CHECK(v011_dsp_level(true) == 1 && v011_dsp_level(false) == 0);
   CHECK(original_relay_level(true) == 1 && original_relay_level(false) == 0);
   CHECK(!kPhysicalShutdownVerified && kDspPolarityUserConfirmed);
   CHECK(!battery_recovery_drives_on());
   BootStep steps[2];
   v011_dsp_boot(steps);
-  CHECK(steps[0].action == BootAction::SetOutputLatch && steps[0].level == 1);
-  CHECK(steps[1].action == BootAction::EnableOutput && steps[1].level == 1);
+  CHECK(steps[0].action == BootAction::SetOutputLatch && steps[0].level == 0);
+  CHECK(steps[1].action == BootAction::EnableOutput && steps[1].level == 0);
+  CHECK(battery_cutoff_pin_level(HardwareProfile::V011, true) == 0);
+  CHECK(battery_cutoff_pin_level(HardwareProfile::V011, false) == -1);
+  CHECK(battery_cutoff_pin_level(HardwareProfile::Original, true) == -1);
+  CHECK(commanded_pin_level(HardwareProfile::Original, true) == 1);
+  CHECK(commanded_pin_level(HardwareProfile::Original, false) == 0);
+  CHECK(commanded_pin_level(HardwareProfile::V011, true) == 1);
+  const OffOrigin offs[] = {OffOrigin::BootLatch, OffOrigin::OtaSafe, OffOrigin::BatteryCutoff,
+                            OffOrigin::Overload, OffOrigin::PaymentLock, OffOrigin::RemoteOff,
+                            OffOrigin::FactoryReset};
+  for (OffOrigin origin : offs) {
+    CHECK(off_origin_level(HardwareProfile::V011, origin) == 0);
+    CHECK(off_origin_level(HardwareProfile::Original, origin) == 0);
+  }
+}
+
+// Model of one ESP32 pad: IO_MUX function, hold latch, GPIO-matrix level and enable.
+struct PadSim {
+  bool gpio_func = false;  // GPIO15 resets into MTDO (JTAG)
+  bool held = false;
+  bool out_en = false;
+  int reg = 0;
+  int pad = -1;  // -1 = not driven by the GPIO matrix (floating / JTAG)
+  void settle() {
+    if (held) return;  // frozen
+    pad = (gpio_func && out_en) ? reg : -1;
+  }
+  void apply(const powercell::PadStep& st) {
+    using powercell::PadOp;
+    switch (st.op) {
+      case PadOp::HoldRelease: held = false; break;
+      case PadOp::SelectGpio: gpio_func = true; break;
+      case PadOp::PullsOff: break;
+      case PadOp::SetLevel: reg = st.level; break;
+      case PadOp::OutputEnable: out_en = true; break;
+      case PadOp::HoldEnable: settle(); held = true; return;
+    }
+    settle();
+  }
+  void run(bool on) {
+    powercell::PadStep steps[powercell::kDspPadSteps];
+    const size_t n = powercell::v011_dsp_pad_steps(on, steps);
+    for (size_t i = 0; i < n; ++i) apply(steps[i]);
+  }
+};
+
+static void test_dsp_pad_steps() {
+  using namespace powercell;
+  // The cbf48bd sequence: level + direction + hold, no IO_MUX select. The pad never follows.
+  PadSim old;
+  old.apply({PadOp::SetLevel, 1});
+  old.apply({PadOp::OutputEnable, -1});
+  CHECK(old.pad == -1);
+  // Fixed sequence: boot latch OFF, then ON, then OFF, then ON again.
+  PadSim p;
+  p.run(false);
+  CHECK(p.gpio_func && p.pad == 0 && p.held);
+  p.run(true);
+  CHECK(p.pad == 1 && !p.held);  // the hold is released, so ON reaches the pad
+  p.run(false);
+  CHECK(p.pad == 0 && p.held);
+  p.run(true);
+  CHECK(p.pad == 1);
+  // SelectGpio comes before the driver is enabled, and the level is set first (no high glitch on off).
+  PadStep st[kDspPadSteps];
+  size_t n = v011_dsp_pad_steps(false, st);
+  CHECK(n == 7 && st[0].op == PadOp::HoldRelease && st[1].op == PadOp::SetLevel && st[1].level == 0);
+  size_t sel = 99, en = 99;
+  for (size_t i = 0; i < n; ++i) { if (st[i].op == PadOp::SelectGpio) sel = i; if (st[i].op == PadOp::OutputEnable) en = i; }
+  CHECK(sel < en && st[n - 1].op == PadOp::HoldEnable);
+  n = v011_dsp_pad_steps(true, st);
+  CHECK(n == 6 && st[n - 1].op == PadOp::SetLevel && st[n - 1].level == 1);
+  for (size_t i = 0; i < n; ++i) CHECK(st[i].op != PadOp::HoldEnable);
+}
+
+static void test_pzem_route() {
+  using namespace powercell;
+  PzemRouteRegs ok;
+  ok.driver = true;
+  ok.rx_in_sel = (1u << 7) | 35;   // U1RXD from the matrix, GPIO35
+  ok.tx_out_sel = 17 | (1u << 10); // U1TXD on GPIO32 (OEN bit ignored)
+  ok.rx_iomux = (2u << 12) | (1u << 9);
+  ok.tx_iomux = (2u << 12);
+  CHECK(pzem_route_check(ok, 35) == kRouteOk);
+  char n[96];
+  CHECK(strcmp(pzem_route_names(0, n, sizeof n), "ok") == 0);
+  PzemRouteRegs r = ok; r.driver = false;
+  CHECK(pzem_route_check(r, 35) == kRouteNoDriver);
+  r = ok; r.rx_in_sel = 0x30;      // reset value: constant low, not the matrix
+  CHECK(pzem_route_check(r, 35) == kRouteRxNotMatrix);
+  r = ok; r.rx_in_sel = (1u << 7) | 32;  // RX swapped onto 32
+  CHECK(pzem_route_check(r, 35) == kRouteRxWrongPin);
+  r = ok; r.tx_out_sel = 256;      // plain GPIO output (pinMode / digitalWrite took GPIO32)
+  CHECK(pzem_route_check(r, 35) == kRouteTxWrongSig);
+  r = ok; r.tx_out_sel = 71;       // LEDC HS ch0 on GPIO32
+  CHECK(pzem_route_check(r, 35) == kRouteTxWrongSig);
+  r = ok; r.rx_iomux = (2u << 12); // input buffer off
+  CHECK(pzem_route_check(r, 35) == kRouteRxNoIe);
+  r = ok; r.rx_iomux = (0u << 12) | (1u << 9);
+  CHECK(pzem_route_check(r, 35) == kRouteRxMux);
+  r = ok; r.tx_iomux = (3u << 12);
+  CHECK(pzem_route_check(r, 35) == kRouteTxMux);
+  r = ok; r.rx_rtc = true; r.tx_rtc = true;  // ADC / RTC IO took both pads
+  const uint16_t f = pzem_route_check(r, 35);
+  CHECK(f == (kRouteRxRtc | kRouteTxRtc));
+  CHECK(strcmp(pzem_route_names(f, n, sizeof n), "rx_rtc,tx_rtc") == 0);
+  char tiny[8];
+  pzem_route_names(f, tiny, sizeof tiny);
+  CHECK(strlen(tiny) < sizeof tiny);
+  // Request bytes as Dubem's readAll(): F8 04 00 00 00 0A + CRC low, high.
+  PzemConfig cfg;
+  uint8_t req[8];
+  CHECK(pzem_build_read(cfg, req, sizeof req) == 8);
+  const uint8_t dubem[6] = {0xF8, 0x04, 0x00, 0x00, 0x00, 0x0A};
+  CHECK(memcmp(req, dubem, 6) == 0);
+  const uint16_t c = pzem_crc(dubem, 6);
+  CHECK(req[6] == (c & 0xFF) && req[7] == (c >> 8));
+  char hex[64];
+  CHECK(pzem_hex(req, 8, hex, sizeof hex) == 23);
+  CHECK(strncmp(hex, "F8 04 00 00 00 0A ", 18) == 0);
+  CHECK(pzem_hex(req, 8, hex, 8) < 8 && strlen(hex) < 8);
+  CHECK(pzem_hex(req, 0, hex, sizeof hex) == 0 && hex[0] == 0);
+}
+
+static void test_dsp_status_led() {
+  using namespace powercell;
+  CHECK(kLedPwmFreqHz == 5000 && kLedPwmBits == 8 && kLedBreatheMs == 4000 && kLedBmsStaleMs == 15000);
+  // Colors (Dubem lighting.cpp): >=70 green, 40..69 blue, <40 red, no/stale BMS red.
+  CHECK(led_color(true, 100) == StatusColor::Green);
+  CHECK(led_color(true, 70) == StatusColor::Green);
+  CHECK(led_color(true, 69) == StatusColor::Blue);
+  CHECK(led_color(true, 40) == StatusColor::Blue);
+  CHECK(led_color(true, 39) == StatusColor::Red);
+  CHECK(led_color(true, 0) == StatusColor::Red);
+  CHECK(led_color(false, 100) == StatusColor::Red);
+  // Breathe: 0 -> 255 -> 0 over 4 s.
+  CHECK(led_breathe(0) == 0 && led_breathe(2000) == 255 && led_breathe(4000) == 0);
+  CHECK(led_breathe(1000) == 127 && led_breathe(3000) == 127 && led_breathe(6000) == 255);
+  // Solid without grid, breathing with grid; one LED only (color carries it).
+  StatusLed a = dsp_status_led(true, 80, false, 1000);
+  CHECK(a.color == StatusColor::Green && a.duty == 255);
+  StatusLed b = dsp_status_led(true, 50, true, 1000);
+  CHECK(b.color == StatusColor::Blue && b.duty == 127);
+  StatusLed c = dsp_status_led(false, 90, true, 2000);
+  CHECK(c.color == StatusColor::Red && c.duty == 255);
+  StatusLed e = dsp_status_led(false, 90, false, 0);
+  CHECK(e.color == StatusColor::Red && e.duty == 255);
+}
+
+static bool read_text_file(const char *path, char *buf, size_t cap);
+static void test_front_light_follows() {
+  using namespace powercell;
+  CHECK(kDspFrontLightV011 == 27);
+  CHECK(v011_front_light_level(true) == 1 && v011_front_light_level(false) == 0);  // Dubem: HIGH = ON
+  CHECK(v011_front_light_level(false) == v011_dsp_level(false) && v011_front_light_level(true) == v011_dsp_level(true));  // same as GPIO15
+  // Every DSP pad write (boot latch, all off paths via latchOutputOff/drive, and on) also drives the light.
+  char src[16384];
+  const char *paths[] = {"../../src/gateway.cpp", "../src/gateway.cpp", "src/gateway.cpp"};
+  bool got = false;
+  for (const char *path : paths) if (read_text_file(path, src, sizeof src)) { got = true; break; }
+  CHECK(got);
+  if (!got) return;
+  const char *latch = strstr(src, "void latchDspEnableOff()");
+  const char *drv = strstr(src, "void drive(bool on)");
+  CHECK(latch && drv);
+  if (!latch || !drv) return;
+  const char *latchEnd = strstr(latch, "\n}");
+  const char *drvEnd = strstr(drv, "\n}");
+  const char *a = strstr(latch, "frontLight(false);");
+  const char *b = strstr(drv, "frontLight(on);");
+  CHECK(a && a < latchEnd);
+  CHECK(b && b < drvEnd);
+  char leds[8192];
+  const char *lpaths[] = {"../../src/leds.cpp", "../src/leds.cpp", "src/leds.cpp"};
+  got = false;
+  for (const char *path : lpaths) if (read_text_file(path, leds, sizeof leds)) { got = true; break; }
+  CHECK(got && !strstr(leds, "PIN_FRONT_LIGHT}"));  // leds no longer forces the light low
+}
+
+static void test_pzem_stats() {
+  using namespace powercell;
+  CHECK(pzem_classify(25, PzemStatus::Ok, true) == PzemPollOutcome::Ok);
+  CHECK(pzem_classify(0, PzemStatus::Timeout, false) == PzemPollOutcome::NoReply);
+  CHECK(pzem_classify(7, PzemStatus::Short, false) == PzemPollOutcome::Short);
+  CHECK(pzem_classify(25, PzemStatus::BadCrc, false) == PzemPollOutcome::Bad);
+  CHECK(pzem_classify(25, PzemStatus::Ok, false) == PzemPollOutcome::Bad);  // sentinel power
+  PzemStats s;
+  CHECK(s.record(PzemPollOutcome::NoReply, 1000) == PzemStats::Log::Warn);  // first failure logs at once
+  for (uint32_t t = 2000; t < 31000; t += 1000) CHECK(s.record(PzemPollOutcome::NoReply, t) == PzemStats::Log::None);
+  CHECK(s.record(PzemPollOutcome::Short, 31000) == PzemStats::Log::Warn);  // 30 s later
+  CHECK(s.no_reply == 30 && s.short_frames == 1 && s.ok == 0 && s.consecutive_fail == 31 && !s.ever_ok);
+  CHECK(s.record(PzemPollOutcome::Ok, 32000) == PzemStats::Log::Recovered);
+  CHECK(s.record(PzemPollOutcome::Ok, 33000) == PzemStats::Log::None);
+  CHECK(s.ok == 2 && s.consecutive_fail == 0 && s.ever_ok && s.last_ok_ms == 33000 && s.polls == 33);
+  CHECK(s.record(PzemPollOutcome::Bad, 34000) == PzemStats::Log::Warn);  // new episode logs at once
+  CHECK(s.bad_frames == 1);
+  CHECK(!strcmp(pzem_outcome_name(PzemPollOutcome::NoReply), "no_reply"));
 }
 
 static void test_ds3231() {
@@ -1282,19 +1579,333 @@ static void test_socket_rules() {
   CHECK(parseSocketPacket(p2, strlen(p2), k) && !k.hasLimit);
 }
 
+static std::string slurp(const char *path) {
+  std::string out;
+  FILE *f = fopen(path, "rb");
+  if (!f) return out;
+  char b[4096]; size_t k;
+  while ((k = fread(b, 1, sizeof b, f)) > 0) out.append(b, k);
+  fclose(f);
+  return out;
+}
+
+static void test_ota_boot() {  // 2.5.22 two-phase OTA (ota_boot.h) and 8-bit heap numbers
+  using namespace pc::bootota;
+  using pc::otaerr::Fail;
+  CHECK(kMaxTries == 3 && kWifiWaitMs == 40000 && kClockWaitMs == 30000);
+  // run cap covers install(): 15 s connect + 45 s handshake + 30 s headers, x2 on a 401 skew, + 180 s body
+  CHECK(kRunCapMs >= 2 * (15000 + 45000 + 30000) + 180000);
+  // at boot
+  CHECK(atBoot(false, true, false, false, 0) == Boot::None);
+  CHECK(atBoot(true, true, false, false, 0) == Boot::Run);
+  CHECK(atBoot(true, true, false, false, 2) == Boot::Run);
+  CHECK(atBoot(true, true, false, false, 3) == Boot::Abandon);   // 3 started without a result
+  CHECK(atBoot(true, false, false, false, 0) == Boot::Discard);  // invalid
+  CHECK(atBoot(true, true, true, false, 0) == Boot::Discard);    // already running that version
+  CHECK(atBoot(true, true, false, true, 0) == Boot::Discard);    // running image not confirmed
+  CHECK(atBoot(true, false, false, false, 9) == Boot::Discard);  // invalid beats abandon
+  // offers
+  const char *A = "687594cab6c9aa3d10294f61970f06796e96e388fd22905ce5d7800d831851af";
+  const char *B = "1111111111111111111111111111111111111111111111111111111111111111";
+  CHECK(!offerAbandoned(A, "") && !offerAbandoned(A, nullptr) && !offerAbandoned(nullptr, A));
+  CHECK(offerAbandoned(A, A) && !offerAbandoned(B, A));
+  {
+    std::string up(A); for (auto &c : up) c = (char)toupper((unsigned char)c);
+    CHECK(offerAbandoned(up.c_str(), A));  // case-insensitive (offers are lower-cased anyway)
+  }
+  CHECK(route(true) == Route::InPlace && route(false) == Route::Stage);
+  CHECK(stageTries(A, 2, A) == 2 && stageTries(A, 2, B) == 0 && stageTries("", 2, A) == 0 && stageTries(nullptr, 2, A) == 0);
+  CHECK(!stageWouldExceed(0) && !stageWouldExceed(2) && stageWouldExceed(3));
+  // three failed boot attempts of one image, re-staged by the server each time, then abandoned
+  {
+    uint8_t tries = 0; int reboots = 0;
+    for (int offer = 0; offer < 10; ++offer) {
+      uint8_t carried = stageTries(A, tries, A);
+      if (stageWouldExceed(carried)) break;
+      ++reboots;                                              // staged: reboot
+      CHECK(atBoot(true, true, false, false, carried) == Boot::Run);
+      tries = carried + 1;                                    // counted before the attempt
+    }
+    CHECK(reboots == 3 && tries == 3);
+    CHECK(atBoot(true, true, false, false, tries) == Boot::Abandon);  // a crash on attempt 3 also ends it
+  }
+  // in-place fallback only for mbedTLS out-of-memory on the connect
+  CHECK(isTlsMemoryError(-32512));        // ACE-000001 2.5.20: -0x7F00 SSL - Memory allocation failed
+  CHECK(isTlsMemoryError(-0x2880) && isTlsMemoryError(-0x3F80) && isTlsMemoryError(-0x4D80) && isTlsMemoryError(-0x0010));
+  CHECK(isTlsMemoryError(-0x6180) && isTlsMemoryError(-0x5180) && isTlsMemoryError(-0x1180) && isTlsMemoryError(-0x3400));
+  CHECK(isTlsMemoryError(-(0x2180 + 0x6A)));  // X509 invalid format + ASN1 alloc failed
+  CHECK(isTlsMemoryError(-(0x3B00 + 0x10)));  // PK key error + MPI alloc failed
+  CHECK(!isTlsMemoryError(0) && !isTlsMemoryError(-1) && !isTlsMemoryError(-9984) && !isTlsMemoryError(-0x7780) && !isTlsMemoryError(32512));
+  CHECK(inPlaceFallback(true, -32512) && !inPlaceFallback(false, -32512) && !inPlaceFallback(true, -9984) && !inPlaceFallback(true, 0));
+  // detail strings (last_error_detail), bounded
+  {
+    char d[160] = "http=-1 tls=-32512 SSL - Memory allocation failed";
+    appendHeap(d, sizeof d, 60312, 15872, 7872);
+    appendBoot(d, sizeof d, 2, false);
+    CHECK(!strcmp(d, "http=-1 tls=-32512 SSL - Memory allocation failed heap free=60312 largest=15872 min=7872 boot=2/3"));
+    char e[160] = "x"; appendBoot(e, sizeof e, 3, true); CHECK(!strcmp(e, "x boot=3/3 abandoned"));
+    char small[20] = "0123456789"; appendHeap(small, sizeof small, 1, 2, 3);
+    CHECK(strlen(small) == sizeof small - 1 && !strncmp(small, "0123456789 heap", 15));
+    char full[8] = "1234567"; appendBoot(full, sizeof full, 1, false); CHECK(!strcmp(full, "1234567"));
+    appendHeap(nullptr, 10, 1, 2, 3); appendBoot(d, 0, 1, false);  // no crash
+  }
+  // job validation
+  {
+    Job j;
+    strcpy(j.version, "2.5.21"); strcpy(j.sha, A); strcpy(j.path, "/api/ota/download?device_id=20500DD26158"); j.size = 1385712;
+    CHECK(valid(j, 0x1E0000));
+    Job k = j; k.version[0] = 0; CHECK(!valid(k, 0x1E0000));
+    k = j; k.sha[10] = 'g'; CHECK(!valid(k, 0x1E0000));
+    k = j; k.sha[63] = 0; CHECK(!valid(k, 0x1E0000));
+    k = j; strcpy(k.path, "https://evil/x"); CHECK(!valid(k, 0x1E0000));
+    k = j; k.size = 0x1E0001; CHECK(!valid(k, 0x1E0000));
+    k = j; k.size = 0; CHECK(valid(k, 0x1E0000));     // size optional, as in the offer
+    CHECK(hex64(A) && !hex64(B + 1) && !hex64(nullptr));
+    // the stored path is the checked output of otaDownloadPath and re-checks to itself at boot
+    char out[192], again[192];
+    CHECK(pc::otaDownloadPath("https://api-dev.acecore.tech", "https://api-dev.acecore.tech/api/ota/download?device_id=20500DD26158", out, sizeof out));
+    CHECK(pc::otaDownloadPath("https://api-dev.acecore.tech", out, again, sizeof again) && !strcmp(out, again) && out[0] == '/');
+    CHECK(!pc::otaDownloadPath("https://api-dev.acecore.tech", "https://other.example/api/ota/download", out, sizeof out));
+  }
+  // device glue (source checks, the code needs the ESP32 SDK to run)
+  {
+    std::string hg = slurp("../../src/heapguard.cpp"), ota = slurp("../../src/ota.cpp"), mainc = slurp("../../src/main.cpp");
+    CHECK(!hg.empty() && !ota.empty() && !mainc.empty());
+    // the gate and watermarks read the 8-bit DRAM heap, not MALLOC_CAP_INTERNAL (which counts IRAM)
+    CHECK(hg.find("MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT") != std::string::npos);
+    CHECK(hg.find("getMaxAllocHeap") == std::string::npos && hg.find("getFreeHeap") == std::string::npos && hg.find("getMinFreeHeap") == std::string::npos);
+    CHECK(ota.find("getMaxAllocHeap") == std::string::npos);
+    // TLS and certificate verification kept on the boot path: same install(), same CA bundle
+    CHECK(ota.find("c.setCACert(POWERCELL_CA_CERT)") != std::string::npos && ota.find("setInsecure") == std::string::npos);
+    CHECK(ota.find("install(b.base, b.key, String(b.job.path), String(b.job.sha), String(b.job.version), b.job.size, dl)") != std::string::npos);
+    // the attempt is counted before it runs
+    size_t inc = ota.find("++j.tries;"), save = ota.find("saveJob(j, true);", inc), task = ota.find("xTaskCreatePinnedToCore(bootWorker", inc);
+    CHECK(inc != std::string::npos && save != std::string::npos && task != std::string::npos && save < task);
+    // setup(): the boot job runs after Wi-Fi starts and before ESP-NOW, the web server and the WS
+    size_t n = mainc.find("net::begin();"), j = mainc.find("ota::bootJob(prepareForUpdate);"), so = mainc.find("socketsStart();"),
+           w = mainc.find("web::begin();"), be = mainc.find("backend::begin();");
+    CHECK(n != std::string::npos && j != std::string::npos && n < j && j < so && j < w && j < be);
+  }
+}
+
+static void test_ota_stale_job() {  // 2.5.26: stale boot jobs (ota_boot.h Stale) and the offer query
+  using namespace pc::bootota;
+  const char *J = "41b17e9ac40972bc052884b4fececc3792271dfa9711ee88599195aed7d571d2";  // 2.5.23
+  const char *K = "fb4ddcd829f6568b019265b3c0c4a0d33c76ea15bada122eb891e6fe2a2fb140";  // 2.5.25
+  Job j;
+  strcpy(j.version, "2.5.23"); strcpy(j.sha, J); strcpy(j.path, "/api/ota/download?device_id=20500DD26158"); j.size = 1393408; j.tries = 1;
+  // ACE-000001 replay: a job staged by 2.5.22 (2.5.22..2.5.25 store no stager) found by 2.5.26 after a USB flash
+  CHECK(staleBeforeCheck(j, "2.5.26", "0123456789abcdef") == Stale::StagerUnknown);
+  strcpy(j.stager, "2.5.24"); strcpy(j.build, "0123456789abcdef");
+  CHECK(staleBeforeCheck(j, "2.5.26", "0123456789abcdef") == Stale::StagerChanged);   // other version
+  strcpy(j.stager, "2.5.26");
+  CHECK(staleBeforeCheck(j, "2.5.26", "0123456789ABCDEF") == Stale::No);              // same build (case-insensitive)
+  CHECK(staleBeforeCheck(j, "2.5.26", "fedcba9876543210") == Stale::StagerChanged);   // same version, rebuilt image
+  CHECK(staleBeforeCheck(j, "2.5.26", "") == Stale::No);                              // build unknown: version only
+  { Job n = j; n.build[0] = 0; CHECK(staleBeforeCheck(n, "2.5.26", "fedcba9876543210") == Stale::No); }
+  CHECK(staleBeforeCheck(j, nullptr, "") == Stale::StagerChanged);
+  { Job s = j; strcpy(s.version, "2.5.26"); CHECK(staleBeforeCheck(s, "2.5.26", "") == Stale::SameVersion); }
+  // (c) boot-time offer check
+  Job f = j; strcpy(f.version, "2.5.27"); strcpy(f.sha, K);
+  CHECK(staleAfterCheck(f, "2.5.26", Check::Offer, "2.5.27", K) == Stale::No);
+  {
+    std::string up(K); for (auto &c : up) c = (char)toupper((unsigned char)c);
+    CHECK(staleAfterCheck(f, "2.5.26", Check::Offer, "2.5.27", up.c_str()) == Stale::No);
+  }
+  CHECK(staleAfterCheck(f, "2.5.26", Check::Offer, "2.5.28", K) == Stale::OfferChanged);
+  CHECK(staleAfterCheck(f, "2.5.26", Check::Offer, "2.5.27", J) == Stale::OfferChanged);   // re-uploaded image
+  CHECK(staleAfterCheck(f, "2.5.26", Check::Offer, nullptr, nullptr) == Stale::OfferChanged);
+  CHECK(staleAfterCheck(f, "2.5.26", Check::None, "", "") == Stale::NoOffer);              // rollout cancelled
+  CHECK(staleAfterCheck(f, "2.5.26", Check::Failed, "", "") == Stale::No);                 // unconfirmed newer job runs
+  Job old = j; strcpy(old.version, "2.5.23");
+  CHECK(staleAfterCheck(old, "2.5.26", Check::Failed, "", "") == Stale::NotNewer);         // unconfirmed older job does not
+  CHECK(staleAfterCheck(old, "2.5.26", Check::Offer, "2.5.23", J) == Stale::No);           // a confirmed downgrade runs
+  CHECK(staleAfterCheck(old, "2.5.26", Check::Offer, "2.5.25", K) == Stale::OfferChanged); // the 13 Nov case with a check
+  CHECK(staleAfterCheck(f, "2.5.26.1", Check::Failed, "", "") == Stale::No && staleAfterCheck(f, "2.5.100", Check::Failed, "", "") == Stale::NotNewer);
+  CHECK(!strcmp(checkName(Check::Offer), "offer") && !strcmp(checkName(Check::None), "none") && !strcmp(checkName(Check::Failed), "failed"));
+  // at the download
+  CHECK(staleFromDownload(409, 120, 1393408) == Stale::NotCurrent && staleFromDownload(410, -1, 0) == Stale::NotCurrent);
+  CHECK(staleFromDownload(200, 1395536, 1393408) == Stale::SizeMismatch);   // the 13 Nov 2026 response
+  CHECK(staleFromDownload(200, 1393408, 1393408) == Stale::No);
+  CHECK(staleFromDownload(200, 1395536, 0) == Stale::No);                   // size unknown: no evidence
+  CHECK(staleFromDownload(200, -1, 1393408) == Stale::No && staleFromDownload(200, 100, 1393408) == Stale::No);  // chunked / tiny: genuine failure
+  CHECK(staleFromDownload(404, 30, 1393408) == Stale::No && staleFromDownload(-1, -1, 1393408) == Stale::No);
+  // only an unconfirmed older image is blocked from re-staging (no stage/drop reboot loop)
+  for (Stale s : {Stale::No, Stale::StagerUnknown, Stale::StagerChanged, Stale::SameVersion, Stale::NoOffer, Stale::OfferChanged, Stale::NotCurrent, Stale::SizeMismatch})
+    CHECK(!abandonOnDrop(s));
+  CHECK(abandonOnDrop(Stale::NotNewer));
+  // names and detail
+  CHECK(!strcmp(kStaleJobError, "boot_ota_stale_job") && !strcmp(kStatusDropped, "dropped"));
+  for (Stale s : {Stale::No, Stale::StagerUnknown, Stale::StagerChanged, Stale::SameVersion, Stale::NotNewer, Stale::NoOffer, Stale::OfferChanged, Stale::NotCurrent, Stale::SizeMismatch})
+    CHECK(strcmp(staleName(s), "?") != 0);
+  {
+    Job u = j; u.stager[0] = 0;
+    char d[160];
+    dropDetail(d, sizeof d, Stale::StagerUnknown, u, "");
+    CHECK(!strcmp(d, "reason=staged_by_unknown job=2.5.23 staged_by=unknown"));
+    dropDetail(d, sizeof d, Stale::SizeMismatch, j, "http=200 length=1395536 expect=1393408");
+    CHECK(!strcmp(d, "reason=size_mismatch job=2.5.23 staged_by=2.5.26 http=200 length=1395536 expect=1393408"));
+    char tiny[12]; dropDetail(tiny, sizeof tiny, Stale::NoOffer, j, "x"); CHECK(strlen(tiny) == sizeof tiny - 1);
+    dropDetail(nullptr, 5, Stale::NoOffer, j, "");  // no crash
+  }
+  // download query: version and sha256 on every request
+  {
+    char q[320];
+    CHECK(withOfferQuery("/api/ota/download?device_id=20500DD26158", "2.5.27", K, q, sizeof q));
+    CHECK(std::string(q) == std::string("/api/ota/download?device_id=20500DD26158&version=2.5.27&sha256=") + K);
+    CHECK(withOfferQuery("/api/ota/download", "2.5.27", "", q, sizeof q) && !strcmp(q, "/api/ota/download?version=2.5.27"));
+    CHECK(withOfferQuery("/api/ota/download?device_id=X", "2.5.27-rc 1&a", "", q, sizeof q) && !strcmp(q, "/api/ota/download?device_id=X&version=2.5.27-rc%201%26a"));
+    CHECK(withOfferQuery("/api/ota/download?device_id=X&version=2.5.27", "2.5.27", K, q, sizeof q));  // already there: not doubled
+    CHECK(std::string(q) == std::string("/api/ota/download?device_id=X&version=2.5.27&sha256=") + K);
+    CHECK(withOfferQuery("/api/ota/download?xversion=1", "2.5.27", "", q, sizeof q) && !strcmp(q, "/api/ota/download?xversion=1&version=2.5.27"));
+    char small[40];
+    CHECK(!withOfferQuery("/api/ota/download?device_id=20500DD26158", "2.5.27", K, small, sizeof small) && small[0] == 0);
+    CHECK(!withOfferQuery(nullptr, "2.5.27", K, q, sizeof q) && !withOfferQuery("/a", "1", "", nullptr, 4));
+    // the longest stored path (191) plus both parameters fits the 320 B request buffer
+    std::string longPath = "/api/ota/download?device_id=" + std::string(191 - 28, 'A');
+    CHECK(longPath.size() == 191 && withOfferQuery(longPath.c_str(), "12345678901234567890123456789012", K, q, sizeof q));
+  }
+  // device glue (source checks)
+  {
+    std::string ota = slurp("../../src/ota.cpp"), ws = slurp("../../src/backend_ws.cpp");
+    CHECK(!ota.empty() && !ws.empty());
+    // the stager is stored with every job, and cleared with it
+    CHECK(ota.find("strlcpy(j.stager, POWERCELL_FIRMWARE_VERSION, sizeof j.stager); strlcpy(j.build, runningBuild(), sizeof j.build);") != std::string::npos);
+    CHECK(ota.find("p.putString(\"bj_stg\", j.stager); p.putString(\"bj_bld\", j.build);") != std::string::npos);
+    CHECK(ota.find("\"bj_stg\", \"bj_bld\"}) if (p.isKey(k)) p.remove(k);") != std::string::npos);
+    // (a)+(b) before the attempt is counted
+    size_t st = ota.find("pc::bootota::staleBeforeCheck(j, POWERCELL_FIRMWARE_VERSION, runningBuild())"), inc = ota.find("++j.tries;");
+    CHECK(st != std::string::npos && inc != std::string::npos && st < inc);
+    // (c) before the download in the boot worker
+    size_t bw = ota.find("void bootWorker(void *)"), chk = ota.find("bootOfferCheck(b.base, b.key, ov, osha)", bw), ins = ota.find("install(b.base, b.key,", bw);
+    CHECK(bw != std::string::npos && chk != std::string::npos && ins != std::string::npos && chk < ins);
+    CHECK(ota.find("pc::bootota::staleFromDownload(dl.http, dl.len, b.job.size)") != std::string::npos);
+    // every download names the offer; a drop is never reported as failed
+    CHECK(ota.find("pc::bootota::withOfferQuery(path.c_str(), newVersion.c_str(), digest.c_str(), req, sizeof req)") != std::string::npos);
+    CHECK(ota.find("http.begin(client, base + req)") != std::string::npos && ota.find("base + path") == std::string::npos);
+    CHECK(ota.find("saveStatus(pc::bootota::kStatusDropped, pc::bootota::kStaleJobError, d);") != std::string::npos);
+    // the ota_check (WS and HTTPS) names the version of the last attempt
+    CHECK(ota.find("doc[\"last_version\"] = g_deployment;") != std::string::npos);
+    CHECK(ws.find("doc[\"last_version\"] = lastVersion;") != std::string::npos);
+    CHECK(ota.find("g_detail.c_str(), g_deployment.c_str())") != std::string::npos);
+  }
+}
+
+static void test_ota_task_stage() {  // 2.5.24: worker task not created -> stage from the main loop
+  using namespace pc::bootota;
+  const char *A = "41b17e9ac40972bc052884b4fececc3792271dfa9711ee88599195aed7d571d2";
+  const char *B = "1111111111111111111111111111111111111111111111111111111111111111";
+  const uint32_t slot = 0x1E0000;
+  // the ACE-000001 offer (2.5.23 on 2.5.22) passes
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, 1393408, slot, "") == Offer::Ok);
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, 0, slot, "") == Offer::Ok);   // size optional
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, 1393408, 0, "") == Offer::Ok);  // slot unknown: size not checked
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, slot, slot, nullptr) == Offer::Ok);
+  // the handleOffer rules, in its order
+  CHECK(checkOffer("", "2.5.22", A, true, 1, slot, "") == Offer::NoVersion);
+  CHECK(checkOffer(nullptr, "2.5.22", A, true, 1, slot, "") == Offer::NoVersion);
+  CHECK(checkOffer("123456789012345678901234567890123", "2.5.22", A, true, 1, slot, "") == Offer::VersionTooLong);
+  CHECK(checkOffer("12345678901234567890123456789012", "2.5.22", A, true, 1, slot, "") == Offer::Ok);  // 32 chars allowed
+  CHECK(checkOffer("2.5.22", "2.5.22", A, true, 1, slot, "") == Offer::SameVersion);
+  CHECK(checkOffer("2.5.23", "2.5.22", "", true, 1, slot, "") == Offer::BadSha);
+  CHECK(checkOffer("2.5.23", "2.5.22", B + 1, true, 1, slot, "") == Offer::BadSha);
+  {
+    std::string bad(A); bad[5] = 'z';
+    CHECK(checkOffer("2.5.23", "2.5.22", bad.c_str(), true, 1, slot, "") == Offer::BadSha);
+  }
+  CHECK(checkOffer("2.5.23", "2.5.22", A, false, 1, slot, "") == Offer::BadPath);
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, slot + 1, slot, "") == Offer::TooBig);
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, 1, slot, A) == Offer::Abandoned);
+  CHECK(checkOffer("2.5.23", "2.5.22", A, true, 1, slot, B) == Offer::Ok);     // another image abandoned
+  CHECK(checkOffer("2.5.22", "2.5.22", A, true, 1, slot, A) == Offer::SameVersion);  // earlier rule wins
+  CHECK(!strcmp(offerName(Offer::Ok), "ok") && !strcmp(offerName(Offer::Abandoned), "abandoned") && !strcmp(offerName(Offer::BadPath), "url_invalid"));
+  for (int i = 0; i <= (int)Offer::Abandoned; ++i) CHECK(strcmp(offerName((Offer)i), "?") != 0);
+  // decision
+  CHECK(onTaskCreateFailed(true, Offer::Ok) == TaskFail::Stage);
+  CHECK(onTaskCreateFailed(false, Offer::Ok) == TaskFail::Drop);  // HTTPS check: no offer yet
+  for (int i = 1; i <= (int)Offer::Abandoned; ++i) CHECK(onTaskCreateFailed(true, (Offer)i) == TaskFail::Drop);
+  // staged from the loop: same attempt cap as the worker path (stageTries / stageWouldExceed)
+  {
+    uint8_t tries = 0; int staged = 0;
+    for (int offer = 0; offer < 10; ++offer) {
+      if (onTaskCreateFailed(true, checkOffer("2.5.23", "2.5.22", A, true, 1393408, slot, "")) != TaskFail::Stage) break;
+      uint8_t carried = stageTries(A, tries, A);
+      if (stageWouldExceed(carried)) break;
+      ++staged; tries = carried + 1;
+    }
+    CHECK(staged == 3 && tries == 3);
+  }
+  // detail
+  {
+    char d[160];
+    taskStackDetail(d, sizeof d, 16384, 35676, 14836, 9024);
+    CHECK(!strcmp(d, "in_place_gate=task_stack stack=16384 heap free=35676 largest=14836 min=9024"));
+    char s8[12]; taskStackDetail(s8, sizeof s8, 16384, 1, 2, 3); CHECK(strlen(s8) == sizeof s8 - 1);
+    taskStackDetail(nullptr, 5, 1, 2, 3, 4);  // no crash
+  }
+  // device glue (source checks)
+  {
+    std::string ota = slurp("../../src/ota.cpp");
+    CHECK(!ota.empty());
+    // one rule set: handleOffer and the loop path both go through validateOffer -> checkOffer
+    CHECK(ota.find("pc::bootota::checkOffer(") != std::string::npos);
+    size_t ho = ota.find("void handleOffer(const String &base, const String &key, String newVersion"),
+           hv = ota.find("validateOffer(base, newVersion, url, digest, size, path, sizeof path)", ho);
+    size_t sl = ota.find("void stageFromLoop("), sv = ota.find("validateOffer(base, o.version, o.url, digest, o.size, path, sizeof path)", sl),
+           ss = ota.find("stageAndReboot(o.version, path, digest, o.size, \"\", d);", sl);
+    CHECK(ho != std::string::npos && hv != std::string::npos && sl != std::string::npos && sv != std::string::npos && ss != std::string::npos && sv < ss);
+    // no silent drop: every "ota" worker start goes through startWorker (logs TASK_CREATE_FAILED)
+    CHECK(ota.find("xTaskCreatePinnedToCore(worker,") == ota.rfind("xTaskCreatePinnedToCore(worker,"));
+    CHECK(ota.find("TASK_CREATE_FAILED") != std::string::npos && ota.find("startWorker(\"ws_offer\")") != std::string::npos &&
+          ota.find("startWorker(\"https_check\")") != std::string::npos);
+    size_t wf = ota.find("if (!startWorker(\"ws_offer\"))"), st = ota.find("stageFromLoop(o);", wf);
+    CHECK(wf != std::string::npos && st != std::string::npos && st - wf < 300);
+    CHECK(ota.find("16384") == ota.find("kOtaStack = 16384") + 12);  // one stack size constant
+    CHECK(ota.find("update_begin_out_of_memory") != std::string::npos);
+  }
+}
+
 static void test_heap_guard() {
   using namespace pc;
+  // 2.5.20 gate: record buffer arithmetic (mbedTLS 2.28, 16384 content, light poisoning)
+  CHECK(kTlsRecordBuf == 13 + 16384 + 16 + 48 + 256);
+  CHECK(kTlsRecordAlloc == 16736 && kTlsPairBlock == 35520 && kTlsMinBlock == 18432 && kTlsMinFree == 51200);
+  // Pure rule: a 40948 B 8-bit block holds both record buffers. (2.5.22: the 40948 in the
+  // ACE-000001 logs was the IRAM heap, not DRAM; the inputs are now 8-bit DRAM, see test_ota_boot.)
+  CHECK(tlsHeapVerdict(40948, 72064) == TlsHeap::Ok);
+  CHECK(tlsHeapVerdict(kTlsPairBlock, kTlsMinFree) == TlsHeap::Ok);
+  CHECK(tlsHeapVerdict(kTlsPairBlock - 1, 80000) == TlsHeap::Probe);
+  CHECK(tlsHeapVerdict(kTlsMinBlock, 80000) == TlsHeap::Probe);
+  CHECK(tlsHeapVerdict(kTlsMinBlock - 1, 80000) == TlsHeap::LowBlock);
+  CHECK(tlsHeapVerdict(60000, kTlsMinFree - 1) == TlsHeap::LowFree);  // v10: ~44 KB left -> -9984
+  CHECK(tlsHeapVerdict(44000, 44000) == TlsHeap::LowFree);
+  CHECK(!strcmp(tlsHeapName(TlsHeap::LowBlock), "low_block") && !strcmp(tlsHeapName(TlsHeap::Probe), "probe"));
+  {
+    int probes = 0;
+    auto yes = [&] { ++probes; return true; };
+    auto no = [&] { ++probes; return false; };
+    TlsHeap why = TlsHeap::Ok;
+    CHECK(tlsHeapOk(40948, 72064, no, &why) && why == TlsHeap::Ok && probes == 0);       // no probe needed
+    CHECK(tlsHeapOk(30000, 72064, yes, &why) && why == TlsHeap::Probe && probes == 1);   // two blocks fit
+    CHECK(!tlsHeapOk(30000, 72064, no, &why) && why == TlsHeap::Probe && probes == 2);   // probe failed
+    CHECK(!tlsHeapOk(17000, 72064, yes, &why) && why == TlsHeap::LowBlock && probes == 2);  // never probes
+    CHECK(!tlsHeapOk(60000, 50000, yes, &why) && why == TlsHeap::LowFree && probes == 2);
+  }
   TlsBackoff b;
-  CHECK(b.check(0, 60000) == TlsBackoff::Go);
-  CHECK(b.check(100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 5000);
-  CHECK(b.check(200, 90000) == TlsBackoff::Wait);           // still in backoff even if heap recovered
-  CHECK(b.check(5100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 10000);
-  CHECK(b.check(15100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 20000);
-  CHECK(b.check(35100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 40000);
-  CHECK(b.check(75100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 60000);
-  CHECK(b.check(135100, 40000) == TlsBackoff::WaitLog && b.delayMs() == 60000);  // capped
-  CHECK(b.check(195100, 40960) == TlsBackoff::Go && b.delayMs() == 0);
-  CHECK(b.check(195200, 40959) == TlsBackoff::WaitLog && b.delayMs() == 5000);  // reset after success
+  CHECK(b.due(0) && b.step(0, true) == TlsBackoff::Go);
+  CHECK(b.step(100, false) == TlsBackoff::WaitLog && b.delayMs() == 5000);
+  CHECK(!b.due(200) && b.step(200, true) == TlsBackoff::Wait);  // still in backoff even if heap recovered
+  CHECK(b.due(5100) && b.step(5100, false) == TlsBackoff::WaitLog && b.delayMs() == 10000);
+  CHECK(b.step(15100, false) == TlsBackoff::WaitLog && b.delayMs() == 20000);
+  CHECK(b.step(35100, false) == TlsBackoff::WaitLog && b.delayMs() == 40000);
+  CHECK(b.step(75100, false) == TlsBackoff::WaitLog && b.delayMs() == 60000);
+  CHECK(b.step(135100, false) == TlsBackoff::WaitLog && b.delayMs() == 60000);  // capped
+  CHECK(b.step(195100, true) == TlsBackoff::Go && b.delayMs() == 0);
+  CHECK(b.step(195200, false) == TlsBackoff::WaitLog && b.delayMs() == 5000);  // reset after success
+  // mDNS waits for the first WS TLS connect, at most 60 s after the IP, only with a backend
+  CHECK(pc::mdns::waitForTls(true, false, 0) && pc::mdns::waitForTls(true, false, 59999));
+  CHECK(!pc::mdns::waitForTls(true, false, 60000));
+  CHECK(!pc::mdns::waitForTls(true, true, 0) && !pc::mdns::waitForTls(false, false, 0));
   OtaTransport t;
   CHECK(t.support() == OtaTransport::Unknown && t.useWs(true) && !t.useWs(false));
   t.sent(1000);
@@ -1485,16 +2096,36 @@ static void test_solar_energy() {  // 2.5.8
   en.update(true, -50.0f, t + 20500, 100); CHECK(fabs(en.totalWh() - 1000.0) < 0.01);
   en.update(false, 0, t + 21000, 100); en.update(true, 1000.0f, t + 21500, 100);
   CHECK(fabs(en.totalWh() - 1000.0) < 0.01);
-  // save: first time once >= 50 Wh
-  CHECK(en.saveDue(t)); en.markSaved(t); CHECK(!en.saveDue(t));
-  // +100 Wh within 30 min: not yet; after 30 min: due
-  uint32_t u = t + 22000;
-  for (int i = 0; i <= 720; ++i) { en.update(true, 1000.0f, u, 100); u += 500; }  // 6 min, 100 Wh
-  CHECK(!en.saveDue(u)); CHECK(en.saveDue(t + kSaveMinMs));
-  // day rollover: today -> 0, total kept, save due
-  double tot = en.totalWh();
-  en.update(true, 0.0f, u + 500, 101);
-  CHECK(en.todayWh() == 0); CHECK(fabs(en.totalWh() - tot) < 1e-9); CHECK(en.saveDue(u + 500)); CHECK(en.day() == 101);
+  // save policy: 10 Wh after 5 min; 10 Wh before 5 min does not
+  Energy s;
+  s.update(true, 3600.0f, 0, 100);
+  s.update(true, 3600.0f, 10000, 100);  // 10 Wh in 10 s
+  CHECK(fabs(s.totalWh() - 10.0) < 0.01);
+  CHECK(!s.saveDue(10000));
+  CHECK(s.saveDue(kSaveMinMs));
+  s.markSaved(kSaveMinMs);
+  CHECK(!s.saveDue(kSaveMinMs));
+  // 1 Wh after 15 min saves; 0.2 Wh after 15 min does not
+  uint32_t t1 = kSaveMinMs + 1000;
+  s.update(true, 3600.0f, t1, 100);
+  s.update(true, 3600.0f, t1 + 1000, 100);  // +1 Wh
+  CHECK(fabs(s.totalWh() - 11.0) < 0.01);
+  CHECK(!s.saveDue(t1 + 1000));
+  CHECK(s.saveDue(kSaveMinMs + kSaveIdleMs));
+  Energy trickle;
+  trickle.update(true, 720.0f, 0, 100);
+  trickle.update(true, 720.0f, 1000, 100);  // 0.2 Wh in 1 s
+  CHECK(fabs(trickle.totalWh() - 0.2) < 0.01);
+  CHECK(!trickle.saveDue(kSaveIdleMs));
+  CHECK(!trickle.saveDue(kSaveIdleMs + kSaveMinMs));
+  // day rollover: today -> 0, total kept, save due even with no unsaved Wh
+  Energy enDay;
+  uint32_t tDay = 0;
+  for (int i = 0; i <= 7200; ++i) { enDay.update(true, 1000.0f, tDay, 100); tDay += 500; }
+  enDay.markSaved(tDay);
+  double tot = enDay.totalWh();
+  enDay.update(true, 0.0f, tDay + 500, 101);
+  CHECK(enDay.todayWh() == 0); CHECK(fabs(enDay.totalWh() - tot) < 1e-9); CHECK(enDay.saveDue(tDay + 500)); CHECK(enDay.day() == 101);
   // unknown day keeps counting on the last day, no reset
   Energy b; b.restore(5000, 300, 101);
   b.update(true, 0, 0, kNoDay); CHECK(b.todayWh() == 300); CHECK(b.day() == 101);
@@ -1627,6 +2258,412 @@ static void test_stm_estimate() {
   CHECK(kept_today > 0);
 }
 
+static void test_grid_sense() {
+  using namespace powercell::grid;
+  const float k = kScale;
+  const int n = kSampleCount;
+  float wave[kSampleCount];
+  const float offset_v = 1.20f;  // not 1.65 V
+  const float peak_v = (230.f / k) * sqrtf(2.f);
+  for (int i = 0; i < n; ++i) {
+    const float pin = offset_v + peak_v * sinf(2.f * 3.14159265f * static_cast<float>(i) / kSamplesPerCycle);
+    wave[i] = pin * 1000.f;
+  }
+  const WaveResult mains = fromPinMillivolts(wave, n, k);
+  CHECK(mains.ok && !mains.clipped);
+  NEAR(mains.ac_ref_v, offset_v, 0.02);
+  NEAR(mains.vrms, 230.0, 0.5);
+
+  float zero[kSampleCount];
+  for (int i = 0; i < n; ++i) zero[i] = 1800.f;
+  const WaveResult dead = fromPinMillivolts(zero, n, k);
+  CHECK(dead.ok && !dead.clipped);
+  NEAR(dead.ac_ref_v, 1.8, 0.001);
+  NEAR(dead.vrms, 0.0, 0.001);
+
+  float biased[8] = {900, 1100, 1300, 1500, 1700, 1900, 2100, 2300};
+  NEAR(meanMv(biased, 8) / 1000.f, 1.6, 0.001);
+  const WaveResult mid = fromPinMillivolts(biased, 8, k);
+  CHECK(mid.ok);
+  NEAR(mid.ac_ref_v, 1.6, 0.001);
+
+  wave[3] = 2500.f;
+  CHECK(fromPinMillivolts(wave, n, k).clipped);
+  wave[3] = offset_v * 1000.f;
+  wave[4] = 100.f;
+  CHECK(fromPinMillivolts(wave, n, k).clipped);
+  CHECK(!anyClipped(zero, n));
+
+  CHECK(!presentHysteresis(false, 165.f));
+  CHECK(presentHysteresis(false, 170.f));
+  CHECK(presentHysteresis(true, 165.f));
+  CHECK(presentHysteresis(true, 160.f));
+  CHECK(!presentHysteresis(true, 159.f));
+
+  // Bench crosstalk: inverter ON, no mains. GPIO39 saw 36-88 V. Must not be grid.
+  const bool inverting = true;
+  CHECK(!senseIsGrid(false, 36.f, inverting));
+  CHECK(!senseIsGrid(false, 88.f, inverting));
+  CHECK(!senseIsGrid(false, 159.f, inverting));
+  CHECK(senseIsGrid(false, 230.f, inverting));
+  CHECK(senseIsGrid(true, 170.f, inverting));
+  CHECK(!senseIsGrid(true, 36.f, inverting));
+  CHECK(!senseIsGrid(true, 88.f, inverting));
+  NEAR(publishedVoltage(false, 36.f), 0.0, 0.001);
+  NEAR(publishedVoltage(false, 88.f), 0.0, 0.001);
+  NEAR(publishedVoltage(true, 230.f), 230.0, 0.001);
+
+  PresentDebounce d;
+  CHECK(!d.update(false, 0));
+  CHECK(!d.update(true, 0));                   // start of enter window
+  CHECK(!d.update(true, kPresentDebounceMs - 1));
+  CHECK(d.update(true, kPresentDebounceMs));   // held 2 s at 230 V class
+  CHECK(d.update(false, kPresentDebounceMs));  // start of exit window, still present
+  CHECK(d.update(false, kPresentDebounceMs + kPresentDebounceMs - 1));
+  CHECK(!d.update(false, kPresentDebounceMs + kPresentDebounceMs));
+  // A brief spike must not enter.
+  PresentDebounce spike;
+  CHECK(!spike.update(true, 1000));
+  CHECK(!spike.update(false, 1500));
+  CHECK(!spike.update(true, 2000));
+  CHECK(!spike.update(true, 2000 + kPresentDebounceMs - 1));
+  CHECK(spike.update(true, 2000 + kPresentDebounceMs));
+}
+
+static void test_jbd() {
+  using namespace powercell::jbd;
+  uint8_t req[7];
+  buildRead(kRegBasic, req);
+  CHECK(req[0] == 0xDD && req[1] == 0xA5 && req[2] == 0x03 && req[3] == 0x00);
+  CHECK(req[4] == 0xFF && req[5] == 0xFD && req[6] == 0x77);
+  buildRead(kRegCells, req);
+  CHECK(req[2] == 0x04 && req[4] == 0xFF && req[5] == 0xFC && req[6] == 0x77);
+
+  uint8_t basic[23] = {};
+  basic[0] = 0x14; basic[1] = 0x50;             // 52.00 V
+  basic[4] = 0x25; basic[5] = 0x80;             // 96.00 Ah
+  basic[6] = 0x27; basic[7] = 0x10;             // 100.00 Ah
+  basic[8] = 0x00; basic[9] = 0x0A;             // 10 cycles
+  basic[19] = 96;                               // SOC
+  basic[20] = 0x03;                             // charge + discharge MOS
+  basic[21] = 16;
+  uint8_t frame[40];
+  size_t n = wrapResponse(kRegBasic, 0, basic, 23, frame, sizeof frame);
+  const uint8_t* data = nullptr;
+  uint8_t dlen = 0;
+  CHECK(n == 30 && checkFrame(frame, n, kRegBasic, &data, &dlen) && dlen == 23);
+  Reading r;
+  CHECK(parseBasic(data, dlen, &r) && r.valid && r.soc == 96);
+  NEAR(r.packVoltage, 52.0, 0.01);
+  NEAR(r.remainAh, 96.0, 0.01);
+  CHECK(r.chargeMos && r.dischargeMos && r.cellCount == 16 && r.batStatus == 0);
+
+  frame[4 + 23] ^= 0x01;
+  CHECK(!checkFrame(frame, n, kRegBasic, &data, &dlen));
+  CHECK(!checkFrame(frame, 4, kRegBasic, &data, &dlen));
+  CHECK(!checkFrame(frame, n - 1, kRegBasic, &data, &dlen));
+
+  uint8_t badSoc[23] = {};
+  memcpy(badSoc, basic, 23);
+  badSoc[19] = 0;
+  n = wrapResponse(kRegBasic, 0, badSoc, 23, frame, sizeof frame);
+  CHECK(checkFrame(frame, n, kRegBasic, &data, &dlen));
+  Reading kept;
+  kept.soc = 55;
+  CHECK(!parseBasic(data, dlen, &kept) && kept.soc == 55);
+
+  uint8_t cells[4] = {0x0C, 0xE4, 0x0C, 0x80};  // 3300 mV, 3200 mV
+  n = wrapResponse(kRegCells, 0, cells, 4, frame, sizeof frame);
+  CHECK(checkFrame(frame, n, kRegCells, &data, &dlen));
+  CHECK(parseCells(data, dlen, &r));
+  NEAR(r.cellVoltage[0], 3.3, 0.001);
+  NEAR(r.cellVoltage[1], 3.2, 0.001);
+  NEAR(r.cellDiffMv, 100.0, 0.2);
+  CHECK(r.cellCount == 2 && r.maxCell == 0 && r.minCell == 1);
+  CHECK(!parseCells(data, 3, &r));
+}
+
+static bool read_text_file(const char *path, char *buf, size_t cap) {
+  FILE *f = fopen(path, "r");
+  if (!f) return false;
+  size_t n = fread(buf, 1, cap - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  return n > 0;
+}
+
+static bool flag_in_env(const char *text, const char *env, const char *flag) {
+  char tag[80];
+  snprintf(tag, sizeof tag, "[env:%s]", env);
+  const char *start = strstr(text, tag);
+  if (!start) return false;
+  const char *next = strstr(start + 1, "[env:");
+  size_t n = next ? (size_t)(next - start) : strlen(start);
+  char block[4096];
+  if (n >= sizeof block) n = sizeof block - 1;
+  memcpy(block, start, n);
+  block[n] = 0;
+  return strstr(block, flag) != nullptr;
+}
+
+
+static float ntc_mv_for(float c, bool low_side) {  // independent forward model of Dubem's divider
+  const double r = 10000.0 * exp(3950.0 * (1.0 / (c + 273.15) - 1.0 / 298.15));
+  return (float)(low_side ? 3300.0 * r / (r + 2700.0) : 3300.0 * 2700.0 / (r + 2700.0));
+}
+
+static void test_dsp_thermal() {
+  using namespace powercell::thermal;
+  float c = -99.f;
+  // Dubem default wiring: NTC to 3V3, 2k7 to GND. 25 C -> 701.6 mV.
+  CHECK(mvToCelsius(3300.f * 2700.f / 12700.f, &c, false)); NEAR(c, 25.0, 0.05);
+  const float pts[] = {0.5f, 10.f, 25.f, 40.f, 65.f, 70.f, 85.f, 100.f, 125.f, 149.f};
+  for (float t : pts) {
+    c = -99.f; CHECK(mvToCelsius(ntc_mv_for(t, false), &c, false)); NEAR(c, t, 0.05);
+    c = -99.f; CHECK(mvToCelsius(ntc_mv_for(t, true), &c, true)); NEAR(c, t, 0.05);
+  }
+  // Pin volts rise with temperature on the default wiring, fall on the low-side wiring.
+  CHECK(ntc_mv_for(70.f, false) > ntc_mv_for(25.f, false));
+  CHECK(ntc_mv_for(70.f, true) < ntc_mv_for(25.f, true));
+  // Open / short / rails: invalid, *c untouched (never a fabricated value).
+  const float bad[] = {0.f, 10.f, 39.9f, 3260.1f, 3300.f, 4000.f, -5.f};
+  for (float mv : bad) {
+    c = 12.34f;
+    CHECK(!mvToCelsius(mv, &c, false)); NEAR(c, 12.34, 1e-6);
+    c = 12.34f;
+    CHECK(!mvToCelsius(mv, &c, true)); NEAR(c, 12.34, 1e-6);
+  }
+  c = 12.34f; CHECK(!mvToCelsius(NAN, &c, false)); NEAR(c, 12.34, 1e-6);
+  CHECK(!mvToCelsius(INFINITY, &c, false));
+  CHECK(!mvToCelsius(700.f, nullptr, false));
+  // ESP32 11 dB ADC saturates near 3.1 V: a shorted NTC reads ~3130 mV -> >150 C -> invalid.
+  c = 12.34f; CHECK(!mvToCelsius(3130.f, &c, false)); NEAR(c, 12.34, 1e-6);
+  // Below 0 C (or a reading that maps there) is out of range.
+  CHECK(!mvToCelsius(200.f, &c, false));
+  CHECK(!mvToCelsius(ntc_mv_for(-5.f, false), &c, false));
+  CHECK(!mvToCelsius(ntc_mv_for(155.f, false), &c, false));
+  CHECK(!mvToCelsius(ntc_mv_for(-5.f, true), &c, true));
+
+  // Fan: ON >= 70, OFF <= 60 (Caleb 2026-11-11), hold between, fault forces ON (Dubem fail-safe).
+  CHECK(kFanOnC == 70.0f && kFanOffC == 60.0f);
+  CHECK(!fanWanted(false, false, 25.f));
+  CHECK(!fanWanted(false, false, 69.9f));
+  CHECK(fanWanted(false, false, 70.f));
+  CHECK(fanWanted(true, false, 67.f));
+  CHECK(!fanWanted(false, false, 67.f));
+  CHECK(fanWanted(true, false, 65.f));   // was the old OFF point: now still ON
+  CHECK(fanWanted(true, false, 60.1f));
+  CHECK(!fanWanted(true, false, 60.f));
+  CHECK(fanWanted(false, true, 25.f));
+  CHECK(fanWanted(false, true, NAN));
+  CHECK(fanWanted(false, false, NAN));
+  CHECK(fanWanted(true, false, 85.f));   // fan stays on through a cutoff
+  // Sweep up then down: one ON edge at 70, one OFF edge at 60.
+  bool fan = false; int on_edges = 0, off_edges = 0;
+  for (float t = 50.f; t <= 90.f; t += 0.5f) { bool w = fanWanted(fan, false, t); if (w && !fan) { ++on_edges; NEAR(t, 70.0, 0.01); } fan = w; }
+  for (float t = 90.f; t >= 50.f; t -= 0.5f) { bool w = fanWanted(fan, false, t); if (!w && fan) { ++off_edges; NEAR(t, 60.0, 0.01); } fan = w; }
+  CHECK(on_edges == 1 && off_edges == 1);
+
+  // Sensor health: no fault before the first sample; fault or stale after.
+  CHECK(!sensorFaulted(false, false, 0));
+  CHECK(!sensorFaulted(false, true, 99999));
+  CHECK(!sensorFaulted(true, false, 2000));
+  CHECK(sensorFaulted(true, true, 0));
+  CHECK(!sensorFaulted(true, false, kStaleMs - 1));
+  CHECK(sensorFaulted(true, false, kStaleMs));
+}
+
+static void test_dsp_over_temp() {
+  using namespace powercell::thermal;
+  CHECK(kCutoffC == 80.0f && kOnAllowedBelowC == 70.0f);
+  OverTempGuard g;
+  CHECK(!g.latched() && !g.blocksOn(true, 25.f) && !g.blocksOn(false, 0.f));
+  // Below 80: no latch, ON allowed (70-80 too when not latched).
+  CHECK(!g.update(true, 79.9f) && !g.latched());
+  CHECK(!g.blocksOn(true, 75.f));
+  // Sensor fault alone never latches, even with a stale hot value passed in.
+  CHECK(!g.update(false, 95.f) && !g.latched() && !g.dirty());
+  CHECK(!g.blocksOn(false, 95.f));
+  // 80.0 latches once (edge), marks dirty for NVS.
+  CHECK(g.update(true, 80.f));
+  CHECK(g.latched() && g.dirty());
+  CHECK(!g.update(true, 85.f));            // no second edge
+  g.ackSaved(); CHECK(!g.dirty());
+  // While latched: hot, 70-80, exactly 70, no reading, fault -> ON refused, latch kept.
+  CHECK(!g.acceptOn(true, 85.f) && g.latched());
+  CHECK(!g.acceptOn(true, 75.f) && g.latched());
+  CHECK(!g.acceptOn(true, 70.f) && g.latched());
+  CHECK(!g.acceptOn(false, 25.f) && g.latched());
+  CHECK(g.blocksOn(true, 70.f) && g.blocksOn(false, 0.f) && !g.dirty());
+  // Cooling alone does not clear the latch (no auto-ON).
+  CHECK(!g.update(true, 40.f) && g.latched());
+  // User ON at a valid 69.9 C: accepted, latch cleared, dirty for NVS.
+  CHECK(!g.blocksOn(true, 69.9f));
+  CHECK(g.acceptOn(true, 69.9f) && !g.latched() && g.dirty());
+  g.ackSaved();
+  // Not latched: ON accepted with no state change; >= 80 refused even before the service pass latches.
+  CHECK(g.acceptOn(true, 50.f) && !g.dirty());
+  CHECK(g.blocksOn(true, 80.f) && !g.acceptOn(true, 81.f));
+  // Reboot with a persisted latch and no reading yet: ON refused until valid < 70.
+  OverTempGuard b; b.restore(true);
+  CHECK(b.latched() && !b.dirty());
+  CHECK(!b.acceptOn(false, 0.f) && b.latched());
+  CHECK(b.acceptOn(true, 30.f) && !b.latched());
+
+  // ON gate order: payment lock > battery > overload > over temperature.
+  using pc::paylock::setStateBlock;
+  CHECK(!strcmp(setStateBlock(false, true, false, false, true), "over_temperature_latched"));
+  CHECK(!strcmp(setStateBlock(false, true, true, false, true), "battery_critical_latched"));
+  CHECK(!strcmp(setStateBlock(false, true, false, true, true), "output_overload_latched"));
+  CHECK(!strcmp(setStateBlock(true, true, false, false, true), "payment_locked"));
+  CHECK(setStateBlock(false, false, false, false, true) == nullptr);  // OFF is never blocked
+  CHECK(setStateBlock(false, true, false, false) == nullptr);
+
+  // Alerts through the event engine (same path as battery_critical / over_temp).
+  using namespace pc::ev;
+  Engine e; Inputs in; Event out[24];
+  in.dspThermal = true; in.sysTempValid = true; in.sysTemp = 45.f;
+  e.update(in, 1000, 0); CHECK(e.drain(out, 24) == 0);
+  in.sysTemp = 81.f; in.overTempLatched = true;
+  e.update(in, 2000, 0);
+  size_t n = e.drain(out, 24);
+  CHECK(n == 1 && out[0].type == Type::OverTemp && out[0].active && out[0].severity == Sev::Critical);
+  CHECK(n == 1 && !strcmp(out[0].id, "over_temperature") && !strcmp(typeName(out[0].type), "over_temp"));
+  CHECK(n == 1 && out[0].hasValue && fabs(out[0].value - 81.0) < 0.01 && !strcmp(out[0].code, "system_ntc_80c_cutoff"));
+  CHECK(n == 1 && out[0].releaseRequires && !strcmp(out[0].releaseRequires, "cool_below_70c_then_on"));
+  in.sysTemp = 50.f; e.update(in, 3000, 0); CHECK(e.drain(out, 24) == 0);  // still latched: no clear, no repeat
+  CHECK(e.activeCount() == 1);
+  in.overTempLatched = false; e.update(in, 4000, 0);
+  n = e.drain(out, 24);
+  CHECK(n == 1 && out[0].type == Type::OverTemp && !out[0].active);
+
+  // temp_sensor_fault: raised once after 4 s of fault, no repeat, cleared after 10 s valid.
+  Engine f; Inputs fi; fi.dspThermal = true; fi.sysTempValid = false; fi.sysTempFault = true;
+  f.update(fi, 0, 0); CHECK(f.drain(out, 24) == 0);
+  f.update(fi, 3999, 0); CHECK(f.drain(out, 24) == 0);
+  f.update(fi, 4000, 0);
+  n = f.drain(out, 24);
+  CHECK(n == 1 && out[0].type == Type::TempSensorFault && out[0].active && out[0].severity == Sev::Warning);
+  CHECK(n == 1 && !strcmp(typeName(out[0].type), "temp_sensor_fault") && !strcmp(out[0].id, "temp_sensor_fault"));
+  for (uint32_t t = 5000; t < 60000; t += 1000) f.update(fi, t, 0);
+  CHECK(f.drain(out, 24) == 0);  // no spam while it stays faulted
+  // A fault never raises the cutoff alert.
+  for (size_t i = 0; i < f.activeCount(); ++i) CHECK(f.active(i)->type != Type::OverTemp);
+  fi.sysTempFault = false; fi.sysTempValid = true; fi.sysTemp = 30.f;
+  f.update(fi, 60000, 0); f.update(fi, 69999, 0); CHECK(f.drain(out, 24) == 0);
+  f.update(fi, 70000, 0);
+  n = f.drain(out, 24);
+  CHECK(n == 1 && out[0].type == Type::TempSensorFault && !out[0].active);
+  // A brief flicker (< 4 s) does not alert.
+  fi.sysTempFault = true; f.update(fi, 71000, 0); fi.sysTempFault = false; f.update(fi, 73000, 0); f.update(fi, 90000, 0);
+  CHECK(f.drain(out, 24) == 0);
+  // STM images (dspThermal false) never raise either alert.
+  Engine s; Inputs si; si.overTempLatched = true; si.sysTempFault = true;
+  s.update(si, 0, 0); s.update(si, 20000, 0);
+  n = s.drain(out, 24);
+  bool any = false; for (size_t i = 0; i < n; ++i) any |= out[i].type == Type::OverTemp || out[i].type == Type::TempSensorFault;
+  CHECK(!any);
+}
+
+static void test_dsp_bms_select() {
+  // Host tests compile like an STM image: JK-PB, DSP_BMS_JKPB left at its default 0.
+  CHECK(POWERCELL_DSP011 == 0);
+  CHECK(DSP_BMS_JKPB == 0);
+  CHECK(POWERCELL_BMS_JKPB == 1);
+  CHECK(PIN_BMS_RX == 17 && PIN_BMS_TX == 16 && PIN_BMS_BAUD == 115200);
+  char buf[16384];
+  const char *paths[] = {"../../platformio.ini", "../platformio.ini", "platformio.ini"};
+  bool got = false;
+  for (const char *path : paths) {
+    if (read_text_file(path, buf, sizeof buf)) { got = true; break; }
+  }
+  CHECK(got);
+  if (!got) return;
+  CHECK(flag_in_env(buf, "esp32dev_dsp011_5kw", "DSP_BMS_JKPB=1"));
+  CHECK(flag_in_env(buf, "esp32dev_dsp011_35kw", "DSP_BMS_JKPB=1"));  // Dubem working firmware: JK-PB on both
+  CHECK(!flag_in_env(buf, "esp32dev_stm01_5kw", "DSP_BMS_JKPB"));
+  CHECK(!flag_in_env(buf, "esp32dev_stm01_35kw", "DSP_BMS_JKPB"));
+}
+
+static void test_live_grid() {  // grid_available as an input to live source/status
+  using namespace pc; using namespace pc::live;
+  enum G { kUnknown, kAbsent, kPresent };
+  const float amps[3] = {5.0f, -7.0f, 0.0f};  // charging, discharging, idle
+  auto mk = [](bool dsp, SysState sys, G g, float a) {
+    Inputs in; in.stmFresh = true; in.sys = sys; in.sysAssumed = dsp;
+    in.hasVout = in.hasIout = (sys == SysState::Inverter); in.vout = 230; in.iout = 2;
+    in.bmsOn = true; in.bmsCurrentA = a; in.bmsPowerW = a * 52;
+    in.gridKnown = g != kUnknown; in.gridPresent = g == kPresent;
+    return in;
+  };
+  // Baseline: what source/status were before the grid input existed.
+  auto legacy = [](Inputs in) { in.gridKnown = false; in.gridPresent = false; return in; };
+  // DSP: sys is the hardcoded Inverter placeholder.
+  for (int g = 0; g < 3; ++g) for (float a : amps) {
+    Inputs in = mk(true, SysState::Inverter, (G)g, a);
+    Source src = source(in); Status st = status(in);
+    if (g == kPresent && a > -kChargeA) {
+      CHECK(src == Source::Grid);
+      CHECK(st == (a > kChargeA ? Status::Charging : Status::Idle));
+    } else {
+      CHECK(src == source(legacy(in)) && st == status(legacy(in)));
+      CHECK(src == Source::Battery && st == Status::Inverting);  // unknown/absent or discharging: unchanged
+    }
+  }
+  {  // DSP grid present, small idle drain inside the +-0.5 A band: idle pass-through
+    Inputs in = mk(true, SysState::Inverter, kPresent, -0.3f);
+    CHECK(source(in) == Source::Grid && status(in) == Status::Idle);
+    in.bmsCurrentA = -0.5f; CHECK(source(in) == Source::Battery && status(in) == Status::Inverting);
+  }
+  {  // DSP grid present but BMS offline: cannot tell discharge, keep today
+    Inputs in = mk(true, SysState::Inverter, kPresent, 0); in.bmsOn = false;
+    CHECK(source(in) == Source::Battery && status(in) == Status::Inverting);
+  }
+  {  // DSP grid present, fault still wins on status
+    Inputs in = mk(true, SysState::Inverter, kPresent, 5); in.faultActive = true;
+    CHECK(status(in) == Status::Fault && source(in) == Source::Grid);
+  }
+  {  // DSP grid present + PV active, pack charging: grid (was solar)
+    Inputs in = mk(true, SysState::Inverter, kPresent, 3); in.solarOk = true; in.solarW = 500;
+    CHECK(source(in) == Source::Grid && status(in) == Status::Charging);
+    in.gridPresent = false; CHECK(source(in) == Source::Solar && status(in) == Status::Inverting);
+    in.gridKnown = false; CHECK(source(in) == Source::Solar && status(in) == Status::Inverting);
+  }
+  {  // DSP stale PZEM: unchanged (unknown / none)
+    Inputs in = mk(true, SysState::Inverter, kPresent, 5); in.stmFresh = false;
+    CHECK(source(in) == Source::None && status(in) == Status::Unknown);
+  }
+  {  // DSP output power path untouched by the grid input
+    Inputs in = mk(true, SysState::Inverter, kPresent, 5); float w = 0;
+    CHECK(outputPowerW(in, w) == PowerSrc::Stm32); NEAR(w, 460, 0.1);
+  }
+  // STM: a real SYS report is authoritative for Inverter/Grid/Idle/Reserve/Fault.
+  const SysState sysAll[] = {SysState::Inverter, SysState::Grid, SysState::Idle, SysState::Reserve, SysState::Fault};
+  for (SysState sys : sysAll) for (int g = 0; g < 3; ++g) for (float a : amps) {
+    Inputs in = mk(false, sys, (G)g, a);
+    CHECK(source(in) == source(legacy(in)) && status(in) == status(legacy(in)));
+  }
+  {  // STM explicit expectations, grid present
+    Inputs in = mk(false, SysState::Inverter, kPresent, 5);
+    CHECK(source(in) == Source::Battery && status(in) == Status::Inverting);
+    in = mk(false, SysState::Grid, kPresent, 5); CHECK(source(in) == Source::Grid && status(in) == Status::Charging);
+    in = mk(false, SysState::Grid, kPresent, 0); CHECK(source(in) == Source::Grid && status(in) == Status::Idle);
+    in = mk(false, SysState::Idle, kPresent, 0); CHECK(source(in) == Source::None && status(in) == Status::Standby);
+  }
+  // STM with SYS Unknown (framed sys > 5): grid input applies like DSP.
+  for (int g = 0; g < 3; ++g) for (float a : amps) {
+    Inputs in = mk(false, SysState::Unknown, (G)g, a);
+    if (g == kPresent && a > -kChargeA) {
+      CHECK(source(in) == Source::Grid && status(in) == (a > kChargeA ? Status::Charging : Status::Idle));
+    } else {
+      CHECK(source(in) == Source::None);
+      CHECK(status(in) == (a > kChargeA ? Status::Charging : Status::Unknown));
+    }
+  }
+  CHECK(!strcmp(statusName(Status::Idle), "idle") && !strcmp(sourceName(Source::Grid), "grid") &&
+        !strcmp(statusName(Status::Charging), "charging"));
+}
+
 static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x/1000 : x
   auto displayKw = [](double x) { return fabs(x) > 20.0 ? x / 1000.0 : x; };
   const float ws[] = {0.0f, 5.0f, 15.0f, 20.0f, 21.0f, 127.9f, 3000.0f, 19999.0f};
@@ -1639,18 +2676,322 @@ static void test_app_power_kw() {  // 2.5.8: the app's displayKw(x) = x > 20 ? x
   CHECK(strstr(b, "today_kwh=null total_kwh=null") != nullptr);
 }
 
+static void test_mdns() {
+  using namespace pc::mdns;
+  char h[kHostCap];
+  const uint8_t mac[6] = {0x24, 0x6F, 0x28, 0xDD, 0xEE, 0xFF};
+  // Display ids already valid stay exactly as /v2/setup/info reports them.
+  CHECK(hostLabel("ACE-000001", h, sizeof h) == 10 && !strcmp(h, "ACE-000001"));
+  CHECK(hostLabel("ACE-DDEEFF", h, sizeof h) == 10 && !strcmp(h, "ACE-DDEEFF"));
+  // Spaces, dots, underscores, unicode bytes collapse to one '-'; edges trimmed.
+  CHECK(hostLabel("My Powercell #2", h, sizeof h) && !strcmp(h, "My-Powercell-2"));
+  CHECK(hostLabel("  ace_000001.local ", h, sizeof h) && !strcmp(h, "ace-000001-local"));
+  CHECK(hostLabel("--ACE--01--", h, sizeof h) && !strcmp(h, "ACE-01"));
+  CHECK(hostLabel("Caf\xc3\xa9 unit", h, sizeof h) && !strcmp(h, "Caf-unit"));
+  CHECK(hostLabel("", h, sizeof h) == 0 && h[0] == 0);
+  CHECK(hostLabel("___", h, sizeof h) == 0 && h[0] == 0);
+  CHECK(hostLabel(nullptr, h, sizeof h) == 0 && h[0] == 0);
+  // 63-char label limit, no trailing '-' after the cut.
+  char longId[100]; memset(longId, 'A', 99); longId[99] = 0;
+  CHECK(hostLabel(longId, h, sizeof h) == 63 && strlen(h) == 63);
+  memset(longId, 'B', 62); longId[62] = ' '; longId[63] = 'C'; longId[64] = 0;
+  CHECK(hostLabel(longId, h, sizeof h) == 62 && h[61] == 'B');
+  // Small buffer cuts safely.
+  char tiny[5]; CHECK(hostLabel("ACE-000001", tiny, sizeof tiny) == 3 && !strcmp(tiny, "ACE"));
+  // MAC fallback only when nothing usable is left; same format as pc::gatewayName.
+  CHECK(hostname("ACE-000001", mac, h, sizeof h) == 10 && !strcmp(h, "ACE-000001"));
+  CHECK(hostname("!!!", mac, h, sizeof h) == 10 && !strcmp(h, "ACE-DDEEFF"));
+  char gw[16]; gatewayName(mac, gw);
+  CHECK(hostname(gw, mac, h, sizeof h) && !strcmp(h, gw));
+
+  // Announcer: start once the station is on the home network, no repeat while steady.
+  Announcer a;
+  CHECK(a.decide(false, 0, "ACE-000001", 0) == Action::None);   // hotspot / no IP: nothing
+  CHECK(a.decide(true, 1, "ACE-000001", 10) == Action::Start);
+  a.started(true, "ACE-000001", 1, 10);
+  CHECK(a.running && !strcmp(a.host, "ACE-000001"));
+  CHECK(a.decide(true, 1, "ACE-000001", 20) == Action::None);
+  CHECK(a.decide(true, 1, "ACE-000001", 999999) == Action::None);
+  // Reconnect without the loop seeing the drop (new GOT_IP): restart once.
+  CHECK(a.decide(true, 2, "ACE-000001", 30) == Action::Restart);
+  a.started(true, "ACE-000001", 2, 30);
+  CHECK(a.decide(true, 2, "ACE-000001", 40) == Action::None);
+  // Rename (gw_name / factory serial): restart under the new name.
+  CHECK(a.decide(true, 2, "ACE-000002", 50) == Action::Restart);
+  a.started(true, "ACE-000002", 2, 50);
+  // Station lost / hotspot-only / Wi-Fi test: stop once, then stay idle.
+  CHECK(a.decide(false, 2, "ACE-000002", 60) == Action::Stop);
+  a.stopped();
+  CHECK(!a.running && a.host[0] == 0);
+  CHECK(a.decide(false, 2, "ACE-000002", 70) == Action::None);
+  // Back on the network: start again.
+  CHECK(a.decide(true, 3, "ACE-000002", 80) == Action::Start);
+  // begin failed: wait kRetryMs, unless a new GOT_IP arrives first.
+  a.started(false, "ACE-000002", 3, 100);
+  CHECK(!a.running && a.failed && a.host[0] == 0);
+  CHECK(a.decide(true, 3, "ACE-000002", 100 + kRetryMs - 1) == Action::None);
+  CHECK(a.decide(true, 3, "ACE-000002", 100 + kRetryMs) == Action::Start);
+  CHECK(a.decide(true, 4, "ACE-000002", 101) == Action::Start);
+  // millis() wrap does not block the retry forever.
+  Announcer w; w.started(false, "ACE-000001", 1, 0xFFFFFF00u);
+  CHECK(w.decide(true, 1, "ACE-000001", 0xFFFFFF00u + 10) == Action::None);
+  CHECK(w.decide(true, 1, "ACE-000001", (uint32_t)(0xFFFFFF00u + kRetryMs)) == Action::Start);
+  // Empty name never starts; a running announcer stops.
+  Announcer e;
+  CHECK(e.decide(true, 1, "", 0) == Action::None);
+  CHECK(e.decide(true, 1, nullptr, 0) == Action::None);
+  e.started(true, "ACE-000001", 1, 0);
+  CHECK(e.decide(true, 1, "", 5) == Action::Stop);
+}
+
+static void test_factory_reset_scope() {
+  using namespace pc::onb;
+  // Customer state goes.
+  const char *erased[] = {"pc_onb", "pc_offline", "registry", "forgotten", "sock_cfg", "sock_prio", "ac_out", "bat_set"};
+  for (auto ns : erased) CHECK(factoryResetErasesNamespace(ns));
+  const char *removed[] = {"wifi_ssid", "wifi_pass", "local_tok", "net_mode", "ap_pass", "label_pc", "gw_name"};
+  for (auto k : removed) CHECK(factoryResetRemovesKey(k));
+  // Factory identity, rating, calibration, OTA, battery protection and provisioning stay.
+  const char *kept[] = {"pc_ident", "pc_cfg", "system_cfg", "pc_ota", "pwr_guard", "battery_alerts", "solar", "clock", "pc_secure", "pc_factory"};
+  for (auto ns : kept) CHECK(!factoryResetErasesNamespace(ns));
+  const char *keptKeys[] = {"api_key", "ota_url", "admin_tok", "espnow_keys", "locked", "migrated", "serial", "secret", "model", "rated"};
+  for (auto k : keptKeys) CHECK(!factoryResetRemovesKey(k));
+  CHECK(!factoryResetErasesNamespace(nullptr));
+  CHECK(!factoryResetRemovesKey(nullptr));
+  CHECK(kFactoryResetNamespaceCount == 8);
+  CHECK(kFactoryResetUserKeyCount == 7);
+}
+
+static void test_ac_limit_events() {  // 2.5.13: Manual output power limit warning / shutdown events (DSP)
+  using namespace ev;
+  powercell::AcOutputPolicy pol; pol.setUsable(4500); pol.setCeiling(3000, powercell::AcMode::WarnAndShutdown);
+  Engine g; Event e[24]; size_t n;
+  auto step = [&](float w, uint32_t t) {
+    powercell::AcWatts s; s.valid = true; s.watts = w; s.receivedAtMs = t; pol.update(s, t);
+    Inputs in; in.acLimit = true; in.acWarn = pol.warning(); in.acShutdown = pol.shutdownLatched();
+    in.acRatedShutdown = pol.systemOverloadLatched(); in.acWattsValid = true; in.acWatts = w;
+    g.update(in, t, t / 1000);
+    return g.drain(e, 24);
+  };
+  uint32_t t = 0;
+  for (; t <= 4000; t += 1000) CHECK(step(1000, t) == 0);           // startup grace + normal load
+  CHECK(step(3200, 5000) == 0 && step(3200, 6000) == 0 && step(3200, 7000) == 0);  // 3 s hold
+  n = step(3200, 8000);
+  CHECK(n == 1 && !strcmp(e[0].id, "ac_output_limit") && e[0].active && e[0].type == Type::Overload &&
+        e[0].severity == Sev::Warning && !strcmp(e[0].code, "output_limit_w") && e[0].hasValue && e[0].value == 3200.0f &&
+        !strcmp(typeName(e[0].type), "overload"));
+  for (t = 9000; t < 13000; t += 1000) CHECK(step(3200, t) == 0);   // one-shot while over
+  n = step(3200, 13000);                                             // 8 s: warn_and_shutdown latches
+  CHECK(n == 1 && !strcmp(e[0].id, "ac_output_shutdown") && e[0].active && e[0].severity == Sev::Critical &&
+        !strcmp(e[0].code, "output_limit_off") && !strcmp(e[0].releaseRequires, "load_below_limit_30s"));
+  CHECK(step(3200, 14000) == 0);
+  // Output off: load 0. Warning clears after the 10 s rearm + 10 s debounce, shutdown after 30 s.
+  size_t clrWarn = 0, clrShut = 0; uint32_t warnAt = 0, shutAt = 0;
+  for (t = 15000; t <= 60000; t += 1000) {
+    n = step(0, t);
+    for (size_t i = 0; i < n; ++i) {
+      if (!strcmp(e[i].id, "ac_output_limit") && !e[i].active) { ++clrWarn; warnAt = t; }
+      if (!strcmp(e[i].id, "ac_output_shutdown") && !e[i].active) { ++clrShut; shutAt = t; }
+    }
+  }
+  CHECK(clrWarn == 1 && warnAt == 35000 && clrShut == 1 && shutAt == 45000);
+  // Warn-only: warning event, no shutdown event.
+  powercell::AcOutputPolicy wo; wo.setUsable(4500); wo.setCeiling(3000, powercell::AcMode::WarnOnly);
+  Engine h; int warns = 0, shuts = 0;
+  for (t = 0; t <= 40000; t += 1000) {
+    float w = t < 4000 ? 500 : 3500;
+    powercell::AcWatts s; s.valid = true; s.watts = w; s.receivedAtMs = t; wo.update(s, t);
+    Inputs in; in.acLimit = true; in.acWarn = wo.warning(); in.acShutdown = wo.shutdownLatched(); in.acWattsValid = true; in.acWatts = w;
+    h.update(in, t, 0); n = h.drain(e, 24);
+    for (size_t i = 0; i < n; ++i) { warns += !strcmp(e[i].id, "ac_output_limit") && e[i].active; shuts += !strcmp(e[i].id, "ac_output_shutdown"); }
+  }
+  CHECK(warns == 1 && shuts == 0 && !wo.shutdownLatched());
+  // Usable rating exceeded (any mode): rated_overload_off.
+  powercell::AcOutputPolicy rp; rp.setUsable(4500); rp.setCeiling(0, powercell::AcMode::WarnOnly);
+  Engine r; bool rated = false;
+  for (t = 0; t <= 20000; t += 1000) {
+    float w = t < 4000 ? 500 : 4800;
+    powercell::AcWatts s; s.valid = true; s.watts = w; s.receivedAtMs = t; rp.update(s, t);
+    Inputs in; in.acLimit = true; in.acWarn = rp.warning(); in.acShutdown = rp.shutdownLatched(); in.acRatedShutdown = rp.systemOverloadLatched();
+    r.update(in, t, 0); n = r.drain(e, 24);
+    for (size_t i = 0; i < n; ++i) if (!strcmp(e[i].id, "ac_output_shutdown") && e[i].active) rated = !strcmp(e[i].code, "rated_overload_off");
+  }
+  CHECK(rated);
+  // STM images (acLimit false): never raised.
+  Engine st; Inputs si; si.acWarn = true; si.acShutdown = true; st.update(si, 0, 0); st.update(si, 20000, 0); CHECK(st.drain(e, 24) == 0);
+}
+
+static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from collector 2.5.12
+  using namespace pc::lanota;
+  CHECK(compareVersion("2.5.12", "2.5.11") > 0); CHECK(compareVersion("2.5.9", "2.5.12") < 0);
+  CHECK(compareVersion("2.5.12", "2.5.12") == 0); CHECK(compareVersion("3.0", "2.9.9") > 0); CHECK(compareVersion("2.5", "2.5.0") == 0);
+  const char *pre = "POWERCELL_FW|collector|pc-dsp011-5kw|";
+  // Other models' tags (3.5 kW DSP, STM, legacy esp32dev, socket) must not be taken for ours.
+  std::string img = std::string(5000, '\xAA') + "POWERCELL_FW|collector|pc-dsp011-5kw|" + std::string(1, '\0') + "junk" +
+      "POWERCELL_FW|collector|pc-dsp011-35kw|9.9.9|END" + "POWERCELL_FW|collector|pc-stm01-5kw|9.9.8|END" +
+      "POWERCELL_FW|collector|esp32dev|9.9.7|END" + "POWERCELL_FW|socket|pc-dsp011-5kw|9.9.6|END" +
+      "POWERCELL_FW|collector|pc-dsp011-5kw|2.5.14|END" + std::string(300, 'x');
+  for (size_t chunk : {1u, 7u, 64u, 4096u}) {
+    TagScanner sc(pre);
+    for (size_t i = 0; i < img.size(); i += chunk) sc.feed(reinterpret_cast<const uint8_t *>(img.data()) + i, std::min(chunk, img.size() - i));
+    CHECK(sc.found() && sc.version() == "2.5.14");
+    CHECK(judge("2.5.13", sc, false) == Verdict::Ok);
+    CHECK(judge("2.5.14", sc, false) == Verdict::SameVersion);
+    CHECK(judge("2.5.14", sc, true) == Verdict::SameVersion);   // current rule: same version never installs
+    CHECK(judge("2.5.16", sc, false) == Verdict::Downgrade);
+    CHECK(judge("2.5.16", sc, true) == Verdict::Ok);           // ?force=1 allows an older version
+  }
+  // A 3.5 kW image on a 5 kW unit: no tag for this model.
+  TagScanner other(pre); std::string s1 = "POWERCELL_FW|collector|pc-dsp011-35kw|2.5.14|END";
+  other.feed(reinterpret_cast<const uint8_t *>(s1.data()), s1.size());
+  CHECK(!other.found() && judge("2.5.13", other, true) == Verdict::NoTag && !strcmp(verdictName(Verdict::NoTag), "identity_or_model_mismatch"));
+  TagScanner none(pre); std::string s2 = "POWERCELL_FW|socket|pc-dsp011-5kw|1.0.3|END"; none.feed(reinterpret_cast<const uint8_t *>(s2.data()), s2.size());
+  CHECK(!none.found());
+  TagScanner bad(pre); std::string s3 = std::string(pre) + "abc|END"; bad.feed(reinterpret_cast<const uint8_t *>(s3.data()), s3.size()); CHECK(!bad.found());
+  std::string h(64, 'a'), H(64, 'A'); CHECK(hexEq(h.c_str(), H.c_str())); CHECK(!hexEq(h.c_str(), "ab")); std::string g(64, 'g'); CHECK(!hexEq(g.c_str(), g.c_str()));
+  CHECK(!hexEq(nullptr, h.c_str()));
+  // Confirm rule: hotspot_only 3 min of local health, otherwise the 30 s cloud rule unchanged.
+  CHECK(confirmAfterMs(true, 30000) == 180000 && confirmAfterMs(false, 30000) == 30000);
+  CHECK(healthyNow(true, false, 40000) && !healthyNow(true, true, 20000));
+  CHECK(healthyNow(false, true, 1000) && !healthyNow(false, false, 100000));
+  // The real image, if one was built: its tag is found for its own model only.
+  if (FILE *f = fopen("../../.pio/build/esp32dev_dsp011_5kw/firmware.bin", "rb")) {
+    TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
+    while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
+    fclose(f);
+    CHECK(sr.found() && sr.version() == "2.5.27" && !s35.found());
+  }
+}
+
+static void test_stm_save_interval() {  // Caleb 12 Nov 2026: 5 min + 10 Wh, 15 min fallback
+  using namespace powercell;
+  CHECK(kStmSaveMinMs == 5u * 60u * 1000u && kStmSaveMaxMs == 15u * 60u * 1000u && kStmSaveWh == 10.0 && kStmSaveIdleWh == 0.5);
+  // Worst-case loss at rated power: 5 min. 5 kW: 416.7 Wh, 3.5 kW: 291.7 Wh.
+  NEAR(5000.0 * kStmSaveMinMs / 3600000.0, 416.67, 0.01);
+  NEAR(3500.0 * kStmSaveMinMs / 3600000.0, 291.67, 0.01);
+  // Worst-case writes per day: one per 5 min + one day change.
+  CHECK(86400000u / kStmSaveMinMs + 1 == 289);
+  auto run = [](float volts, float amps, uint32_t seconds, uint32_t *firstSaveS, int *saves) {
+    StmEnergyEstimate e; e.restore(100, 0, 1000);  // a saved counter exists
+    *firstSaveS = 0; *saves = 0;
+    for (uint32_t i = 0; i <= seconds; ++i) {
+      const uint32_t ms = 1000 + i * 1000;
+      StmEstimateSample s; s.valid = true; s.volts = volts; s.amps = amps; s.mono_ms = ms; s.unix_s = 1700000000 + i; s.day_id = 100;
+      const auto v = e.observe(s);
+      if (v.persist) { e.ackPersist(ms); if (!*firstSaveS) *firstSaveS = i; ++*saves; }
+    }
+    return e;
+  };
+  uint32_t first = 0; int saves = 0;
+  // Full load 5 kW (230 V, 27.2 A): 10 Wh after ~8 s, so the 5 min floor sets the pace.
+  run(230, 27.2f, 3600, &first, &saves);
+  CHECK(first == 299 && saves == 12);  // 5 min from boot (ms 0)  // 12 writes/hour = 288/day
+  // 1 kW: the same 5 min.
+  run(230, 5.44f, 3600, &first, &saves);
+  CHECK(first == 299 && saves == 12);  // 5 min from boot (ms 0)
+  // 50 W (230 V, 0.272 A): 10 Wh takes 12 min, so the save is at 12 min, not 5.
+  run(230, 0.272f, 3600, &first, &saves);
+  CHECK(first >= 719 && first <= 721 && saves == 5);
+  // 3 W trickle: 0.5 Wh after 10 min, the 15 min fallback flushes it.
+  {
+    StmEnergyEstimate e; e.restore(100, 0, 1000); int n = 0; uint32_t at = 0;
+    for (uint32_t i = 0; i <= 3600; ++i) {
+      const uint32_t ms = 1000 + i * 1000;
+      StmEstimateSample s; s.valid = true; s.volts = 230; s.amps = 0.0163f; s.mono_ms = ms; s.unix_s = 1700000000 + i; s.day_id = 100;
+      if (e.observe(s).persist) { e.ackPersist(ms); ++n; if (!at) at = i; }
+    }
+    CHECK(at == 899 && n == 4);  // 3 W: about 0.75 Wh at 15 min from boot
+  }
+  // No energy: no write, ever.
+  run(230, 0, 3600, &first, &saves);
+  CHECK(saves == 0);
+  // A day change still saves at once.
+  {
+    StmEnergyEstimate e; e.restore(100, 5, 1000);
+    StmEstimateSample s; s.valid = true; s.volts = 230; s.amps = 1; s.mono_ms = 1000; s.unix_s = 1700000000; s.day_id = 100;
+    CHECK(!e.observe(s).persist);
+    s.mono_ms = 2000; s.unix_s += 1; s.day_id = 101;
+    CHECK(e.observe(s).persist);
+  }
+}
+
+static void test_ota_errors() {  // 2.5.18: specific OTA failure codes and the hello OTA host
+  using namespace pc::otaerr;
+  char b[48];
+  const size_t slot = 0x1E0000;
+  // Before any flash work.
+  CHECK(classifyResponse(-1, -1, slot, 0) == Fail::ConnectFailed);      // DNS / TCP / TLS handshake
+  CHECK(classifyResponse(-5, -1, slot, 0) == Fail::ConnectFailed);
+  CHECK(classifyResponse(-11, -1, slot, 0) == Fail::Timeout);           // no response headers
+  CHECK(classifyResponse(401, 30, slot, 0) == Fail::Http);
+  CHECK(classifyResponse(404, -1, slot, 0) == Fail::Http);
+  CHECK(classifyResponse(409, 120, slot, 0) == Fail::NotCurrent);       // 2.5.26: not_current_offer
+  CHECK(classifyResponse(410, -1, slot, 1393408) == Fail::NotCurrent);
+  CHECK(classifyResponse(200, -1, slot, 0) == Fail::SizeMismatch);      // chunked / no Content-Length
+  CHECK(classifyResponse(200, 100, slot, 0) == Fail::SizeMismatch);
+  CHECK(classifyResponse(200, 1380144, slot, 1380000) == Fail::SizeMismatch);
+  CHECK(classifyResponse(200, slot + 1, slot, 0) == Fail::TooLarge);
+  CHECK(classifyResponse(200, slot + 1, slot, slot + 1) == Fail::TooLarge);
+  CHECK(classifyResponse(200, 1380144, slot, 1380144) == Fail::None);
+  CHECK(classifyResponse(200, 1380144, slot, 0) == Fail::None);
+  CHECK(classifyResponse(200, slot, slot, 0) == Fail::None);
+  // Strings reported in last_error.
+  code(Fail::Http, 401, b, sizeof b); CHECK(!strcmp(b, "download_http_401"));
+  code(Fail::Http, 503, b, sizeof b); CHECK(!strcmp(b, "download_http_503"));
+  code(Fail::ConnectFailed, -1, b, sizeof b); CHECK(!strcmp(b, "download_connect_failed"));
+  const struct { Fail f; const char *s; } names[] = {
+    {Fail::NoSlot, "download_no_slot"}, {Fail::UrlInvalid, "download_url_invalid"}, {Fail::Timeout, "download_timeout"},
+    {Fail::SizeMismatch, "download_size_mismatch"}, {Fail::TooLarge, "download_too_large"},
+    {Fail::FlashBeginFailed, "download_flash_begin_failed"}, {Fail::Stalled, "download_stalled"},
+    {Fail::ReadError, "download_read_error"}, {Fail::VerifyMagic, "verify_magic"}, {Fail::FlashWriteFailed, "flash_write_failed"},
+    {Fail::VerifySize, "verify_size"}, {Fail::VerifyIdentity, "verify_identity"}, {Fail::VerifySha, "verify_sha"},
+    {Fail::FinalizeFailed, "finalize_failed"}, {Fail::NotCurrent, "download_not_current"}};
+  for (const auto &n : names) { code(n.f, 0, b, sizeof b); CHECK(!strcmp(b, n.s)); CHECK(strlen(b) < 32); }
+  code(Fail::None, 0, b, sizeof b); CHECK(b[0] == 0);
+  { char tiny[8]; code(Fail::VerifyIdentity, 0, tiny, sizeof tiny); CHECK(strlen(tiny) == 7); }  // truncates, never overflows
+  // The legacy catch-all is gone.
+  for (const auto &n : names) CHECK(strcmp(name(n.f), "download_or_verification_failed") != 0);
+  // After the body: loop errors win, then size, identity, sha.
+  CHECK(classifyVerify(Fail::Stalled, 10, 100, false, false) == Fail::Stalled);
+  CHECK(classifyVerify(Fail::VerifyMagic, 0, 100, false, false) == Fail::VerifyMagic);
+  CHECK(classifyVerify(Fail::None, 99, 100, true, true) == Fail::VerifySize);
+  CHECK(classifyVerify(Fail::None, 100, 100, false, true) == Fail::VerifyIdentity);
+  CHECK(classifyVerify(Fail::None, 100, 100, true, false) == Fail::VerifySha);
+  CHECK(classifyVerify(Fail::None, 100, 100, true, true) == Fail::None);
+  // Hello ota_host: scheme://host[:port], nothing else.
+  char h[96];
+  CHECK(hostOf("https://api-dev.acecore.tech", h, sizeof h) && !strcmp(h, "https://api-dev.acecore.tech"));
+  CHECK(hostOf("https://api-dev.acecore.tech/", h, sizeof h) && !strcmp(h, "https://api-dev.acecore.tech"));
+  CHECK(hostOf("HTTPS://API.AceCore.Tech:8443/api/ota?key=secret#x", h, sizeof h) && !strcmp(h, "https://api.acecore.tech:8443"));
+  CHECK(hostOf("https://user:pw@api.acecore.tech/x", h, sizeof h) && !strcmp(h, "https://api.acecore.tech"));
+  CHECK(strstr(h, "pw") == nullptr && strstr(h, "user") == nullptr);
+  CHECK(hostOf("https://api.acecore.tech?token=abc", h, sizeof h) && !strcmp(h, "https://api.acecore.tech"));
+  CHECK(!hostOf("api.acecore.tech", h, sizeof h) && h[0] == 0);
+  CHECK(!hostOf("https://", h, sizeof h));
+  CHECK(!hostOf("https:///path", h, sizeof h));
+  CHECK(!hostOf("https://bad host", h, sizeof h));
+  CHECK(!hostOf(nullptr, h, sizeof h));
+  { char s8[8]; CHECK(!hostOf("https://api-dev.acecore.tech", s8, sizeof s8) && s8[0] == 0); }
+  // ota_url_override
+  CHECK(!isOverride("https://api-dev.acecore.tech", "https://api-dev.acecore.tech"));
+  CHECK(!isOverride("https://API-dev.acecore.tech/", "https://api-dev.acecore.tech"));
+  CHECK(isOverride("https://api.acecore.tech", "https://api-dev.acecore.tech"));
+  CHECK(isOverride("https://api-dev.acecore.tech:8443", "https://api-dev.acecore.tech"));
+  CHECK(isOverride("https://api-dev.acecore.tech/v2", "https://api-dev.acecore.tech"));
+}
+
 int main() {
-  test_live(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
+  test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
-  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_v011_gpio(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
+  test_time_policy(); test_ds3231(); test_ac_energy_today(); test_stm_estimate(); test_grid_sense(); test_dsp_thermal(); test_dsp_over_temp(); test_jbd(); test_dsp_bms_select(); test_v011_gpio(); test_dsp_pad_steps(); test_front_light_follows(); test_dsp_status_led(); test_pzem_route(); test_pzem_stats(); test_battery_cutoff(); test_sd_energy(); test_factory_rating();
   test_soc_guard(); test_rsv_parse(); test_critical_events();
   test_trip_lockout(); test_lockout_event();
-  test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity();
+  test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity(); test_mdns();
   test_ota_hardware_model();
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
-  test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_ws_rules();
+  test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
-  test_payment_lock();
+  test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

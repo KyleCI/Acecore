@@ -16,13 +16,19 @@
 #include "web_local.h"
 #include <WiFi.h>
 #include "backend_ws.h"
+#include "gateway.h"
 #include "bms.h"
 #include "pins.h"
 #include "devauth.h"
 #include "factory_id.h"
 #include "dsp011_log.h"
 #include "payment_lock.h"
+#include "grid_sense.h"
+#include "dsp_thermal.h"
+#include "dsp011_pzem.h"
+#include "pzem_route.h"
 #include "telemetry.h"
+#include "heapguard.h"
 
 namespace console {
 namespace {
@@ -53,6 +59,19 @@ void info() {
     Serial.printf("model=%s rated_kva=%.1f usable_kw=%.2f\n", m ? m->code : "unset", m ? m->ratedKva : 0.0f, m ? m->usableKw : 0.0f); }
   // OTA identity. Separate from model= above, which is the NVS PC3K/PC3_5K/PC5K/PC10K setting.
   Serial.printf("hardware_model=%s\n", POWERCELL_HARDWARE_MODEL);
+#if POWERCELL_DSP011
+  Serial.printf("bms=%s baud=%lu rx=%d tx=%d\n", POWERCELL_BMS_JKPB ? "JK-PB" : "JBD",
+                (unsigned long)PIN_BMS_BAUD, PIN_BMS_RX, PIN_BMS_TX);
+  {
+    DspThermalReading t;
+    const bool tok = dspThermalRead(&t);
+    char tc[16];
+    if (tok) snprintf(tc, sizeof tc, "%.1f", t.temp_c); else snprintf(tc, sizeof tc, "null");
+    Serial.printf("thermal=ntc10k ntc_pin=%d fan_pin=%d temperature_c=%s fault=%d fan_on=%d ntc_mv=%.0f over_temp_cutoff=%d\n", PIN_NTC,
+                  PIN_FAN, tc, t.sampled ? (int)powercell::thermal::sensorFaulted(t.sampled, t.fault, t.age_ms) : -1,
+                  t.sampled ? (int)t.fan_on : -1, t.sampled ? t.mv : 0.0f, (int)powerguard::overTempLatched());
+  }
+#endif
   Serial.printf("ap_ssid=%s wifi_state=%s hotspot=%d\n", id.apSsid, net::stateName(), net::apActive());
   String ofp = onboarding::fingerprint();
   Serial.printf("onboarding=2 passcode=%s default=%d claimed=%d fingerprint=%s\n", onboarding::passcodeSet() ? "set" : "unset",
@@ -161,7 +180,7 @@ void selftest() {
   d["secret"] = fid::hasSecret(); d["secret_reported"] = fid::secretReported();
   d["locked"] = settings::provisioningLocked();
   if (const pc::live::Model *m = unitmodel::get()) d["model"] = m->code; else d["model"] = nullptr;
-  // JK BMS over the TTL-to-RS485 link (Serial2)
+  // BMS over Serial2 (JK-PB stream or JBD poll, see POWERCELL_BMS_JKPB)
   pc::jk::Data b; uint32_t age = 0;
   bms::Stats bs = bms::stats();
   bool bok = bms::read(b, &age);
@@ -205,6 +224,41 @@ void selftest() {
     else { jso["energy_today_kwh"] = nullptr; jso["energy_total_kwh"] = nullptr; }
   }
 #if POWERCELL_DSP011
+  {
+    JsonObject jp = d["pzem"].to<JsonObject>();
+    jp["rx"] = PIN_PZEM_RX; jp["tx"] = PIN_PZEM_TX; jp["baud"] = 9600;
+    HwPzemStats ps;
+    if (hwPzemStats(&ps)) {
+      jp["polls"] = ps.polls; jp["ok"] = ps.ok; jp["timeouts"] = ps.no_reply;
+      jp["short_frames"] = ps.short_frames; jp["bad_frames"] = ps.bad_frames; jp["fail_run"] = ps.consecutive_fail;
+      if (ps.ever_ok) jp["last_ok_age_ms"] = ps.last_ok_age_ms; else jp["last_ok_age_ms"] = nullptr;
+      char rn[96]; jp["route"] = powercell::pzem_route_names(ps.route_fault, rn, sizeof rn); jp["route_heals"] = ps.route_heals;
+    }
+    float v = 0, a = 0, w = 0; uint32_t wh = 0, age = 0;
+    const bool pv = hwPzemSample(&v, &a, &w, &wh, &age);
+    jp["valid"] = pv;
+    if (pv) { jp["voltage"] = v; jp["current"] = a; jp["power_w"] = w; jp["energy_wh"] = wh; jp["age_ms"] = age; }
+    else { jp["voltage"] = nullptr; jp["current"] = nullptr; jp["power_w"] = nullptr; }
+  }
+  {
+    DspGridReading grid;
+    JsonObject gv = d["grid"].to<JsonObject>();
+    gv["grid_v_calibrated"] = false;
+    gv["grid_v_source"] = "adc_gpio39_k357";
+    if (dspGridRead(&grid) && grid.valid) {
+      if (grid.present) gv["voltage"] = grid.vrms;
+      else gv["voltage"] = nullptr;
+      gv["grid_sense_raw_v"] = grid.raw_vrms;
+      gv["grid_v_clipped"] = grid.clipped;
+      gv["available"] = grid.present;
+    } else {
+      gv["voltage"] = nullptr;
+      gv["grid_sense_raw_v"] = nullptr;
+      gv["grid_v_clipped"] = nullptr;
+      gv["available"] = nullptr;
+    }
+  }
+  telemetry::dspThermalBlock(d["thermal"].to<JsonObject>());
   telemetry::acEnergyTodayToJson(d.as<JsonObject>(), "energy_today_kwh");
   telemetry::acEnergyTodayToJson(d["inverter"].to<JsonObject>(), "energy_today_kwh");
   telemetry::acEnergyTodayToJson(d["live"].to<JsonObject>(), "load_energy_today_kwh");
@@ -217,7 +271,7 @@ void selftest() {
   JsonObject jw = d["wifi"].to<JsonObject>();
   jw["connected"] = WiFi.status() == WL_CONNECTED; jw["state"] = net::stateName(); jw["hotspot"] = net::apActive();
   if (WiFi.status() == WL_CONNECTED) jw["rssi"] = WiFi.RSSI(); else jw["rssi"] = nullptr;
-  d["heap_free"] = ESP.getFreeHeap(); d["heap_largest"] = ESP.getMaxAllocHeap();
+  d["heap_free"] = heapguard::freeNow(); d["heap_largest"] = heapguard::largestNow(); d["heap_iram_free"] = heapguard::iramFree();  // 2.5.22: DRAM (8-bit); IRAM separate
   JsonObject jc = d["cloud"].to<JsonObject>();
   jc["api_key"] = settings::apiKey().length() > 0; jc["ws_connected"] = backend::connected(); jc["clock_trusted"] = devauth::clockTrusted();
   serializeJson(d, Serial); Serial.println();
@@ -228,10 +282,13 @@ void handle(String cmd) {
   if (!cmd.length()) return;
   if (cmd == "INFO") info();
   else if (cmd == "BMS RAW") {  // TEMPORARY: next 64 raw bytes from Serial2, 2 s timeout
-    Serial.printf("BMS RAW rx=%d tx=%d baud=%lu\n", PIN_BMS_RX, PIN_BMS_TX, (unsigned long)JK_BMS_BAUD);
+    Serial.printf("BMS RAW rx=%d tx=%d baud=%lu\n", PIN_BMS_RX, PIN_BMS_TX, (unsigned long)PIN_BMS_BAUD);
     size_t g = bms::rawDump(Serial, 64, 2000);
     Serial.printf("BMS RAW %u/64 bytes%s\n", (unsigned)g, g < 64 ? " (timeout)" : "");
   }
+#if POWERCELL_DSP011
+  else if (cmd == "PZEM RAW") hwPzemRaw(Serial, 500);  // read-only: one read request, 500 ms hex dump
+#endif
   else if (cmd.startsWith("SET ")) {
     int sp = cmd.indexOf(' ', 4);
     if (sp < 0) { Serial.println("ERR SET <key> <value>"); return; }
@@ -270,6 +327,9 @@ void handle(String cmd) {
     const char *spaces[] = {"pc_secure", "pc_cfg", "pc_offline", "pc_ota", "registry", "forgotten", "pc_onb", "pc_factory", "sock_cfg", "sock_prio", "clock", "pc_ident"};
     for (auto ns : spaces) { Preferences p; if (p.begin(ns, false)) { p.clear(); p.end(); } }
     Serial.println("OK wiped incl. identity; rebooting");
+#if POWERCELL_DSP011
+    gateway::latchOutputOff();
+#endif
     delay(200); ESP.restart();
   } else if (cmd == "FACTORY_WIPE") {
     // Bench/factory only: erases everything incl. API key and owner (unlocks). The factory
@@ -278,6 +338,9 @@ void handle(String cmd) {
     const char *spaces[] = {"pc_secure", "pc_cfg", "pc_offline", "pc_ota", "registry", "forgotten", "pc_onb", "pc_factory", "sock_cfg", "sock_prio", "clock"};
     for (auto ns : spaces) { Preferences p; if (p.begin(ns, false)) { p.clear(); p.end(); } }
     Serial.println("OK wiped; rebooting");
+#if POWERCELL_DSP011
+    gateway::latchOutputOff();
+#endif
     delay(200); ESP.restart();
   }
   else if (cmd.startsWith("REGISTER:")) Serial.println(registerDevice(cmd.substring(9)) ? "pairing" : "Socket not found. Plug it in and try again.");
@@ -307,10 +370,11 @@ void handle(String cmd) {
   else if (cmd == "SOCKETS") Serial.println(buildMetricsJson());
   else if (cmd.startsWith("STM32 ")) stm32(cmd.substring(6));
   else if (cmd == "REBOOT") { ESP.restart(); }
+  else if (cmd == "OTA_RETRY") { ota::clearBootJob(); Serial.println("OK boot OTA job and abandoned image cleared; the next offer is tried again"); }
 #if POWERCELL_DSP011
   else if (cmd.startsWith("BBTAIL") || cmd.startsWith("BBEXPORT")) hwLogExport(cmd.startsWith("BBEXPORT"));
 #endif
-  else Serial.println("ERR unknown command (INFO, SERIAL, SECRET, ROTATE_SECRET, SELFTEST, BMS RAW, STM VER, STM CAL?, SET, OTA_CONFIG, LOCK, AP ON, PAYMENT_UNLOCK, FACTORY_RESET, FACTORY_WIPE, REGISTER:, UNREGISTER:, RELAY:, SOCKETS, STM32, REBOOT)");
+  else Serial.println("ERR unknown command (INFO, SERIAL, SECRET, ROTATE_SECRET, SELFTEST, BMS RAW, STM VER, STM CAL?, SET, OTA_CONFIG, LOCK, AP ON, PAYMENT_UNLOCK, FACTORY_RESET, FACTORY_WIPE, REGISTER:, UNREGISTER:, RELAY:, SOCKETS, STM32, REBOOT, OTA_RETRY)");
 }
 }  // namespace
 

@@ -10,7 +10,7 @@
 // telemetry, the offline queue, LAN /data and the /events SSE stream.
 namespace pc {
 namespace ev {
-enum class Type : uint8_t { Overload, Overcurrent, InverterFault, BmsFault, RelayFailed, OverTemp, BatteryFull, BatteryLow, GridDown, ApplianceLockout, BatteryCritical, OutputRestored, ModeFallback, LoadShed };
+enum class Type : uint8_t { Overload, Overcurrent, InverterFault, BmsFault, RelayFailed, OverTemp, BatteryFull, BatteryLow, GridDown, ApplianceLockout, BatteryCritical, OutputRestored, ModeFallback, LoadShed, TempSensorFault };
 enum class Sev : uint8_t { Info, Warning, Critical };
 const char *typeName(Type t);
 const char *sevName(Sev s);
@@ -27,7 +27,9 @@ inline bool faultActive(uint32_t bits) { return (bits & kFaultMask) != 0; }
 
 constexpr float kOverloadAmps = 19.0f, kOverloadClearAmps = 17.0f;  // ESP rule: any link without bit16
 constexpr float kTempWarnC = 70.0f, kTempWarnClearC = 65.0f;
+constexpr uint32_t kTempSensorFaultOnMs = 4000, kTempSensorFaultOffMs = 10000;  // DSP NTC: 2 samples in, 5 out
 constexpr float kGridMinV = 160.0f, kGridRestoreV = 170.0f;
+constexpr uint32_t kAcLimitClearMs = 10000;  // ac_output_limit clear debounce (stale PZEM samples)
 constexpr float kSocketTripA = 10.0f, kSocketTripClearA = 9.0f, kSocketWarnA = 8.0f, kSocketWarnClearA = 7.0f;
 
 struct Event {
@@ -66,9 +68,24 @@ struct Inputs {
   bool hasGrid = false; float gridV = 0;
   bool bmsOnline = false; uint32_t bmsAlarms = 0; float bmsCurrentA = 0;
   bool socValid = false; float soc = 0; const char *socSource = "bms";
+  // battery_soc thresholds: the saved Manual low / shutdown-warning percents (power_guard),
+  // else the 25/15 defaults. An invalid pair falls back to 25/15.
+  float batLowPct = BatteryAlertPolicy::kLow, batCritPct = BatteryAlertPolicy::kCritical;
   // SoC critical latch (ESP, soc_guard.h) and the STM32 reserve latch (legacy RSV:1)
   bool critLatched = false;
   bool stmReserve = false;
+  // DSP system NTC (GPIO33). dspThermal = the board has the sensor (DSP images).
+  // overTempLatched = the 80 C cutoff latch (dsp_thermal.h OverTempGuard).
+  // sysTempFault = sensorFaulted(): open, short, out of range or stale.
+  bool dspThermal = false, overTempLatched = false, sysTempValid = false, sysTempFault = false;
+  float sysTemp = 0;
+  // DSP Manual output power limit (include/ac_output_policy.h). acLimit: this image enforces it
+  // (DSP only; STM has no PZEM-based enforcement). acWarn = AcOutputPolicy::warning() (3 s over
+  // the ceiling or the usable rating, one-shot until 10 s under). acShutdown = shutdownLatched()
+  // (warn_and_shutdown ceiling 8 s, or the usable rating 8 s): GPIO15 off. acRatedShutdown = the
+  // usable rating, not the Manual ceiling, latched it.
+  bool acLimit = false, acWarn = false, acShutdown = false, acRatedShutdown = false;
+  bool acWattsValid = false; float acWatts = 0;
   static constexpr size_t kMaxSockets = 10;
   SocketIn sockets[kMaxSockets];
   size_t nSockets = 0;
@@ -102,6 +119,7 @@ class Engine {
   uint32_t dropped_ = 0;
   bool bit16Seen_ = false;
   bool restorePending_ = false, lastLatchStm_ = false;
+  bool acRated_ = false;  // code of the active ac_output_shutdown, fixed at its start
   void oneShot(Type t, Sev sev, const char *id, const char *code, const char *source, bool hasValue, float value, uint32_t ts);  // framed STM32 proved it reports bit16
   BatteryAlertPolicy bat_;
 };

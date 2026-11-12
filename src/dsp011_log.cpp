@@ -15,12 +15,12 @@
 #include <time.h>
 
 namespace {
-constexpr int kSdCs = 33;
+constexpr int kSdCs = PIN_DSP_SD_CS;
 constexpr uint32_t kSdBlocks = 1024;
 constexpr uint32_t kEnergyBytes = 65536;
 constexpr uint32_t kSector = 4096;
-static_assert(kSdCs == 33 && PIN_STM32_RX == 33, "GPIO33 is SD CS only when the STM32 UART is not started");
-static_assert(kSdCs != 25 && kSdCs != 26, "SD chip select is not a PZEM pin");
+static_assert(kSdCs == 5, "DSP SD chip select is GPIO5");
+static_assert(kSdCs != PIN_PZEM_RX && kSdCs != PIN_PZEM_TX, "SD chip select is not a PZEM pin");
 static_assert(PIN_SPI_SCK == 18 && PIN_SPI_MISO == 19 && PIN_SPI_MOSI == 23, "SD SPI pins");
 static_assert(PIN_SD_CS == 14, "original profile SD CS stays GPIO14");
 

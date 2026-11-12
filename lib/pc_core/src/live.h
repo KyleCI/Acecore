@@ -36,11 +36,27 @@ struct Inputs {
   float bmsPowerW = 0;     // signed like the current
   bool solarOk = false;
   float solarW = 0;
+  // Grid presence, tri-state: gridKnown=false means unknown (grid_available null).
+  // DSP: debounced GPIO39 presence (dspGridRead().present, 170 V on / 160 V off, 2 s),
+  // never raw volts. STM: has_grid && grid_v >= 160 V (same rule as grid_available).
+  bool gridKnown = false;
+  bool gridPresent = false;
+  // True when `sys` is a placeholder, not a controller report. DSP images set
+  // sys = Inverter whenever the PZEM has a sample; that is not proof the
+  // transfer switch is on the inverter.
+  bool sysAssumed = false;
 };
 constexpr float kSolarActiveW = 20.0f;      // PV counts as a source above this
 constexpr float kChargeA = 0.5f;            // BMS current that counts as charging
 constexpr float kInverterEff = 0.90f;       // ASSUMPTION for the BMS-based output estimate
 
+// Grid override (2.5.13+): applies when grid is known present, the BMS is online
+// and the pack is not discharging (current > -kChargeA), and `sys` is either a
+// placeholder (DSP) or Unknown. Then source = grid and status = charging (BMS
+// current > kChargeA or charger CHR state) or idle (grid pass-through). A fault
+// still wins. Grid present but pack discharging keeps battery + inverting.
+// Grid unknown/absent, BMS offline, or a real STM32 SYS report: unchanged.
+bool gridOverride(const Inputs &in);
 Source source(const Inputs &in);
 Status status(const Inputs &in);
 

@@ -19,6 +19,13 @@ bool charging(const Inputs &in) {
 }
 }  // namespace
 
+bool gridOverride(const Inputs &in) {
+  if (!in.stmFresh || !in.gridKnown || !in.gridPresent) return false;
+  if (!in.sysAssumed && in.sys != SysState::Unknown) return false;  // real STM32 SYS report wins
+  if (!in.bmsOn) return false;                                       // cannot tell if the pack is discharging
+  return in.bmsCurrentA > -kChargeA;                                 // not discharging
+}
+
 const Model *models(size_t &count) { count = sizeof kModels / sizeof kModels[0]; return kModels; }
 
 const Model *findModel(const char *code) {
@@ -54,6 +61,7 @@ const char *powerSrcName(PowerSrc p) {
 Source source(const Inputs &in) {
   bool pv = in.solarOk && in.solarW >= kSolarActiveW;
   if (!in.stmFresh) return pv ? Source::Solar : Source::None;
+  if (gridOverride(in)) return Source::Grid;
   if (in.sys == SysState::Inverter) {
     // PV covering the load (battery not discharging) -> solar, else battery.
     if (pv && in.bmsOn && in.bmsCurrentA >= 0) return Source::Solar;
@@ -66,6 +74,7 @@ Source source(const Inputs &in) {
 Status status(const Inputs &in) {
   if (!in.stmFresh) return Status::Unknown;
   if (in.sys == SysState::Fault || in.faultActive) return Status::Fault;
+  if (gridOverride(in)) return charging(in) ? Status::Charging : Status::Idle;  // idle = grid pass-through
   if (in.sys == SysState::Inverter) return Status::Inverting;
   if (charging(in)) return Status::Charging;
   if (in.sys == SysState::Grid) return Status::Idle;   // grid pass-through, not charging

@@ -1,5 +1,209 @@
 # Collector firmware changelog
 
+## 2.5.27 (OTA test of the 2.5.26 updater)
+
+Version is 2.5.27 on all four product images so a unit already on 2.5.26 will accept the file. No other functional change on top of 7e6f960.
+
+## 2.5.26 (stale boot OTA job: drop it instead of downloading another target, Caleb 13 Nov 2026)
+
+On top of 2.5.25 (dd5e8a2, = 2.5.24 e814f46 code). All four product images. Prompted by ACE-000001 (DSP 5 kW): 2.5.22 had staged a 2.5.23 boot job (size 1393408) in NVS. The USB flash of 2.5.24 kept NVS, so 2.5.24 ran it at boot (`BOOT_JOB version=2.5.23 attempt=2/3`). Rollout 16 (2.5.23) had been cancelled and rollout 17 (2.5.25) opened; `/api/ota/download` serves whatever target is open, so the unit got the 1395536 B 2.5.25 file, stopped with `download_size_mismatch`, and the server failed the 2.5.25 target and completed the rollout.
+
+- **Job stager:** every staged job stores the firmware that staged it (NVS `bj_stg` = version, `bj_bld` = first 16 hex of the ELF sha256). At boot, before Wi-Fi, a job is dropped when it was staged by another version or build (a USB flash or any image change since; jobs from 2.5.22..2.5.25 have no stager and are always dropped) or is for the running version.
+- **Boot-time offer check:** in the `ota_boot` task, before the download, `POST /api/ota/check` (same TLS, CA and signed headers as the HTTPS check, on the early heap, one session freed before the download). No offer, or a different version or sha256: dropped. If the check fails, the job still runs when it is newer than the running image; an older job is dropped and its sha256 refused until `OTA_RETRY` (a downgrade runs only when the server confirms it, and cannot loop stage/drop reboots). Log `[OTA][BOOT_CHECK] job=.. check=offer|none|failed offer=.. verdict=..`. Boot run cap 9 minutes (was 6).
+- **Download names the offer:** in place and on the boot path, `GET /api/ota/download?device_id=..&version=<v>&sha256=<hex>` (percent-encoded, not doubled if the server URL already has them). Older servers ignore them. 409/410 is `download_not_current` (was `download_http_409`).
+- **Stale evidence at the download:** on the boot path, 409/410 or HTTP 200 with a `Content-Length` other than the job's size drops the job instead of failing it (`download_size_mismatch` stays for the in-place path and for missing/short lengths).
+- **Drop reporting:** `[OTA][BOOT_JOB_DROPPED] reason=<staged_by_unknown|staged_by_other_build|same_version|not_newer|no_offer|offer_changed|not_current_offer|size_mismatch> job=<v> staged_by=<v|unknown> [offer=<v> | http= length= expect=] running=<v>`; the job is cleared and the attempt is not counted; `last_status: "dropped"`, `last_error: boot_ota_stale_job`, `last_error_detail` = the reason string. An in-place 409 reports `dropped` / `download_not_current` and does not fall back to the boot path. Never `failed`, so no rollout target is charged with it.
+- **`last_version` in `ota_check`:** WS and HTTPS checks carry the version the last attempt was for, so the server can ignore a failure that is not about its open target (backend `cursor/ota-offer-guard`).
+- Host tests: `test_ota_stale_job` (stager, same version, offer check, downgrade rule, download evidence, no re-stage loop, detail string, query encoding and bounds, source checks); `classifyResponse` 409/410.
+
+## 2.5.25 (OTA test of the 2.5.24 updater)
+
+Version is 2.5.25 on all four product images so a unit already on 2.5.24 will accept the file. No other functional change on top of e814f46.
+
+## 2.5.24 (WS offer dropped when the OTA task stack does not fit: stage from the main loop, Caleb 12 Nov 2026)
+
+On top of 2.5.23 (21299fc, = 2.5.22 00db613 code). All four product images. Prompted by ACE-000001 (DSP 5 kW) on 2.5.22: `[OTA][WS_AVAILABLE] version=2.5.23 size=1393408`, then nothing, with `LOOP STATS heap_free=35676 heap_largest=14836 largest_min=9204 iram_free=42844`. `service()` creates the 16384 B `ota` worker for a WS offer; with a 14836 B largest DRAM block `xTaskCreatePinnedToCore` failed and the offer was dropped without a log every check period, so the boot-path staging in `handleOffer()` never ran.
+
+- **Task-create failures are logged:** `[OTA][TASK_CREATE_FAILED] task=ota for=ws_offer|https_check stack=16384 free_heap largest min iram`. The boot path's `ota_boot` task failure logs it too and `boot_ota_task_failed` now carries `stack=16384 heap free=.. largest=.. min=..`.
+- **WS offer staged from the main loop:** when the `ota` task cannot be created, `stageFromLoop()` checks the offer with the same rules as the worker (`validateOffer()` -> `pc::bootota::checkOffer()`: version present, <= 32 chars and not the running one, sha256 hex, own-host download path with the `URL_FOREIGN` fallback, size <= next slot, sha256 not abandoned), sends `ota_status installing` (unless this sha256 is about to be abandoned), then `stageAndReboot()` with `last_error_detail` `in_place_gate=task_stack stack=16384 heap free=<B> largest=<B> min=<B>`, `boot_pending`, `BOOT_STAGED`, reboot. Same NVS job and 3 attempts per sha256. The WS is never released on this path, so a rejected (`JOB_REJECTED`, `TASK_STAGE_SKIPPED`) or abandoned offer cannot block reconnects. `handleOffer()` now uses `validateOffer()` too (identical rules and log lines; `JOB_REJECTED` for the version/sha/path case now starts with the reason name).
+- **HTTPS check task failure** is logged; the check is retried at the next period (unchanged).
+- **Local POST /ota:** no task is created there. `Update.begin()` failing for its 4 KB buffer (err=0) now returns 503 `update_begin_out_of_memory` (was 500 `update_begin_failed`), and the log carries the largest block.
+- **Boot path unchanged:** `bootJob()` in `setup()` still runs the download in a 16384 B `ota_boot` task, created right after `net::begin()` and before ESP-NOW, the web server, the WS and mDNS, so it is allocated on the unfragmented early heap; `setup()` waits for it (6 min cap).
+- Host tests: `test_ota_task_stage` (offer rules, stage/drop decision, attempt cap, detail string, source checks).
+
+## 2.5.23 (OTA test of the 2.5.22 updater)
+
+Version is 2.5.23 on all four product images so a unit already on 2.5.22 will accept the file. No other functional change on top of 00db613.
+
+## 2.5.22 (OTA download TLS on a fragmented heap: two-phase OTA on boot, Caleb 12 Nov 2026)
+
+On top of 2.5.21 (80c504e, = 2.5.20 898ffcc code). All four product images. Prompted by ACE-000001 (DSP 5 kW) on 2.5.20: the WS now connects (`TLS_UP attempt=1 ms=2388 free 131632->83216 largest 57332->40948`), but the download handshake right after the WS closed failed: `DOWNLOAD_TLS_START free_heap=101260 largest=40948 min=54792`, then `DOWNLOAD_TLS http=-1 tls=-32512 'SSL - Memory allocation failed'` after 235 ms, `FAILED download_connect_failed`.
+
+- **Root cause, part 1 (the numbers were wrong):** every heap figure in the logs and the 2.5.20 gate came from `ESP.getFreeHeap()` / `ESP.getMaxAllocHeap()`, which use `MALLOC_CAP_INTERNAL` alone and so include the ESP32 IRAM heap (0x400A0000 minus the end of IRAM code: 43660 B on this image, one 40948 B free block after the allocator header). IRAM is 32-bit access only; mbedTLS (`MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`), Strings and JSON never use it, so the block never changes. That is why `largest=40948` appears in the 2.5.18 HEAP_LOW line, after the WS session in 2.5.20 and at the download start: it was never DRAM. Free was about 41 KB lower than logged (DRAM about 60 KB at the download start, and the boot minimum `heap_min=48820` was about 8 KB of DRAM). The gate saw largest 40948 >= 35520, skipped the real probe, and `mbedtls_ssl_setup()` could not get the two 16717 B record buffers from DRAM: -0x7F00 after 235 ms, before any ECC work.
+- **Root cause, part 2 (why the WS close does not give it back):** the WS client and its mbedTLS ssl/config/CA/peer-chain contexts are freed on `ws.disconnect()` (WebSockets `clientDisconnect` stops and deletes the `WiFiClientSecure`; `stop_ssl_socket` frees everything; DRAM rose by about 35 KB, the size of one session). The CA bundle is parsed once per session, not twice. The memory comes back fragmented: while the WS was up the OTA worker's 16 KB stack (created when `ota_available` arrived), the first mDNS start (waits for the first WS connect) and JSON/String traffic were allocated around the session's buffers, so the freed pieces do not coalesce into two 16.7 KB blocks. A delay does not fix that.
+- **MFLN / smaller record buffers (option c) do not apply:** the precompiled Arduino mbedTLS has `MBEDTLS_SSL_MAX_FRAGMENT_LENGTH` but not `MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH` and no asymmetric or dynamic buffers, so the record buffers are 16717 B whatever is negotiated. Not used.
+- **Two-phase OTA on boot (`lib/pc_core/src/ota_boot.h`):** after the WS is released for an install, the strict gate (now on 8-bit DRAM: free >= 50 KB and both record buffers fit, probed for real) decides. If it passes, the download runs in place as before. If it does not, or an in-place connect fails with an mbedTLS out-of-memory error, the job (version, download path, sha256, size, attempt count) is written to NVS `pc_ota` and the unit reboots. `setup()` runs the job right after Wi-Fi starts, before ESP-NOW, the web server, the WS and mDNS allocate: waits up to 40 s for the station IP and up to 30 s for NTP (signed request), then the same `install()`: same `WiFiClientSecure` with `POWERCELL_CA_CERT`, same sha256, identity and version checks, same error codes. Success reboots into the new image (rollback rules unchanged). Failure records `last_status: failed`, the error code and `last_error_detail`, and the boot continues normally; the server re-offers at the next check.
+- **No boot loop:** the attempt is counted in NVS before it starts, so a crash, watchdog or power cut also counts. After 3 attempts of the same sha256 the job is abandoned: that sha256 is rejected before the WS is paused. A different sha256, a successful update or the new console command `OTA_RETRY` clears it. A staged job that did not run is cleared at the next boot (`boot_ota_not_run`); a job for the running version, an invalid one, or one found while the running image is still unconfirmed is discarded.
+- **New status and codes:** `last_status: boot_pending` (staged, rebooting). `last_error`: `boot_ota_no_wifi` (no station IP within 40 s, or hotspot-only), `boot_ota_abandoned` (3 attempts started without a result), `boot_ota_not_run`, `boot_ota_task_failed`. All download codes are unchanged.
+- **Heap numbers in the failure detail:** `last_error_detail` for a failed connect now ends with ` heap free=<B> largest=<B> min=<B>` (DRAM at the handshake start), and on the boot path ` boot=<n>/3` (plus ` abandoned`). The detail is up to 159 characters.
+- **All heap logs are DRAM (8-bit) now:** `MEM HEAP_LOW`, `WS TLS_UP`/`TLS_FAILED`, `OTA CHECK`, `DOWNLOAD_TLS_START`/`_UP`/`DOWNLOAD_TLS`, `LOOP STATS`, console `INFO` and `device_hello` `heap_*`. Expect values about 41 KB lower than 2.5.20 printed for the same state. `LOOP STATS` adds `iram_free`, `device_hello` and `INFO` add `heap_iram_free`. New logs: `OTA HEAP_WS_RELEASED` (DRAM before and after the WS release and the gate verdict), `BOOT_STAGED`, `BOOT_JOB`, `BOOT_WIFI`, `BOOT_FAILED`, `BOOT_ABANDONED`. Telemetry `sys.free_heap` and the hotspot-only health check are unchanged.
+- **WS guard:** same rule, now on DRAM numbers. On the 2.5.20 ACE-000001 log the first connect had about 90 KB DRAM free and a 57 KB block, so it still goes; a reconnect now probes the record buffers for real instead of trusting the IRAM block.
+- Host tests for the boot decisions, attempt counting and abandon, staging, the out-of-memory classification, the detail strings, job validation and the setup order (1556 pass).
+- **Upgrade note:** OTA from 2.5.20 or 2.5.21 still uses their old download path. 2.5.22 has to go on by USB first; OTA tests then run from 2.5.22 to a later version.
+
+## 2.5.21 (OTA test of the 2.5.20 updater)
+
+Version is 2.5.21 on all four product images so a unit already on 2.5.20 will accept the file. No other functional change on top of 898ffcc.
+
+## 2.5.20 (WS and OTA TLS start on a fragmented heap, Caleb 12 Nov 2026)
+
+On top of 2.5.19 (bbc5024). All four product images. Prompted by ACE-000001 (DSP 5 kW) on 2.5.18: `[MEM][HEAP_LOW] ws TLS deferred: largest=40948 < 40960 free=72064 min=47604`, repeating every 60 s, so no WS, no `ota_check`, no OTA.
+
+- **Root cause:** the pre-TLS memory guard demanded one free block of 40960 B. 2.5.18 holds about 2.5 KB more static DRAM than 2.5.13 (mDNS adds about 1.9 KB of `.bss` inside the precompiled `libmdns`, plus the hotspot `Update` object). Static DRAM ends where the first heap region starts, so that region shrank by the same amount. On this unit the largest block ended up 12 B under the threshold, though a 40948 B block holds both mbedTLS record buffers.
+- **New TLS guard** (`lib/pc_core/src/heap_guard.h`), evaluated only right before a new connect:
+  - free heap >= 51200 B (both record buffers 2 x 16736 B, about 13 KB handshake peak, about 4 KB Wi-Fi/lwIP margin; in v10 a second handshake with the WS up, heap_min about 44 KB, failed with -9984);
+  - largest block >= 35520 B (both record buffers + 2 KB): go;
+  - largest block 18432..35519 B: probe by allocating the two 16717 B record buffers with the mbedTLS caps and freeing them, go if both fit;
+  - largest block < 18432 B: wait. Backoff 5 s doubling to 60 s as before.
+  - The record size is derived from the precompiled sdkconfig (16384 content, no dynamic or asymmetric buffers): 13 + 16384 + 16 + 48 + 256 = 16717 B, plus 16 B heap header and light-poisoning canaries.
+- **WS guard only before a connect:** the guard ran on every WS pass until `WStype_CONNECTED`, so during the HTTP upgrade the TLS session's own buffers could fail it and stall the upgrade. It now runs only when `ws.loop()` would open a new TCP + TLS connection.
+- **Less static DRAM (5104 B on the DSP images):** the OTA download's 2 KB receive buffer is allocated after the TLS session is up (512 B stack fallback). The offline queue's restore and checkpoint buffers (3 KB each) are shared.
+- **mDNS waits for the first WS connect:** the first mDNS start of a boot waits until the WS has connected once, or at most 60 s after the IP. Never when the backend has no API key, never in hotspot-only mode (no mDNS there anyway).
+- **Diagnostics:** `WS TLS_UP` / `WS TLS_FAILED` with heap free and largest before and after each connect attempt and the mbedTLS error on failure (every attempt for the first 8, then failures once a minute). `MEM TLS_PROBE_OK` when the probe let a connect through. `HEAP_LOW` now names the reason (`low_free`, `low_block`, `probe_failed`) and both thresholds. `OTA DOWNLOAD_TLS_START` and `DOWNLOAD_TLS_UP` log the heap around the download handshake. `device_hello` carries `heap_free`, `heap_largest`, `heap_min` and `heap_largest_min` (telemetry already had them).
+- **Over-temperature latch (diagnostic only, DSP):** the reading that tripped the 80 C latch is saved as `ot_c10` (deci-C) next to `ot_latch` and logged in `OVER_TEMP_RESTORED` ("tripped at 84.3 C" or "unknown" for a latch set by an older build). When the latch sets and clears is unchanged.
+- Host tests for the guard arithmetic, the verdicts (including the ACE-000001 numbers), the probe path, the backoff and the mDNS wait.
+
+## 2.5.19 (OTA test of the 2.5.18 updater)
+
+Version is 2.5.19 on all four product images so a unit already on 2.5.18 will accept the file. No other functional change on top of 6446e4d.
+
+## 2.5.18 (OTA download robustness, Caleb 12 Nov 2026 16:44 WAT)
+
+On top of 2.5.17 (da2a0a9). All four product images. Prompted by the ACE-000001 OTA of 2.5.17 failing with `download_or_verification_failed` before any download request reached api-dev.
+
+- **Longer TLS handshake for the OTA check and download:** 45 s (was 10 s). TCP connect 15 s (was 10 s). Socket read and body stall 30 s (was 15 s). Whole-body cap stays 180 s. The worker stays on core 1 at priority 1 and the handshake loop yields between mbedTLS steps, so watchdog exposure is unchanged. The install path still makes the output safe first (`prepare`) exactly as before.
+- **TLS error logged on download:** a negative GET logs `OTA DOWNLOAD_TLS http=<n> tls=<mbedTLS err> <text> ms=<elapsed>`, like the check path.
+- **Specific error codes** replace `download_or_verification_failed`: `download_no_slot`, `download_url_invalid`, `download_connect_failed`, `download_timeout`, `download_http_<code>`, `download_size_mismatch`, `download_too_large`, `download_flash_begin_failed`, `download_stalled`, `download_read_error`, `verify_magic`, `flash_write_failed`, `verify_size`, `verify_identity`, `verify_sha`, `finalize_failed`. New optional `last_error_detail` in `ota_check` and the HTTPS check body. Schema otherwise unchanged. See README "OTA error codes".
+- **Hello:** `ota_host` and `ota_url_override` in `device_hello`.
+- Host tests for the error mapping and the host/override helpers (`lib/pc_core/src/ota_errors.h`).
+
+## 2.5.17 (OTA test of the 12 Nov "one build with everything" image)
+
+Version is 2.5.17 on all four product images so a unit already on 2.5.13 (or an earlier test image 2.5.14 / 2.5.15 / 2.5.16) will accept the file. No other functional change on top of 3a56262.
+
+## Unreleased (one build with everything Caleb asked for, 12 Nov 2026)
+
+Shipped as 2.5.17 for the OTA test (this tree was held at 2.5.13 until Caleb asked for the bump).
+
+**Battery warnings, Caleb's 8 Nov policy, all four images**
+- The local `/events` battery notification and the cloud `battery_soc` event used 20/10/5. Now: `battery_low` at <= 25 %, `battery_critical` at <= 15 % (the one-time shutdown warning, one per episode), output off at <= 10 % (the existing `battery_critical` latch event, code `soc_10pct`), restart blocked until 15 %.
+- `shutdown_imminent` (5 %) is no longer sent. The type and enum value are kept so older apps still parse it.
+- `battery_critical` stays while the output latch holds and clears only after SoC stays above critical + 3 % for 60 s. `battery_low` clears above low + 3 %.
+- The low and critical percents follow the saved Manual values (`/v1/battery-settings` `low_percent`, `warning_percent`), else 25/15. An invalid saved pair falls back to 25/15. Saved values now load at boot on every image (STM loaded them only on the first Manual request, and never fed the notifications).
+- Critical message text: "Output turns off at 10% and stays off until the battery is back to 15%. Recharge now." or, while latched, "Output is off to protect the battery. It can turn on again once the battery is back to 15%."
+- STM: while the ESP battery latch holds, a manual ON needs BMS SoC >= 15 % (was > 10 %). The latch itself was already 10 % / 15 %. The 48.0 V no-BMS fallback and the STM32 reserve-latch rule are unchanged.
+
+**Manual output power limit events (DSP only)**
+- `ac_output_limit`: type `overload`, severity `warning`, code `output_limit_w`, value = PZEM watts. Raised when the load stays above the Manual ceiling or the usable rating for 3 s. One per episode (it re-arms after 10 s under; the clear waits 10 s).
+- `ac_output_shutdown`: type `overload`, severity `critical`, code `output_limit_off` (warn_and_shutdown ceiling) or `rated_overload_off` (usable rating), `release_requires` `load_below_limit_30s`. Raised when GPIO15 is turned off, cleared when the latch releases. The output is not turned back on.
+- Both go to cloud telemetry `events[]` (offline queue `ev_overload`) and the local `/events` SSE. Titles: "Output power limit exceeded", "Output power back under the limit", "Output off: power limit exceeded", "Output power limit cleared". STM images do not raise them (no PZEM-based enforcement).
+
+**Local hotspot OTA and /unregister (ported from collector 2.5.12, esp32_fw 681ebf2)**
+- `POST /ota`: local auth (Basic local token or Bearer session/lan token; the setup credential is refused), required `X-Firmware-SHA256`, streamed via the Update lib. The image must carry this image's own model identity, so another model's image is refused. Version must differ from the running one (the cloud rule); an older one needs `?force=1`. The boot partition is set only after SHA-256 and identity pass. Refused while battery-latched, during a cloud OTA or while the running image is unconfirmed. The WebSocket stays paused and LoRa idles during the upload; an upload idle 30 s is aborted.
+- Rollback: in `hotspot_only` a new image is confirmed after 3 min of healthy local run, else the 5 min rollback. Other modes keep the 30 s cloud rule. The cloud OTA path is unchanged.
+- `/unregister` pushes SSE `state` at once, logs `SOCK_REMOVE_OK` and clears the saved socket name.
+- `tools/ota_upload.py firmware.bin --model <model> [--host] [--force] [--bearer]`. `--model` is required.
+
+**STM estimated output energy save interval**
+- Was a flat 15 min (up to 1250 Wh lost at 5 kW on a power cut). Now save when >= 10 Wh is unsaved and >= 5 min have passed, or after 15 min with > 0.5 Wh, or on a day change. Loss is at most about 5 min at rated power (417 Wh at 5 kW, 292 Wh at 3.5 kW). Worst case 288 NVS writes/day plus one day change (was 96 + 1).
+
+## Unreleased (mDNS on the home network)
+
+Caleb approved 2026-11-12 14:31 WAT (via the Software VP). App home Wi-Fi setup could not find units because `net.cpp` only called `WiFi.setHostname()` and nothing started mDNS.
+
+- After the station gets an IP on the saved home network, `MDNS.begin(<display id>)` (e.g. `ACE-000001.local`) and `_http._tcp` on port 80 (`LOCAL_HTTP_PORT`, the server for `/v2/setup/info`) with TXT `device_id`, `model`, `fw`, `path=/v2/setup/info`. Instance name is the display id.
+- Hostname: the display id as one DNS label (letters, digits, `-`; other runs become one `-`; max 63), MAC `ACE-DDEEFF` if nothing is left. `pc::mdns` in `lib/pc_core/src/mdns_core.*`, host-tested.
+- The `STA_GOT_IP` event only bumps a counter. `net::service()` (loop task) restarts mDNS once per new IP or display-id change, stops it when the station drops, in hotspot-only mode or during a Wi-Fi test, and retries a failed begin after 30 s or on the next got-IP. Hotspot and the 30 s router-loss fallback are unchanged.
+- No `powercell.local` alias (two units on a LAN would collide). Version stays 2.5.13.
+
+## Unreleased (DSP orange LED macro renamed)
+
+- `PIN_LED_BLUE` is now `PIN_LED_ORANGE` (DSP orange, mid-SOC, GPIO12). Name only: red GPIO13, orange GPIO12, green GPIO14 and the front light GPIO27 are unchanged, and so is the light behaviour. STM images are unchanged.
+
+## Unreleased (DSP orange and red status light pins swapped)
+
+Caleb 2026-11-12: "Change the light pins swap orange and red on the firmware".
+
+- DSP images only: the orange (mid-SOC, schematic Y, firmware `PIN_LED_BLUE`) and red status lights swap GPIOs. Red is now GPIO13. Orange is now GPIO12. Green stays GPIO14. The front light stays GPIO27. SOC colours are unchanged (70 % and up green, 40-69 % orange/blue channel, under 40 % or no/stale BMS data red).
+- GPIO12 is still a strapping pin (MTDI). `leds::begin()` still writes it low before it becomes an output and does not enable a pull-up.
+- STM images are unchanged (`LED_MAP_OLD_CODE=1`, red GPIO13, yellow GPIO12, green GPIO27, amber GPIO32).
+
+## Unreleased (live source/status follow grid presence on DSP)
+
+Caleb approved 2026-11-12 13:05 WAT. DSP v0.1.1 units showed `live.source` = battery and `live.status` = inverting with grid connected, because `stm32link::status()` on DSP sets `sys = Inverter` from any PZEM sample and grid presence was not an input to `live::source()` / `live::status()`.
+
+- `pc::live::Inputs` gains `gridKnown` / `gridPresent` (tri-state) and `sysAssumed`. DSP fills them from the debounced GPIO39 presence (`dspGridRead().present`, 170 V on / 160 V off, 2 s), never raw volts, and marks `sys` as assumed. STM fills them from `has_grid && grid_v >= 160 V`, the same rule as `grid_available`.
+- Grid override: when grid is known present, the BMS is online and the pack is not discharging (current above -0.5 A), and `sys` is the DSP placeholder or Unknown, `source` = `grid` and `status` = `charging` (BMS current above +0.5 A or charger CHR state) or `idle` (grid pass-through). Existing strings only. A fault still gives `fault`.
+- Unchanged: grid present but pack discharging (battery + inverting, or solar when PV covers it), grid unknown or absent, BMS offline, stale PZEM/STM32 data, and every real STM32 SYS report (Inverter, Grid, Idle, Reserve, Fault). `output_power_w`, `load_pct`, payment lock, protections and battery policy are unchanged.
+- Units on 2.5.13 builds before grid_sense still publish `grid_available` null and keep the old labels.
+
+## Unreleased (PV energy saved more often)
+
+- Solar NVS (`solar` / tot_wh, tdy_wh, day; same keys so existing totals still load) now saves when unsaved energy is at least 10 Wh and 5 minutes have passed since the last save, or when any unsaved energy above 0.5 Wh has waited 15 minutes, or on a day change. Was 50 Wh and 30 minutes, both required. A power cut now loses at most about 5 minutes of production (~250 Wh at 3 kW). Worst case is 288 writes/day of those 3 small keys, within ESP32 NVS wear levelling. STM estimated-energy (15 min) and PZEM energy-today (baseline/day changes only) are unchanged.
+
+## Unreleased (DSP over-temperature cutoff, sensor fault alert, NTC on GPIO33)
+
+Caleb 2026-11-11 18:30 WAT: "RX is 17, TX is 16, let the fan stop at 60, let there be over-temperature cutoff and alert at 80, the sensor was now moved to pin 33". Then: a faulty sensor must raise a notification alert.
+
+- NTC moved from GPIO36 to GPIO33 (ADC1_CH5). GPIO36 is no longer used. On DSP nothing else touches GPIO33: the STM32 UART (PIN_STM32_RX 33) is never begun with FEATURE_STM32=0 and Dubem's current-sense input is not read. Compile-time checks cover every DSP pin.
+- Fan: ON at 70 C or more, OFF at 60 C or less (was 65). A sensor fault still forces it ON. The cutoff does not touch the fan.
+- Over-temperature cutoff: a valid reading of 80 C or more latches the cutoff and drives GPIO15 to the off level (`gateway::set(false, "over_temperature")`, retried every 5 s and whenever the output reads on), from the same power-guard pass as the low-SOC cutoff. The latch is saved in NVS (`battery_guard/ot_latch`, beside the low-SOC latch) and re-applied at boot. ON (cloud, local /state, any origin) is refused with `over_temperature_latched` while the reading is 80 C or more, or while latched until a valid reading is below 70 C. Then a user ON clears the latch. Cooling never turns the output on by itself. Payment lock, battery critical and overload keep their earlier refusal codes.
+- Alerts, through the event engine like battery_critical: `over_temp` / id `over_temperature`, critical, value = temperature, code `system_ntc_80c_cutoff`, release_requires `cool_below_70c_then_on`. Raised on the latch, cleared when the latch is cleared. `temp_sensor_fault` / id `temp_sensor_fault`, warning, code `ntc_open_short_range`, raised once after 4 s of open, short, out-of-range or stale (no sample for 10 s), cleared after 10 s valid. They go to cloud telemetry events and active_events, the offline queue, and the local notification stream.
+- Sensor fault does not cut off the output. The fan is forced ON and the alert is raised. The NTC on its own cannot prove the unit is hot, and a broken wire should not take a customer's power away. A unit already latched stays latched (ON refused) until a valid reading below 70 C.
+- Status: live block (cloud telemetry.live, /v2/status live, /data, /metrics) `over_temp_cutoff`, `temp_alert` (`over_temperature` | `temp_sensor_fault` | null), `temp_sensor_fault` (now includes stale). `thermal` object (telemetry, SELFTEST) `over_temp_cutoff`, `on_blocked`, `alert`, `cutoff_c`, `on_allowed_below_c`, `ntc_pin`. `power_guard` `over_temp_cutoff`, `over_temp_blocks_on`. INFO adds `over_temp_cutoff=`.
+- BMS: ESP RX GPIO17 / TX GPIO16 on DSP (confirmed). Stale comments fixed.
+
+## Unreleased (DSP system temperature and fan, from Dubem's dspic collector_2)
+
+- DSP images read a 10k NTC (B 3950, R25 10 k) through a 2k7 divider from 3V3, NTC on the 3V3 side (`NTC_ON_LOW_SIDE` 0, Dubem default), first on GPIO36, now GPIO33 (entry above). 16 samples averaged with `analogReadMilliVolts` every 2 s, 11 dB attenuation. Same math and limits as Dubem's thermal.cpp: within 40 mV of 0 V or 3.3 V, or outside 0-150 C, is a sensor fault. A reading older than 10 s is stale.
+- Cooling fan on GPIO25, HIGH = ON: ON at 70 C or more, OFF at 65 C (now 60 C, entry above), held in between. A sensor fault forces the fan ON (fail-safe).
+- Published as `system_temperature_c` (deg C, null when absent, faulted or stale), `temp_sensor_fault` and `fan_on` in the live block (cloud telemetry.live, /v2/status live, /data + SSE metrics, /metrics), plus a `thermal` object in cloud telemetry and SELFTEST (`temperature_c`, `valid`, `fault`, `fan_on`, `ntc_mv`, `age_ms`). As in Dubem's metrics.cpp, the legacy `inverter_temperature` / `inverter.temperature` keys carry the same NTC value on DSP (the board has no STM32 temperature), so the installed app's system temperature shows it. INFO prints `thermal=ntc10k ntc_pin=33 fan_pin=25 temperature_c=... fault=... fan_on=... ntc_mv=... over_temp_cutoff=...`.
+- GPIO25 was the STM power light pin; it is not used on DSP. STM images unchanged.
+
+## Unreleased (DSP grid crosstalk and offline energy today)
+
+- DSP grid sense (GPIO39): inverter output can couple into the grid divider and read 36-88 V with no mains. Presence is still 170 V on / 160 V off, now with a 2 s debounce so a brief spike does not flip the flag. Below that window, published `grid_voltage` / `gridVoltage` and any grid frequency are JSON null and `grid_available` is false. The raw ADC reading is only `grid_sense_raw_v` (telemetry, /data metrics, /metrics, /v2/status live, SELFTEST). Crosstalk while the inverter is on cannot mark grid. 230 V still does. STM images unchanged.
+- Energy today on DSP: with no trusted clock (offline, "Needs internet", no NTP/phone, RTC untrusted) the first valid PZEM lifetime reading now starts a session baseline, so `energy_today_kwh` is published instead of null. A reboot keeps that baseline. When a trusted clock arrives, the session is adopted as the local day and the energy already counted stays. Midnight still rolls only on a synced clock.
+
+## Unreleased (DSP PZEM bench diagnosis)
+
+- Bench 2026-11-10 22:34 WAT on 701fa96: GPIO15 ON works; PZEM never replied (201 polls, 0 bytes). Dubem's firmware reads the same meter on the same board.
+- Compared byte by byte with Dubem's pzem.cpp: same UART1 (Serial1), same begin(9600, SERIAL_8N1, rx=35, tx=32), no invert, same request F8 04 00 00 00 0A + CRC, same flush, 200 ms timeout and 1 s poll, BMS on Serial2 in both (no UART sharing). No code path in this firmware calls pinMode, ADC, LEDC, gpio_reset_pin or a second begin on GPIO32/35.
+- New: every poll reads back the UART1 routing (U1RXD input select, GPIO32 output select, IO_MUX function and input enable, RTC mux of both pads). A change is logged once as PZEM ROUTE_LOST with the raw registers and repaired (uart_set_pin, rtc_gpio_deinit, begin if the driver is gone), then ROUTE_RESTORED or ROUTE_STILL_BAD. Boot logs PZEM ROUTE. SELFTEST pzem has route and route_heals.
+- New console command PZEM RAW (DSP only, read-only): prints the routing registers and the RX pin level, sends one read request and hex-dumps every byte received for 500 ms. It never sends the energy reset.
+
+## Unreleased (DSP battery status light)
+
+- DSP builds: the thunderbolt light now matches Dubem's lighting.cpp. Red 12, blue 13, green 14 on LEDC 5 kHz 8-bit, one lit at a time. SOC 70 % and up green, 40-69 % blue, under 40 % red. No BMS frame, or one older than 15 s, is red. With grid present (GPIO39, our 170/160 V hysteresis) the lit LED breathes on a 4 s triangle; without grid it is solid. Caleb confirmed 2026-11-10 21:13 WAT.
+- This replaces, on DSP only, the original profile's indications: the critical-latch 100 ms red blink, STM32 fault red, and blue for offline, hotspot, or SOC under 25 %. Those states are no longer shown on the light on DSP (they stay in SELFTEST and the logs). STM builds are unchanged.
+
+## Unreleased (DSP front light)
+- DSP images: the front light on GPIO27 (HIGH = ON) follows the inverter like Dubem's firmware: on with ON, off with the boot latch and every off path. Caleb approved 2026-11-10 21:10 WAT. STM images unchanged.
+
+## Unreleased (DSP fixes from Dubem's working firmware)
+- DSP GPIO15 now actually switches. The pad resets into its MTDO (JTAG) IO_MUX function and the DSP path never selected the GPIO function, so ON and OFF writes did not reach the pin. Each write now selects the GPIO function first (`esp_rom_gpio_pad_select_gpio`), releases the hold, sets the level, and holds only at the off level. HIGH = ON unchanged.
+- DSP BMS: both ratings listen for JK-PB at 115200 on RX GPIO17 / TX GPIO16, matching Dubem's working firmware (`JK_RX 17`, `JK_TX 16`, `JK_BAUD 115200`). The 3.5 kW image no longer polls JBD at 9600 on RX16/TX17, which returned no data.
+- PZEM: SELFTEST `pzem` block (rx, tx, baud, polls, ok, timeouts, short_frames, bad_frames, fail_run, last_ok_age_ms, live values). `PZEM NO_DATA` warning on the first failed poll and at most every 30 s while it keeps failing, `PZEM RECOVERED` once, `PZEM INIT` at boot. The request is flushed before the reply timeout starts, as Dubem's driver does.
+
+## Unreleased (DSP 5 kW JK-PB BMS)
+- DSP 5 kW images (`esp32dev_dsp011_5kw`) listen for JK-PB 300-byte frames at 115200 on the existing DSP BMS pins (RX GPIO16 / TX GPIO17, `DSP_BMS_UART_SWAP` 0). Caleb confirmed 2026-11-10 17:47 WAT that the unit uses the same JK-PB model as the STM images, over TTL UART. Build flag `DSP_BMS_JKPB=1`. Stale aging, no-zero publish, BMS-own SOC latch policy and the BMS RAW pause/idle hook are the same as the STM JK path. INFO printed `bms=JK-PB baud=115200 rx=16 tx=17`. Superseded: the DSP BMS is ESP RX GPIO17 / TX GPIO16 (see "DSP fixes from Dubem's working firmware"; Caleb confirmed 2026-11-11 18:30 WAT), INFO now prints `rx=17 tx=16`.
+- DSP 3.5 kW images stay on the JBD 9600 polled driver (`DSP_BMS_JKPB` defaults to 0). Superseded: both DSP ratings now use JK-PB. STM images unchanged.
+
+## Unreleased (DSP v0.1.1 PZEM pins)
+- DSP images only: PZEM UART1 moves to RX GPIO35 / TX GPIO32 (was RX GPIO32 / TX GPIO33), 9600 8N1, per Caleb 2026-11-10 13:16 WAT. GPIO33 is unused on DSP. STM images unchanged.
+- GPIO35 is input only with no internal pull-up. The PZEM open-collector TX needs a board pull-up to 3.3 V on GPIO35, and the PZEM TTL side must be 3.3 V safe (no 5 V pull-up).
+- No ADC read remains on GPIO35 (DSP grid sense is GPIO39 only; FEATURE_BAT_SENSE_ADC=0 on DSP).
+
 ## 2.5.13 (NVS model)
 - NVS Powercell model adds `PC3_5K` (3.5 kVA / 3.15 kW usable, matching the 35kw
   factory rating). Aliases `3.5K`, `PC3.5K`, `35K`, `PC35K`. `PC3K` / `PC5K` /

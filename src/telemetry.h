@@ -21,4 +21,9 @@ void acEnergyTodayToJson(JsonObject o, const char *kwhKey);
 // total is unknown. includeLifetime writes estimated_lifetime_wh and does
 // not write lifetime_wh.
 void stmEnergyToJson(JsonObject o, const char *kwhKey, bool includeLifetime);
+// DSP only. system_temperature_c (deg C or null), temp_sensor_fault, fan_on, and
+// tempKey (legacy inverter temperature key) mirrored from the system NTC.
+void dspThermalKeys(JsonObject o, const char *tempKey);
+// DSP only. Full "thermal" object: temperature_c, valid, fault, fan_on, ntc_mv, age_ms.
+void dspThermalBlock(JsonObject o);
 }  // namespace telemetry

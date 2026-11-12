@@ -7,8 +7,15 @@
 #include "pins.h"
 #include "power_policy.h"
 #include "stm32_link.h"
+#if POWERCELL_DSP011
+#include "driver/gpio.h"
+#include "esp_rom_gpio.h"
+#endif
 
 static_assert(PIN_PWR_KEY == powercell::kDspEnableV011, "GPIO15 is the shared AC-enable pin");
+#if POWERCELL_DSP011
+static_assert(PIN_FRONT_LIGHT == powercell::kDspFrontLightV011, "DSP front light is GPIO27");
+#endif
 
 namespace gateway {
 namespace {
@@ -16,9 +23,48 @@ volatile bool g_on = false;
 volatile int8_t g_req = -1;  // -1 none, 0 off, 1 on
 const char *g_reqOrigin = "local";
 
+#if POWERCELL_DSP011
+// Drive the off level, then hold the pad. Hold survives a software reset, so
+// the ROM and bootloader keep GPIO15 low after this process has run once.
+// A cold power-on clears the hold; the constructor below is the first app code.
+// GPIO15 resets into the MTDO (JTAG) IO_MUX function. Through cbf48bd/a1e3bad
+// the DSP path only called gpio_set_level/gpio_set_direction, which never
+// selected the GPIO function, so the pad ignored every write: ON did nothing.
+void padWrite(bool on) {
+  const gpio_num_t pin = static_cast<gpio_num_t>(PIN_PWR_KEY);
+  powercell::PadStep steps[powercell::kDspPadSteps];
+  const size_t n = powercell::v011_dsp_pad_steps(on, steps);
+  for (size_t i = 0; i < n; ++i) {
+    switch (steps[i].op) {
+      case powercell::PadOp::HoldRelease: gpio_hold_dis(pin); break;
+      case powercell::PadOp::SelectGpio: esp_rom_gpio_pad_select_gpio(PIN_PWR_KEY); break;
+      case powercell::PadOp::PullsOff: gpio_set_pull_mode(pin, GPIO_FLOATING); break;
+      case powercell::PadOp::SetLevel: gpio_set_level(pin, steps[i].level); break;
+      case powercell::PadOp::OutputEnable: gpio_set_direction(pin, GPIO_MODE_OUTPUT); break;
+      case powercell::PadOp::HoldEnable: gpio_hold_en(pin); break;
+    }
+  }
+}
+
+// Front light follows the inverter: same call, same order, every on and off path.
+void frontLight(bool on) {
+  const int level = powercell::v011_front_light_level(on) ? HIGH : LOW;
+  digitalWrite(PIN_FRONT_LIGHT, level);
+  pinMode(PIN_FRONT_LIGHT, OUTPUT);
+  digitalWrite(PIN_FRONT_LIGHT, level);
+}
+
+void latchDspEnableOff() {
+  padWrite(false);
+  frontLight(false);
+  g_on = false;
+}
+#endif
+
 void drive(bool on) {
 #if POWERCELL_DSP011
-  digitalWrite(PIN_PWR_KEY, powercell::v011_dsp_level(on));
+  padWrite(on);
+  frontLight(on);
 #else
   digitalWrite(PIN_PWR_KEY, on ? HIGH : LOW);
   digitalWrite(PIN_PWR_LIGHT, on ? HIGH : LOW);
@@ -28,12 +74,23 @@ void drive(bool on) {
 
 void earlyInit() {
 #if POWERCELL_DSP011
-  digitalWrite(PIN_PWR_KEY, powercell::v011_dsp_level(false));
+  latchDspEnableOff();
 #else
   digitalWrite(PIN_PWR_KEY, LOW);
-#endif
   pinMode(PIN_PWR_KEY, OUTPUT);
+#endif
 }
+
+void latchOutputOff() {
+#if POWERCELL_DSP011
+  latchDspEnableOff();
+#endif
+}
+
+#if POWERCELL_DSP011
+// After .bss and before setup(). Still after the ROM and the bootloader.
+__attribute__((constructor(101))) static void dspEnableBootLatch() { latchDspEnableOff(); }
+#endif
 
 void begin() {
   earlyInit();
@@ -55,6 +112,7 @@ const char *resultName(Result r) {
     case Result::CriticalLatched: return "battery_critical_latched";
     case Result::PaymentLocked: return "payment_locked";
     case Result::OverloadLatched: return "output_overload_latched";
+    case Result::OverTempLatched: return "over_temperature_latched";
     default: return "stm32_timeout";
   }
 }
@@ -64,7 +122,8 @@ Result set(bool on, const char *origin) {
   // battery_critical, ota) still runs. ON is never allowed while locked.
   if (fid::paymentLocked()) {
     bool systemOff = !on && origin && (!strcmp(origin, "payment_lock") || !strcmp(origin, "battery_critical") ||
-                                    !strcmp(origin, "ac_overload") || !strcmp(origin, "ota"));
+                                    !strcmp(origin, "ac_overload") || !strcmp(origin, "ota") ||
+                                    !strcmp(origin, "over_temperature"));
     if (on || !systemOff) {
       LOGW("GATEWAY", "PAYMENT_LOCKED", "%s refused (origin=%s)", on ? "on" : "off", origin ? origin : "?");
       return Result::PaymentLocked;
@@ -78,6 +137,12 @@ Result set(bool on, const char *origin) {
   if (on && powerguard::overloadLatched()) {
     LOGW("GATEWAY", "REFUSED", "on while ac overload latched (origin=%s)", origin);
     return Result::OverloadLatched;
+  }
+  // DSP system NTC: >= 80 C, or latched and not yet valid and < 70 C. Checked last so a
+  // refused ON for another reason never clears the over-temperature latch.
+  if (on && powerguard::overTempRefuseOn(origin)) {
+    LOGW("GATEWAY", "REFUSED", "on while over temperature (origin=%s)", origin);
+    return Result::OverTempLatched;
   }
 #if POWERCELL_DSP011
   if (on && ota::busy()) {

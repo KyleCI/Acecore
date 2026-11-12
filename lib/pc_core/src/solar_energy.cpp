@@ -37,8 +37,11 @@ void Energy::update(bool valid, float powerW, uint32_t nowMs, int32_t day) {
 
 bool Energy::saveDue(uint32_t nowMs) const {
   if (dayChanged_) return true;
-  if (total_ - savedTotal_ < kSaveWh) return false;
-  return !everSaved_ || nowMs - savedMs_ >= kSaveMinMs;
+  const double unsaved = total_ - savedTotal_;
+  const uint32_t elapsed = everSaved_ ? (nowMs - savedMs_) : nowMs;
+  if (unsaved >= kSaveWh && elapsed >= kSaveMinMs) return true;
+  if (unsaved > kSaveIdleWh && elapsed >= kSaveIdleMs) return true;
+  return false;
 }
 
 void Energy::markSaved(uint32_t nowMs) {

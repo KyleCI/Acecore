@@ -20,6 +20,7 @@ String buildMetricsJson() { return "[]"; }
 bool populateDeviceArray(JsonArray &) { return true; }
 void populateDiscoveredSockets(JsonArray &) {}
 void socketsSetLowPower(bool) {}
+void socketsSetPaused(bool) {}
 bool takeSocketsChanged() { return false; }
 bool socketCommandInfo(String, bool &, bool &, String &) { return false; }
 #endif

@@ -12,16 +12,66 @@
 #define PIN_STM32_TX 2    // ESP TX  -> STM32 PB7 (RX). Strapping pin: only becomes TX after boot.
 #define PIN_STM32_NRST 26 // optional bodge (FEATURE_STM32_NRST): C:J16 pin 3 -> 1k -> NRST, open drain. Same net as LoRa RESET.
 
-// UART2 <-> header labelled "PZEM-004T" on the schematic. Carries the
-// auto-direction TTL-RS485 module to the JK-PB BMS (listen only). No DE/RE net.
-// Matches the Dubem firmware proven on this hardware: Serial2.begin(115200, 8N1, 17, 16)
-// (rx=17, tx=16). The old 16/17 map read nothing on ACE-000001.
-#define PIN_BMS_RX 17     // ESP RX  <- RS485 module RXD/RO
-#define PIN_BMS_TX 16     // ESP TX  -> RS485 module TXD/DI
+// UART2 BMS.
+// STM32 images: JK-PB listen-only on the RS485 header. Proven map is
+// Serial2.begin(115200, 8N1, 17, 16) (rx=17, tx=16). The swapped map read
+// nothing on ACE-000001.
+// DSP images, both ratings (DSP_BMS_JKPB=1): JK-PB listen-only at 115200 on
+// RX GPIO17 / TX GPIO16. That is Dubem's working DSP firmware
+// ("dspic collector", 2026-11-10): pinDefines.h JK_RX 17 / JK_TX 16 /
+// JK_BAUD 115200 and main.cpp JK_UART.begin(JK_BAUD, SERIAL_8N1, JK_RX, JK_TX),
+// the same pair as the STM images. The earlier RX16/TX17 note was for the JBD
+// poller and read nothing on the DSP board.
+// DSP_BMS_JKPB=0 keeps the optional JBD 9600 poller on RX16/TX17.
+// DSP_BMS_UART_SWAP=1 swaps whichever pair is selected.
+#if POWERCELL_DSP011
+#ifndef DSP_BMS_UART_SWAP
+#define DSP_BMS_UART_SWAP 0
+#endif
+#if DSP_BMS_JKPB
+#define PIN_BMS_RX_DEFAULT 17
+#define PIN_BMS_TX_DEFAULT 16
+#else
+#define PIN_BMS_RX_DEFAULT 16
+#define PIN_BMS_TX_DEFAULT 17
+#endif
+#if DSP_BMS_UART_SWAP
+#define PIN_BMS_RX PIN_BMS_TX_DEFAULT
+#define PIN_BMS_TX PIN_BMS_RX_DEFAULT
+#else
+#define PIN_BMS_RX PIN_BMS_RX_DEFAULT
+#define PIN_BMS_TX PIN_BMS_TX_DEFAULT
+#endif
+#if DSP_BMS_JKPB
+#define PIN_BMS_BAUD JK_BMS_BAUD
+#else
+#define PIN_BMS_BAUD 9600
+#endif
+#define PIN_PZEM_RX 35   // ESP RX <- PZEM TX. Input-only pin, no internal pull-up: board needs a pull-up on PZEM TX.
+#define PIN_PZEM_TX 32   // ESP TX -> PZEM RX
+#define PIN_DSP_SD_CS 5  // was GPIO33; GPIO5 was the unused MPPT CS
+#define PIN_FRONT_LIGHT 27
+// Only the grid is sensed here. Output volts and current come from the PZEM.
+// GPIO39 is the v0.2 grid-sense node (ADC1). GPIO34 is not read. GPIO35 is PZEM RX.
+#define PIN_GRID_SENSE 39
+// System temperature and cooling fan (Dubem "dspic collector_2", 2026-11-11, pinDefines.h).
+// GPIO33 (ADC1_CH5): 10k NTC / 2k7 divider from 3V3. Caleb 2026-11-11 18:30 WAT: the sensor
+// moved from GPIO36 to GPIO33. ADC2 pins fail with Wi-Fi on. On DSP, GPIO33 is otherwise
+// unused: PIN_STM32_RX is STM only (FEATURE_STM32=0, the UART is never begun) and
+// Dubem's current-sense input (AC_PIN_CSENSE) is not read by this firmware. GPIO36 is unused.
+// GPIO25: fan driver, HIGH = ON. Unused on DSP before this (PIN_PWR_LIGHT is STM only).
+#define PIN_NTC 33
+#define PIN_FAN 25
+#else
+#define PIN_BMS_RX 17
+#define PIN_BMS_TX 16
+#define PIN_BMS_BAUD 115200
+#endif
 
-// PWR_KEY: IO15 -> R57 1k -> Q7 base. Q7 is open collector onto STM32 PB4 (CONT, pulled up).
+// PWR_KEY: IO15. STM32 images: R57 1k -> Q7 base, open collector onto PB4 (CONT, pulled up).
 // IO15 HIGH -> Q7 on -> PB4 LOW -> STM32 runs the inverter. IO15 LOW = inverter not requested.
-// IO15 is a strapping pin (MTDO): driven LOW as the very first thing in setup().
+// DSP v0.1.1: the same pin is the inverter enable, HIGH = ON (Caleb 2026-11-10 11:53).
+// IO15 is a strapping pin (MTDO, default pull-up). DSP latches it LOW as early as the app can.
 #define PIN_PWR_KEY 15
 
 // Analog, ADC1 only (ADC2 is unusable with Wi-Fi)
@@ -35,14 +85,26 @@
 #define PIN_SPI_SCK 18
 #define PIN_SPI_MISO 19
 #define PIN_SPI_MOSI 23
-#define PIN_SPI_CS_MPPT 5 // strapping pin; not used by this firmware
+#define PIN_SPI_CS_MPPT 5 // strapping pin. STM images leave it idle-high. DSP SD CS is this pin.
 #define PIN_SD_CS 14      // CS2
 #define PIN_LORA_CS 4     // CS3, C:J16 pin 7
 #define PIN_LORA_RST 26   // C:J16 pin 3
 #define PIN_LORA_DIO0 -1  // polling mode. Never IO2: that is the STM32 TX (the Dubem map had DIO0=2).
 
-// LEDs, each through a BC337 driver (HIGH = on). IO12 is a strapping pin
-// (MTDI): the BC337 base resistor keeps it low at reset; never pulled high.
+// LEDs, each through an NPN/BC337 driver (HIGH = on). IO12 is a strapping pin
+// (MTDI): keep it low at reset and never enable a pull-up, or the flash
+// runs at 1.8 V and boot fails.
+#if POWERCELL_DSP011
+// DSP status lights. Caleb 2026-11-12: swap orange and red.
+// Orange is the mid-SOC channel (schematic Y, firmware PIN_LED_ORANGE). Green stays 14.
+// No amber. GPIO32 is PZEM TX, GPIO35 is PZEM RX.
+// GPIO12 is a strapping pin (MTDI): drive it low at boot and never enable a pull-up.
+// GPIO14 flickers during boot (ROM PWM). GPIO27 is the front light, not green.
+#define PIN_LED_RED 13
+#define PIN_LED_ORANGE 12
+#define PIN_LED_GREEN 14
+// No PIN_PWR_LIGHT on DSP: GPIO25 is the cooling fan (PIN_FAN).
+#else
 #if LED_MAP_OLD_CODE
 #define PIN_LED_RED 13
 #define PIN_LED_YELLOW 12
@@ -53,9 +115,47 @@
 #define PIN_LED_GREEN 27
 #define PIN_LED_AMBER 32
 #define PIN_PWR_LIGHT 25
+#endif
 
 // ---- Compile-time conflict checks -------------------------------------------
 #if FEATURE_LORA && FEATURE_STM32_NRST
 #error "IO26 is either the LoRa RESET or the STM32 NRST bodge, not both"
 #endif
 static_assert(PIN_STM32_RX != PIN_BMS_RX && PIN_STM32_TX != PIN_BMS_TX, "UART pin overlap");
+#if POWERCELL_DSP011
+static_assert(PIN_PZEM_RX == 35 && PIN_PZEM_TX == 32, "DSP PZEM UART1: RX 35, TX 32");
+static_assert(PIN_DSP_SD_CS == 5 && PIN_SPI_CS_MPPT == 5, "DSP SD CS reuses the unused MPPT CS");
+static_assert(PIN_PZEM_RX != PIN_DSP_SD_CS && PIN_PZEM_TX != PIN_DSP_SD_CS, "SD CS is not a PZEM pin");
+static_assert(PIN_BMS_RX != PIN_PZEM_RX && PIN_BMS_TX != PIN_PZEM_TX, "BMS/PZEM UART overlap");
+#if !DSP_BMS_UART_SWAP && DSP_BMS_JKPB
+static_assert(PIN_BMS_RX == 17 && PIN_BMS_TX == 16, "DSP JK-PB UART: RX 17, TX 16 (Dubem working main.cpp)");
+#elif !DSP_BMS_UART_SWAP
+static_assert(PIN_BMS_RX == 16 && PIN_BMS_TX == 17, "DSP JBD UART: RX 16, TX 17");
+#endif
+#if DSP_BMS_JKPB
+static_assert(PIN_BMS_BAUD == 115200, "DSP JK-PB baud is 115200");
+#else
+static_assert(PIN_BMS_BAUD == 9600, "DSP JBD baud is 9600");
+#endif
+#if defined(POWERCELL_FACTORY_RATED_ACTIVE_W) && POWERCELL_FACTORY_RATED_ACTIVE_W == 5000
+static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "5 kW DSP uses JK-PB");
+#endif
+#if defined(POWERCELL_FACTORY_RATED_ACTIVE_W) && POWERCELL_FACTORY_RATED_ACTIVE_W == 3500
+static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "3.5 kW DSP uses JK-PB (Dubem working firmware)");
+#endif
+static_assert(PIN_LED_RED == 13 && PIN_LED_ORANGE == 12 && PIN_LED_GREEN == 14, "DSP status lights: red 13, orange 12, green 14");
+static_assert(PIN_FRONT_LIGHT == 27 && PIN_LED_GREEN != PIN_FRONT_LIGHT, "front light is not the green LED");
+static_assert(PIN_GRID_SENSE == 39, "DSP grid sense is GPIO39");
+static_assert(PIN_NTC == 33 && PIN_FAN == 25, "DSP NTC GPIO33 (Caleb 2026-11-11), fan GPIO25");
+static_assert(PIN_NTC >= 32 && PIN_NTC <= 39, "NTC must be on ADC1 for Wi-Fi");
+static_assert(PIN_NTC != PIN_GRID_SENSE && PIN_NTC != PIN_PZEM_RX && PIN_NTC != PIN_PZEM_TX && PIN_NTC != PIN_BMS_RX &&
+              PIN_NTC != PIN_BMS_TX && PIN_NTC != PIN_BAT_SENSE && PIN_NTC != PIN_PWR_KEY && PIN_NTC != PIN_FRONT_LIGHT &&
+              PIN_NTC != PIN_DSP_SD_CS && PIN_NTC != PIN_FAN, "NTC pin is not shared");
+static_assert(!(FEATURE_STM32) || PIN_NTC != PIN_STM32_RX, "GPIO33 is the STM32 RX on STM boards; DSP has no STM32");
+static_assert(!(FEATURE_BAT_SENSE_ADC) || PIN_NTC != PIN_BAT_SENSE, "BAT_SENSE ADC is off on DSP");
+static_assert(PIN_FAN != PIN_PWR_KEY && PIN_FAN != PIN_FRONT_LIGHT && PIN_FAN != PIN_LED_RED && PIN_FAN != PIN_LED_ORANGE &&
+              PIN_FAN != PIN_LED_GREEN && PIN_FAN != PIN_PZEM_TX && PIN_FAN != PIN_BMS_TX && PIN_FAN != PIN_BMS_RX &&
+              PIN_FAN != PIN_DSP_SD_CS && PIN_FAN != PIN_I2C_SDA && PIN_FAN != PIN_I2C_SCL && PIN_FAN != PIN_SPI_SCK &&
+              PIN_FAN != PIN_SPI_MISO && PIN_FAN != PIN_SPI_MOSI, "fan pin is not shared");
+static_assert(PIN_I2C_SDA == 21 && PIN_I2C_SCL == 22, "DS3231 stays on I2C 21/22");
+#endif

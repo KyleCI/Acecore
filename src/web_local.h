@@ -17,6 +17,7 @@
 //   POST /relay       {"socket_id":"...","state":"on"|"off"}
 //   POST /provision   {"ssid","pass"|"password","local_token"?}  (Wi-Fi setup)
 //   POST /register    {"socket_id"|"id"}     pair a smart socket
+//   POST /ota  app image body (firmware.bin), header X-Firmware-SHA256, ?force=1 allows an older version; 200 then reboot
 //   POST /unregister  {"socket_id"|"id"}     forget a smart socket
 //   GET  /api/health  public, no secrets
 //   GET  /metrics, /api/state, POST /api/inverter/{mode,fault_reset}  (token)

@@ -34,8 +34,19 @@ constexpr float kStmIdleAmps = 0.2f;
 // A slice longer than 10 s is a gap, not a rectangle of the previous power.
 constexpr uint32_t kStmMaxGapMs = 10000;
 constexpr int64_t kStmClockSlackS = 2;
-// At 5000 W this bounds lost energy at 1250 Wh. At 3500 W, 875 Wh.
-constexpr uint32_t kStmSaveMinMs = 15u * 60u * 1000u;
+// NVS save rule (Caleb 12 Nov 2026, same shape as the solar counter, solar_energy.h):
+//   save when unsaved energy >= kStmSaveWh AND >= kStmSaveMinMs since the last save, or
+//   when unsaved energy > kStmSaveIdleWh has waited kStmSaveMaxMs, or on a Lagos day change.
+// A power cut loses at most about 5 min at rated power: 417 Wh at 5000 W, 292 Wh at 3500 W
+// (was 15 min: 1250 / 875 Wh). Below 120 W average the 10 Wh threshold, not the 5 min floor,
+// sets the pace, and the 15 min path flushes a trickle, so a near-idle output loses <= 30 Wh.
+// 10 Wh matches the solar counter: it only stops writes for near-idle output; the 5 min floor
+// is what bounds wear. Worst case 288 writes/day (every 5 min) + 1 day change = 289, the
+// same 3 keys (day, tdy, life) in NVS "stm_energy". Was 96 + 1.
+constexpr uint32_t kStmSaveMinMs = 5u * 60u * 1000u;
+constexpr uint32_t kStmSaveMaxMs = 15u * 60u * 1000u;
+constexpr double kStmSaveWh = 10.0;
+constexpr double kStmSaveIdleWh = 0.5;
 constexpr int kLagosOffsetMin = 60;
 
 struct StmEstimateSample {

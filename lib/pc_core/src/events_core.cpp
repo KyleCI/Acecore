@@ -18,6 +18,7 @@ const char *typeName(Type t) {
     case Type::OutputRestored: return "output_restored";
     case Type::ModeFallback: return "mode_fallback";
     case Type::LoadShed: return "load_shed";
+    case Type::TempSensorFault: return "temp_sensor_fault";
   }
   return "unknown";
 }
@@ -142,6 +143,31 @@ void Engine::update(const Inputs &in, uint32_t now, uint32_t ts) {
       cond({"grid_down", Type::GridDown, Sev::Warning, true, in.gridV, "grid_below_160v", nullptr, "stm32", false, 3000, 3000}, raw, now, ts);
     }
   }
+  // ---- DSP system temperature (NTC GPIO33) ----------------------------------------
+  // over_temperature: the 80 C cutoff latch. Same type as the STM32 thermal alert
+  // (over_temp) so the server's existing over_temp notification path carries it.
+  // Raised on the latch edge, cleared when the latch is cleared (user ON below 70 C).
+  // temp_sensor_fault: open, short, out of range or stale. Raised once after 4 s,
+  // cleared after 10 s valid. No cutoff on a fault alone.
+  if (in.dspThermal) {
+    cond({"over_temperature", Type::OverTemp, Sev::Critical, in.sysTempValid, in.sysTemp, "system_ntc_80c_cutoff", nullptr, "esp", false, 0, 0,
+          "cool_below_70c_then_on"}, in.overTempLatched, now, ts);
+    cond({"temp_sensor_fault", Type::TempSensorFault, Sev::Warning, false, 0, "ntc_open_short_range", nullptr, "esp", false,
+          kTempSensorFaultOnMs, kTempSensorFaultOffMs}, in.sysTempFault, now, ts);
+  }
+  // ---- DSP Manual output power limit ----------------------------------------------
+  // ac_output_limit (warning): load above the Manual ceiling or the usable rating for 3 s.
+  // One event per episode: the policy rearms only after 10 s under, and the clear waits 10 s.
+  // ac_output_shutdown (critical): the output was turned off (GPIO15) by warn_and_shutdown or
+  // the usable rating. Clears when the latch releases (30 s under); the output stays off until ON.
+  if (in.acLimit) {
+    cond({"ac_output_limit", Type::Overload, Sev::Warning, in.acWattsValid, in.acWatts, "output_limit_w", nullptr, "esp", false,
+          0, kAcLimitClearMs}, in.acWarn, now, ts);
+    if (!isActive("ac_output_shutdown")) acRated_ = in.acRatedShutdown;
+    cond({"ac_output_shutdown", Type::Overload, Sev::Critical, in.acWattsValid, in.acWatts,
+          acRated_ ? "rated_overload_off" : "output_limit_off", nullptr, "esp", false, 0, 0, "load_below_limit_30s"},
+         in.acShutdown, now, ts);
+  }
   // ---- Battery full ----------------------------------------------------------
   {
     bool flag = in.stmOnline && ((in.fault & kStatusChargerFull) || in.chr == ChargeState::Float);
@@ -153,8 +179,11 @@ void Engine::update(const Inputs &in, uint32_t now, uint32_t ts) {
       cond({"battery_full", Type::BatteryFull, Sev::Info, in.socValid, in.soc, flag ? "charger_full" : "soc_100", nullptr, src, false, 10000, 10000}, raw, now, ts);
     }
   }
-  // ---- Battery low (SoC policy 20/10/5 %, hysteresis 3) -----------------------
-  bat_.update(in.socValid, in.soc, now);
+  // ---- Battery low (SoC policy 25/15/10 %, Caleb 8 Nov; saved Manual low/warning) --
+  // battery_low at <= low, battery_critical at <= warning (one-time shutdown warning,
+  // held while the output latch holds). The 10 % shutdown itself is battery_critical below.
+  bat_.setThresholds(in.batLowPct, in.batCritPct);
+  bat_.update(in.socValid, in.soc, now, in.critLatched || in.stmReserve);
   {
     BatteryLevel l = bat_.level();
     Sev s = l == BatteryLevel::Low ? Sev::Warning : Sev::Critical;

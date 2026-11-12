@@ -19,6 +19,8 @@ Toolchain: espressif32@7.0.1, Arduino-ESP32 2.0.17 (IDF 4.4), the same as 1.0.x.
 
 **Cloud:** the four product images use `wss://api-dev.acecore.tech` and OTA `https://api-dev.acecore.tech`. Each image's OTA model is its own `pc-stm01-*` or `pc-dsp011-*` string. See `docs/OTA_HARDWARE_MODEL.md`.
 
+**DSP board (Caleb, 2026-11-10):** Both DSP ratings listen for JK-PB frames at 115200 on RX GPIO17 / TX GPIO16 (`DSP_BMS_JKPB=1`), as Dubem's working DSP firmware does. PZEM is UART1 RX GPIO35 / TX GPIO32 at 9600 8N1 and is the only output V/I source (Caleb, 13:16 WAT; Dubem's working firmware uses the same pins). GPIO33 is unused on DSP. GPIO35 is input only with no internal pull-up, so the board needs a pull-up to 3.3 V on the PZEM TX line. Grid voltage is ADC1 GPIO39 only; GPIO34 is not read. GPIO15 power is HIGH = ON (`DSP_PWR_ACTIVE_LEVEL` 1), confirmed 2026-11-10 11:53 WAT. That supersedes the earlier LOW = ON note. Off is LOW, including the boot latch. Status lights (Caleb, 2026-11-12): orange and red are swapped, so red is GPIO13, orange (mid-SOC, `PIN_LED_ORANGE`, schematic Y) is GPIO12, and green stays GPIO14. GPIO12 is still driven low at boot because it is the MTDI strap. The front light stays GPIO27. Details and the ADC headroom caveat are in `docs/DSP_HW_CONFLICTS.md`.
+
 ## Provisioning
 - No secrets are compiled in. `tools/provision.py --port COMx --file <KEY=VALUE file>` sends `SET api_key`, `wifi_ssid`, `wifi_pass`, `gw_name`, `device_secret`, `ota_url`, `local_tok` over the USB console and prints only OK/ERR and the token fingerprint. Provisioning files are gitignored. (v17: one factory identity secret; `DEV_SECRET` / `SET dev_secret` removed.) See `docs/API_KEY_ROTATION.md`.
 - WebSocket keepalive: client ping every 15 s, pong timeout 10 s, disconnect after 2 misses; server pings are answered in `ws.loop()`. The periodic OTA check runs alongside the socket; only an actual install pauses it (`lib/pc_core/src/ota_gate.h`). A main-loop pass over 500 ms logs `LOOP SLOW`, and `LOOP STATS` reports the worst pass each minute.
@@ -136,9 +138,56 @@ When the BMS is silent for 10 s, every BMS field is `null` (never 0) and voltage
 - **Commands in:** `command` (PR #3 wire name) and `set_state` (legacy) are handled the same way: `{"type":"command","command_id","target_type":"gateway"|"socket","target_id":null|"<socket>","desired_state":"on"|"off"}`. A gateway command with `target_id` null targets this unit.
 - **Command ack out:** `{"type":"command_result","command_id","status":"confirmed"|"rejected","command_status":same,"error_message"?, ...}`. `status`/`command_status` is what the backend reads; `result`, `reason` stay for older servers. A repeated command id answers with the earlier outcome.
 - **Also in:** `ping`, `socket_lifecycle`, `offline_sync_ack`, `set_local_token` (below).
-- **OTA:** `POST {ota_url}/api/ota/check` with `Authorization: Bearer <API_KEY>`, `X-Device-ID`, optional `X-Device-Secret`, body `{"device_id":"AABBCCDDEEFF","firmware_version":"2.1.0",...}`. The response must have `update_available`; when true, `version`, `url`, `sha256` (top level or in `firmware`; they must agree). `sha256` is required (64 hex). The `url` is followed only if it is on the configured `ota_url` host and is one of `/api/ota/download`, `/api/firmware/download`, `/api/firmware.bin`; otherwise `{ota_url}/api/ota/download?device_id=<12 hex>` is used. The download must send `Content-Length`. The image is checked for SHA-256, the ESP32 image magic and the embedded identity `POWERCELL_FW|collector|<model>|<version>|END` (`docs/OTA_HARDWARE_MODEL.md`), then boots in rollback-protected PENDING_VERIFY.
+- **OTA:** `POST {ota_url}/api/ota/check` with `Authorization: Bearer <API_KEY>`, `X-Device-ID`, optional `X-Device-Secret`, body `{"device_id":"AABBCCDDEEFF","firmware_version":"2.1.0",...}`. The response must have `update_available`; when true, `version`, `url`, `sha256` (top level or in `firmware`; they must agree). `sha256` is required (64 hex). The `url` is followed only if it is on the configured `ota_url` host and is one of `/api/ota/download`, `/api/firmware/download`, `/api/firmware.bin`; otherwise `{ota_url}/api/ota/download?device_id=<12 hex>` is used. The download must send `Content-Length`. The image is checked for SHA-256, the ESP32 image magic and the embedded identity `POWERCELL_FW|collector|<model>|<version>|END` (`docs/OTA_HARDWARE_MODEL.md`), then boots in rollback-protected PENDING_VERIFY. It is confirmed after 30 s connected to the server within 5 min, else it rolls back. In `hotspot_only` (no cloud) 3 min of healthy local run (free heap > 30 KB) confirms it instead, within the same 5 min.
+- **OTA timeouts (2.5.18):** TCP connect 15 s, TLS handshake 45 s (was 10 s), socket read and body stall 30 s (was 15 s), whole body 180 s. Same values for the HTTPS check and the download.
+- **OTA error codes (2.5.18).** After a failed cloud install the device reports `last_status: "failed"` and one of these in `last_error` (in `ota_check` over the WS and in the HTTPS check body). `last_error_detail` is a new optional string with the HTTP code, length or mbedTLS error (`tls=0` means it failed before TLS, i.e. DNS or TCP; `tls=-1` means the handshake timed out). Older firmware sends `download_or_verification_failed` for all of them; keep mapping that.
+
+  | `last_error` | Meaning |
+  |---|---|
+  | `download_no_slot` | No inactive OTA partition |
+  | `download_url_invalid` | The download URL could not be opened by the HTTP client |
+  | `download_connect_failed` | The GET returned a negative HTTP code: DNS, TCP, TLS handshake or send failed. No request reached the server |
+  | `download_timeout` | No response headers within the read timeout (HTTP -11), or the body took longer than 180 s |
+  | `download_http_<code>` | The server answered with a status other than 200, e.g. `download_http_401`, `download_http_404` |
+  | `download_size_mismatch` | No `Content-Length`, fewer than 288 bytes, or a length other than the offered `size` |
+  | `download_too_large` | `Content-Length` is larger than the OTA slot (0x1E0000 on min_spiffs) |
+  | `download_flash_begin_failed` | `esp_ota_begin` failed |
+  | `download_stalled` | No byte for 30 s during the body |
+  | `download_read_error` | A stream read failed |
+  | `verify_magic` | The first byte is not the ESP32 image magic 0xE9 |
+  | `flash_write_failed` | `esp_ota_write` failed |
+  | `verify_size` | The body ended before `Content-Length` bytes |
+  | `verify_identity` | `POWERCELL_FW\|collector\|<model>\|<offered version>\|END` not found in the image |
+  | `verify_sha` | SHA-256 differs from the offer |
+  | `finalize_failed` | `esp_ota_end` or setting the boot partition failed |
+
+  Unchanged: `safe_output_storage_failed`, `interrupted_download`, `rolled_back`, `not_healthy_rolled_back`, `lan_*`.
+
+  **Two-phase OTA on boot (2.5.22).** If the heap has no room for the download's TLS session after the WS is released (8-bit DRAM: free >= 50 KB and both 16717 B mbedTLS record buffers must fit), or an in-place connect fails with an mbedTLS out-of-memory error, the unit stores the job in NVS, reports `last_status: "boot_pending"` and reboots. Early in boot (after Wi-Fi starts, before ESP-NOW, the web server, the WS and mDNS) it downloads with the same TLS, CA bundle, sha256, identity and version checks; on success it reboots into the new image, on failure it reports the usual code and boots normally. Up to 3 attempts per sha256 (counted before each attempt), then that sha256 is refused until a different sha256, a successful update or console `OTA_RETRY`. Extra codes:
+
+  | `last_error` | Meaning |
+  |---|---|
+  | `boot_ota_no_wifi` | Boot path: no station IP within 40 s, or hotspot-only mode |
+  | `boot_ota_abandoned` | Boot path: 3 attempts were started without a result (crash, watchdog, power cut) |
+  | `boot_ota_not_run` | A staged job was not run at boot (cleared or invalid) |
+  | `boot_ota_task_failed` | Boot path: the download task could not be created |
+
+  A failed connect's `last_error_detail` ends with ` heap free=<B> largest=<B> min=<B>` (DRAM at the handshake start), and on the boot path ` boot=<n>/3` (` abandoned` on the last).
+
+  **Worker task fallback (2.5.24).** The WS offer and the HTTPS check run in a 16384 B `ota` task. When that stack cannot be allocated (2.5.22 on ACE-000001: largest DRAM block 14836 B, so every `ota_available` was dropped without a log), the unit now logs `[OTA][TASK_CREATE_FAILED] task=ota for=ws_offer|https_check stack=16384 free_heap=.. largest=.. min=.. iram=..`. A WS offer is then checked from the main loop with the same rules as the worker (version, sha256, own-host download path, slot size, abandoned sha256), logged as `[OTA][TASK_STAGE]`, and staged to the boot path like any other staged job: `ota_status installing`, `last_status: "boot_pending"`, `last_error_detail` = `in_place_gate=task_stack stack=16384 heap free=<B> largest=<B> min=<B>`, `BOOT_STAGED`, reboot. The 3 attempts per sha256 apply. A rejected offer logs `JOB_REJECTED` / `TASK_STAGE_SKIPPED` and leaves the WS untouched. An HTTPS check whose task fails is retried at the next check period. On the boot path, `boot_ota_task_failed` now carries `stack=16384 heap free=.. largest=.. min=..` in `last_error_detail`. Local `POST /ota`: `Update.begin` out of heap (its 4 KB buffer) is now 503 `update_begin_out_of_memory` (was 500 `update_begin_failed`).
+  **Stale boot jobs (2.5.26).** A staged job now records the firmware that staged it (NVS `bj_stg` version and `bj_bld`, the first 16 hex of its ELF sha256). It is dropped, not counted against any image, when it is stale: it was staged by another firmware version or build (a USB flash or any image change since; a job staged by 2.5.22..2.5.25 has no stager and is always dropped) or is for the running version (checked before Wi-Fi); or, early in boot before the download, `POST /api/ota/check` returns no offer or a different version or sha256 (if that check fails, a job older than the running version is dropped and its sha256 is refused until `OTA_RETRY`, because a downgrade only runs when the server confirms it); or the download answers 409/410, or 200 with a `Content-Length` other than the job's size. Every download now names the offer: `/api/ota/download?device_id=<12 hex>&version=<v>&sha256=<64 hex>`; a server with the stale-offer guard answers 409 `{"error":"not_current_offer","current_version":...}` for anything else, older servers ignore the parameters. `ota_check` (WS and HTTPS) adds `last_version`, the version the last attempt was for. A dropped job reports `last_status: "dropped"` (never `failed`):
+
+  | `last_error` | Meaning |
+  |---|---|
+  | `boot_ota_stale_job` | Boot path: the staged job was dropped as stale; `last_error_detail` = `reason=<staged_by_unknown\|staged_by_other_build\|same_version\|not_newer\|no_offer\|offer_changed\|not_current_offer\|size_mismatch> job=<version> staged_by=<version\|unknown>` plus `offer=<v>` or `http=<code> length=<B> expect=<B>` |
+  | `download_not_current` | In place: the download answered 409/410 (the offer changed after `ota_available`); status `dropped`, the next check retries |
+
+  Log lines: `[OTA][BOOT_JOB_DROPPED] reason=.. job=.. staged_by=.. running=..`, `[OTA][BOOT_CHECK] job=.. check=offer|none|failed offer=.. verdict=..`, `[OTA][NOT_CURRENT]`. The boot run cap is 9 minutes (the offer check adds one TLS session).
+- **Hello OTA host (2.5.18):** `device_hello` carries `ota_host` (`scheme://host[:port]` of the effective OTA base URL, no path, query or credentials; `null` if unparsable) and `ota_url_override` (true when a saved `ota_url` differs from the compiled default `https://api-dev.acecore.tech`).
 
 ## Local API (port 80, PR #3 "Local device web server")
+
+**mDNS discovery (2.5.13, Caleb approved 2026-11-12 14:31 WAT):** once the station has an IP on the saved home network, the unit answers as `<display id>.local` (for example `ACE-000001.local`) and advertises `_http._tcp` on port 80 (`LOCAL_HTTP_PORT`) with TXT `device_id=<display id>` (same value as `GET /v2/setup/info` `device_id`), `model`, `fw` and `path=/v2/setup/info`. The hostname is the display id reduced to one DNS label (letters, digits, `-`, max 63 chars), falling back to `ACE-DDEEFF` from the MAC. Every STA got-IP re-announces. It stops while the station is down, in hotspot-only mode and during a Wi-Fi test. There is no shared `powercell.local` name, so two units on one LAN do not collide. Apps should still fall back to a /24 scan matched on `device_id`, since some routers drop multicast.
 Credential: HTTP Basic `powercell:<local_access_token>`. The token comes from the backend (see "Local token handoff"). The label `admin_tok` is a **setup credential only**: Basic `powercell:<label token>` works only from a client on the setup AP, and only for `GET /`, `POST /login`, `POST /provision`.
 
 | Endpoint | Auth | Behaviour |
@@ -146,10 +195,11 @@ Credential: HTTP Basic `powercell:<local_access_token>`. The token comes from th
 | `POST /login` | header and/or body `{"username":"powercell","token":"..."}` | 200 `{ok,username,device_id,scope:"device"\|"setup"}`, else 401 |
 | `GET /` | token | Status page. Without a credential: setup page on the AP, or when no token exists yet; otherwise 401 with a Basic challenge |
 | `GET /data` | token | JSON: `device_id`, `mac`, `device_state` (`On`/`Off`), `state`, `battery{valid,status,percentage,voltage,age_ms,source}`, `metrics{...}` (see below), `notifications[]` |
-| `GET /events` | token | SSE: `ready` on connect, `state` (on change and every 10 s), `heartbeat` (every 10 s), `notification` (battery_low/critical/shutdown_imminent, battery_reading_unavailable, with `id`, `sequence`, `active`) |
+| `GET /events` | token | SSE: `ready` on connect, `state` (on change and every 10 s), `heartbeat` (every 10 s), `notification` (battery_low at <= 25 %, battery_critical at <= 15 % once per episode, battery_reading_unavailable, with `id`, `sequence`, `active`; the low / critical percents follow the saved `/v1/battery-settings` low_percent / warning_percent; `shutdown_imminent` is no longer sent), plus 2.2 event notifications such as `ac_output_limit` / `ac_output_shutdown` (DSP) |
 | `POST /state` | token | `{"state":"on"\|"off"}` → `{ok,state,applied_via:"stm32_set_mode"\|"pwr_key"}`; applied from `loop()` |
 | `POST /relay` | token | `{"socket_id":"...","state":"on"\|"off"}` → 202 |
-| `POST /register` / `/unregister` | token | `{"socket_id":"..."}` (also `id`) |
+| `POST /register` / `/unregister` | token | `{"socket_id":"..."}` (also `id`). `/unregister` also clears the saved socket name, pushes SSE `state` at once and logs `SOCK_REMOVE_OK` |
+| `POST /ota` | token (not the setup credential) | Local OTA over the hotspot or LAN. Body: the app image (`firmware.bin`), raw `application/octet-stream` or multipart. Required header `X-Firmware-SHA256` (64 hex). The image must carry `POWERCELL_FW\|collector\|<this model>\|<version>\|END`; same version refused, older only with `?force=1`. Refused (409) while battery-latched, during a cloud OTA or while the running image is unconfirmed. 200 `{ok,from,model,pending_verify,reboot_in_ms}` then reboot. Errors: 400 `x_firmware_sha256_required`/`not_esp32_image`/`image_too_small`, 409 `same_version`/`downgrade_refused`/`battery_critical`/`cloud_ota_busy`/`current_image_not_confirmed`/`ota_busy`, 413, 422 `sha256_mismatch`/`identity_or_model_mismatch`, 500 `update_begin_failed`, 503 `update_begin_out_of_memory` (2.5.24). Tool: `tools/ota_upload.py firmware.bin --model <model>` |
 | `POST /provision` | token, or setup on AP | `{"ssid","pass"\|"password","local_token"?}`; Wi-Fi change reboots |
 | `GET /api/health` | none | version, device_id, `local_token_set` |
 | `GET /metrics`, `GET /api/state`, `POST /api/inverter/mode`, `POST /api/inverter/fault_reset` | token | unchanged |
@@ -216,7 +266,7 @@ INFO                      # prints LABEL ap_pass=... admin_token=... for the lab
 LOCK                      # secrets can no longer be read or changed over USB (local_tok excepted)
 REBOOT
 ```
-`OTA_CONFIG {json}` from 1.0.x is still accepted (`token` is ignored). `FACTORY_RESET` (typed twice) wipes everything.
+`OTA_CONFIG {json}` from 1.0.x is still accepted (`token` is ignored). `FACTORY_RESET` (typed twice) wipes everything. `OTA_RETRY` (2.5.22) clears a staged boot OTA job and an abandoned image so the next offer is tried again.
 
 ## Migration notes (1.0.x → 2.0 by OTA)
 - **Secrets:** on first boot, 2.0 copies the 1.0.x NVS values into `pc_secure`:
@@ -228,7 +278,7 @@ REBOOT
 - **Gateway name:** it changes from `ACE4447` / `ACE9678` to `ACE-XXXXXX` unless you `SET gw_name ACE9678` on that unit. The backend should accept MAC-based gateway targets, which 2.0 accepts.
 - **Network:** the static IP from 1.0.x is replaced by DHCP. The setup AP SSID changes to `Powercell-XXXXXX`.
 - **Not migrated:** the old `energy_wh`, and the 2.0.0 ESP energy counter (`pc_energy` NVS) is no longer used; the old offline queue (JSON in `offline_sync/events`).
-- **Version:** the four product images report `2.5.13`. Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
+- **Version:** the four product images report `2.5.27`. Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
 - **STM32 link:** the STM32 still sends 9600 text, so the default `legacy_text` works with today's STM32 firmware. Switch both sides to framed together.
 
 ## Telemetry fields (WS `telemetry`, additive to 1.0.x)
@@ -246,8 +296,8 @@ Same flat keys in four places: `metrics.*` of GET /data and the SSE `state` even
 
 | key | unit | source |
 |---|---|---|
-| `source` | battery\|grid\|solar\|none | STM32 SYS + PV power (>= 20 W) + BMS current sign |
-| `status` | inverting\|idle\|charging\|fault\|standby\|unknown | STM32 SYS/CHR/fault, BMS current > 0.5 A; `unknown` = no STM32 data in 5 s |
+| `source` | battery\|grid\|solar\|none | STM32 SYS + PV power (>= 20 W) + BMS current sign. Grid presence (DSP debounced GPIO39; STM grid_v >= 160 V) gives `grid` when SYS is the DSP placeholder or unknown and the pack is not discharging (> -0.5 A) |
+| `status` | inverting\|idle\|charging\|fault\|standby\|unknown | STM32 SYS/CHR/fault, BMS current > 0.5 A; `unknown` = no STM32 data in 5 s (DSP: no PZEM sample). With the grid override: `charging` or `idle` (pass-through) |
 | `output_voltage`, `output_current` | V, A | STM32 `VOUT`/`IOUT` (sent only while SYS=INVERTER) |
 | `output_power_w` | W (VA) | inverting: VOUT x IOUT; if IOUT missing, abs(BMS W) x 0.9 (`output_power_source` = `bms_estimate`); output off: 0 (`off`); grid pass-through: null (STM32 has no AC load meter in GRID mode) |
 | `load_pct` | % | output_power_w / (usable_kw x 1000) |
