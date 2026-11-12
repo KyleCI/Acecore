@@ -23,6 +23,11 @@
 #include "log.h"
 #include "settings.h"
 #include "devauth.h"
+#include "lan_ota.h"
+#include "power_guard.h"
+#include "sockets/sockets.h"
+#include <Update.h>
+#include <new>
 
 // Keep a new image in PENDING_VERIFY until the application decides.
 extern "C" bool verifyRollbackLater() { return true; }
@@ -334,15 +339,140 @@ void begin(bool (*prepare)(), bool (*acquire)()) {
   LOGI("OTA", "BEGIN", "%s pending_verify=%d status=%s api_key=%s", kIdentity, g_pending, g_status.c_str(), settings::apiKey().length() ? "set" : "missing");
 }
 
+// ---- Local hotspot OTA (POST /ota), ported from collector 2.5.12 ----
+static_assert(OTA_LAN_HEALTHY_MS == pc::lanota::kHotspotHealthyMs, "hotspot confirm time: config.h and lan_ota.h agree");
+namespace {
+struct Lan {
+  bool active = false;
+  bool force = false;
+  char sha[65] = {0};
+  mbedtls_sha256_context h;
+  // Exact model in the prefix: an image for another model has no matching tag.
+  pc::lanota::TagScanner sc{"POWERCELL_FW|" POWERCELL_FIRMWARE_KIND "|" POWERCELL_HARDWARE_MODEL "|"};
+  size_t got = 0;
+  uint32_t start = 0, last = 0;
+};
+Lan *g_lan = nullptr;
+}  // namespace
+
+bool lanActive() { return g_lan && g_lan->active; }
+
+void lanAbort(const char *why) {
+  if (!g_lan) return;
+  if (g_lan->active) {
+    Update.abort();
+    mbedtls_sha256_free(&g_lan->h);
+    LOGE("OTA", "OTA_LAN_FAIL", "%s received=%u", why, (unsigned)g_lan->got);
+  }
+  delete g_lan; g_lan = nullptr;
+  g_updating = false;
+  socketsSetPaused(false);
+  saveStatus("failed", String("lan_") + why);
+}
+
+const char *lanBegin(const char *sha, bool force, int *code) {
+  *code = 409;
+  if (lanActive()) return "ota_busy";
+  if (g_running || g_updating || g_gate.busy()) return "cloud_ota_busy";
+  if (g_pending && !g_confirmed) return "current_image_not_confirmed";
+  if (powerguard::latched()) return "battery_critical";
+  *code = 400;
+  if (!sha || !pc::isSha256Hex(sha)) return "x_firmware_sha256_required";
+  const esp_partition_t *part = esp_ota_get_next_update_partition(nullptr);
+  *code = 500;
+  if (!part) return "no_ota_partition";
+  g_lan = new (std::nothrow) Lan();
+  if (!g_lan) { *code = 503; return "out_of_memory"; }
+  // Make room: output safe, LoRa task paused, WebSocket released if it is up.
+  // networkBusy() stays true for the whole upload, so the backend does not reconnect.
+  g_lan->active = true;
+  if (g_prepare) g_prepare();
+  socketsSetPaused(true);
+  if (backend::connected() && g_acquire) g_acquire();
+  if (!Update.begin(part->size, U_FLASH)) {
+    LOGE("OTA", "OTA_LAN_FAIL", "update_begin err=%u free_heap=%lu", Update.getError(), (unsigned long)ESP.getFreeHeap());
+    delete g_lan; g_lan = nullptr; socketsSetPaused(false);
+    *code = 500; return "update_begin_failed";
+  }
+  strlcpy(g_lan->sha, sha, sizeof g_lan->sha);
+  g_lan->force = force;
+  mbedtls_sha256_init(&g_lan->h); mbedtls_sha256_starts_ret(&g_lan->h, 0);
+  g_lan->start = g_lan->last = millis();
+  g_updating = true;
+  saveStatus("lan_uploading");
+  LOGI("OTA", "OTA_LAN_BEGIN", "running=%s model=%s partition=%s size=%u force=%d free_heap=%lu", POWERCELL_FIRMWARE_VERSION,
+       POWERCELL_HARDWARE_MODEL, part->label, (unsigned)part->size, force, (unsigned long)ESP.getFreeHeap());
+  *code = 0;
+  return nullptr;
+}
+
+const char *lanWrite(const uint8_t *d, size_t n, int *code) {
+  if (!lanActive()) { *code = 409; return "no_upload"; }
+  if (g_lan->got == 0 && n && d[0] != 0xE9) { *code = 400; lanAbort("not_esp32_image"); return "not_esp32_image"; }
+  mbedtls_sha256_update_ret(&g_lan->h, d, n);
+  g_lan->sc.feed(d, n);
+  if (Update.write(const_cast<uint8_t *>(d), n) != n) {
+    *code = Update.getError() == UPDATE_ERROR_SPACE ? 413 : 500;
+    lanAbort("flash_write"); return "flash_write_failed";
+  }
+  g_lan->got += n; g_lan->last = millis();
+  *code = 0;
+  return nullptr;
+}
+
+const char *lanEnd(int *code, String *version) {
+  if (!lanActive()) { *code = 409; return "no_upload"; }
+  uint8_t res[32]; char hex[65];
+  mbedtls_sha256_finish_ret(&g_lan->h, res);
+  for (int i = 0; i < 32; ++i) snprintf(hex + 2 * i, 3, "%02x", res[i]);
+  if (g_lan->got < 288) { *code = 400; lanAbort("too_small"); return "image_too_small"; }
+  if (!pc::lanota::hexEq(hex, g_lan->sha)) { *code = 422; lanAbort("sha256_mismatch"); return "sha256_mismatch"; }
+  pc::lanota::Verdict v = pc::lanota::judge(POWERCELL_FIRMWARE_VERSION, g_lan->sc, g_lan->force);
+  if (v != pc::lanota::Verdict::Ok) {
+    const char *e = pc::lanota::verdictName(v);
+    *code = v == pc::lanota::Verdict::NoTag ? 422 : 409;
+    if (version) *version = g_lan->sc.version().c_str();
+    lanAbort(e); return e;
+  }
+  String ver = g_lan->sc.version().c_str();
+  if (version) *version = ver;
+  // sha + model identity + version verified: only now validate the image and set the boot partition.
+  if (!Update.end(true)) {
+    LOGE("OTA", "OTA_LAN_FAIL", "update_end err=%u", Update.getError());
+    mbedtls_sha256_free(&g_lan->h); delete g_lan; g_lan = nullptr; g_updating = false; socketsSetPaused(false);
+    saveStatus("failed", "lan_update_end"); *code = 500; return "image_invalid";
+  }
+  mbedtls_sha256_free(&g_lan->h);
+  LOGI("OTA", "OTA_LAN_OK", "version=%s bytes=%u ms=%lu sha256=%s; reboot after reply", ver.c_str(), (unsigned)g_lan->got,
+       (unsigned long)(millis() - g_lan->start), hex);
+  delete g_lan; g_lan = nullptr;
+  // Same rollback bookkeeping as the cloud path: begin() turns a rolled-back boot into failed/rolled_back.
+  g_deployment = ver;
+  Preferences p;
+  if (p.begin(NS, false)) { p.putString("expected", ver); p.end(); }
+  saveStatus("rebooting");
+  *code = 200;
+  return nullptr;  // g_updating stays true: nothing else starts before the reboot
+}
+
 void service(bool healthy) {
   uint32_t now = millis();
+  if (lanActive()) {
+    if (now - g_lan->last > OTA_LAN_IDLE_MS) lanAbort("upload_stalled");
+    return;
+  }
+  // hotspot_only has no cloud, so backend::healthy() is never true there: a healthy local
+  // run of OTA_LAN_HEALTHY_MS confirms the image. Other modes keep the 30 s cloud rule.
+  const bool hotspotOnly = net::networkMode() == pc::onb::NetMode::HotspotOnly;
+  const uint32_t needMs = pc::lanota::confirmAfterMs(hotspotOnly, OTA_HEALTHY_MS);
+  healthy = pc::lanota::healthyNow(hotspotOnly, healthy, ESP.getFreeHeap());
   if (g_pending && !g_confirmed) {
     if (!healthy) g_healthySince = 0;
     else if (!g_healthySince) g_healthySince = now;
-    if (g_healthySince && now - g_healthySince >= OTA_HEALTHY_MS) {
+    if (g_healthySince && now - g_healthySince >= needMs) {
       if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
         g_confirmed = true;
-        LOGI("OTA", "CONFIRMED", "image %s marked valid", POWERCELL_FIRMWARE_VERSION);
+        LOGI("OTA", "CONFIRMED", "image %s marked valid (%s)", POWERCELL_FIRMWARE_VERSION, hotspotOnly ? "hotspot_only local run" : "cloud healthy");
         if (g_status == "rebooting") saveStatus("idle");
       }
     } else if (now > OTA_VERIFY_DEADLINE_MS) {
@@ -417,7 +547,7 @@ void service(bool healthy) {
 
 bool tlsBusy() { return g_running; }
 bool busy() { return g_updating; }
-bool networkBusy() { return g_gate.wsPaused(); }  // only an install pauses the WebSocket
+bool networkBusy() { return g_gate.wsPaused() || lanActive(); }  // only an install (cloud or POST /ota) pauses the WebSocket
 bool pendingVerify() { return g_pending && !g_confirmed; }
 bool confirmed() { return g_confirmed; }
 const char *status() { return g_status.c_str(); }

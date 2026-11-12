@@ -370,6 +370,7 @@ void socketsStart() {
 
 const char *socketTransport() { return "espnow"; }
 void socketsSetLowPower(bool) {}
+void socketsSetPaused(bool) {}
 bool takeSocketsChanged() { return false; }
 bool socketCommandInfo(String, bool &, bool &, String &) { return false; }
 #endif  // FEATURE_ESPNOW_SOCKETS

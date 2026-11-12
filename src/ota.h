@@ -14,6 +14,8 @@
 // PENDING_VERIFY and is marked valid only after OTA_HEALTHY_MS of continuous
 // health (backend WebSocket connected). If it is not healthy within
 // OTA_VERIFY_DEADLINE_MS, or it reboots/crashes first, it rolls back.
+// hotspot_only (no cloud, so no WebSocket health): OTA_LAN_HEALTHY_MS of healthy local run
+// (free heap > 30 KB) confirms instead, within the same OTA_VERIFY_DEADLINE_MS.
 namespace ota {
 void begin(bool (*prepareUpdate)(), bool (*acquireNetwork)());
 void service(bool healthy);
@@ -29,5 +31,15 @@ bool tlsBusy();
 void wsSupport(bool otaWs);
 void wsConnected();  // each WS (re)connect (fallback cycle count)
 void wsDown();       // WS dropped: an outstanding check is deferred
-void wsReply(JsonDocument &doc);  // an OTA check/download holds a TLS session
+void wsReply(JsonDocument &doc);
+// Local hotspot OTA (POST /ota, from collector 2.5.12). Streamed via the Update lib.
+// lanBegin/lanWrite/lanEnd return nullptr on success or a short error code; the HTTP status
+// is in *httpCode. The image must match X-Firmware-SHA256 and carry
+// POWERCELL_FW|collector|<this model>|<version>|END with a different version (older only with force).
+// The boot partition is set only after both checks. Same rollback bookkeeping as the cloud path.
+const char *lanBegin(const char *sha256Hex, bool force, int *httpCode);
+const char *lanWrite(const uint8_t *data, size_t len, int *httpCode);
+const char *lanEnd(int *httpCode, String *version);
+void lanAbort(const char *why);
+bool lanActive();
 }  // namespace ota

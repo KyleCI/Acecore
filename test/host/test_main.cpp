@@ -23,6 +23,9 @@
 #include "payment_lock.h"
 #include "hw_output.h"
 #include "ac_output_policy.h"
+#include "lan_ota.h"
+#include <string>
+#include <algorithm>
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(c) do { if (c) ++g_pass; else { ++g_fail; printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -2502,6 +2505,48 @@ static void test_ac_limit_events() {  // 2.5.13: Manual output power limit warni
   Engine st; Inputs si; si.acWarn = true; si.acShutdown = true; st.update(si, 0, 0); st.update(si, 20000, 0); CHECK(st.drain(e, 24) == 0);
 }
 
+static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from collector 2.5.12
+  using namespace pc::lanota;
+  CHECK(compareVersion("2.5.12", "2.5.11") > 0); CHECK(compareVersion("2.5.9", "2.5.12") < 0);
+  CHECK(compareVersion("2.5.12", "2.5.12") == 0); CHECK(compareVersion("3.0", "2.9.9") > 0); CHECK(compareVersion("2.5", "2.5.0") == 0);
+  const char *pre = "POWERCELL_FW|collector|pc-dsp011-5kw|";
+  // Other models' tags (3.5 kW DSP, STM, legacy esp32dev, socket) must not be taken for ours.
+  std::string img = std::string(5000, '\xAA') + "POWERCELL_FW|collector|pc-dsp011-5kw|" + std::string(1, '\0') + "junk" +
+      "POWERCELL_FW|collector|pc-dsp011-35kw|9.9.9|END" + "POWERCELL_FW|collector|pc-stm01-5kw|9.9.8|END" +
+      "POWERCELL_FW|collector|esp32dev|9.9.7|END" + "POWERCELL_FW|socket|pc-dsp011-5kw|9.9.6|END" +
+      "POWERCELL_FW|collector|pc-dsp011-5kw|2.5.14|END" + std::string(300, 'x');
+  for (size_t chunk : {1u, 7u, 64u, 4096u}) {
+    TagScanner sc(pre);
+    for (size_t i = 0; i < img.size(); i += chunk) sc.feed(reinterpret_cast<const uint8_t *>(img.data()) + i, std::min(chunk, img.size() - i));
+    CHECK(sc.found() && sc.version() == "2.5.14");
+    CHECK(judge("2.5.13", sc, false) == Verdict::Ok);
+    CHECK(judge("2.5.14", sc, false) == Verdict::SameVersion);
+    CHECK(judge("2.5.14", sc, true) == Verdict::SameVersion);   // current rule: same version never installs
+    CHECK(judge("2.5.16", sc, false) == Verdict::Downgrade);
+    CHECK(judge("2.5.16", sc, true) == Verdict::Ok);           // ?force=1 allows an older version
+  }
+  // A 3.5 kW image on a 5 kW unit: no tag for this model.
+  TagScanner other(pre); std::string s1 = "POWERCELL_FW|collector|pc-dsp011-35kw|2.5.14|END";
+  other.feed(reinterpret_cast<const uint8_t *>(s1.data()), s1.size());
+  CHECK(!other.found() && judge("2.5.13", other, true) == Verdict::NoTag && !strcmp(verdictName(Verdict::NoTag), "identity_or_model_mismatch"));
+  TagScanner none(pre); std::string s2 = "POWERCELL_FW|socket|pc-dsp011-5kw|1.0.3|END"; none.feed(reinterpret_cast<const uint8_t *>(s2.data()), s2.size());
+  CHECK(!none.found());
+  TagScanner bad(pre); std::string s3 = std::string(pre) + "abc|END"; bad.feed(reinterpret_cast<const uint8_t *>(s3.data()), s3.size()); CHECK(!bad.found());
+  std::string h(64, 'a'), H(64, 'A'); CHECK(hexEq(h.c_str(), H.c_str())); CHECK(!hexEq(h.c_str(), "ab")); std::string g(64, 'g'); CHECK(!hexEq(g.c_str(), g.c_str()));
+  CHECK(!hexEq(nullptr, h.c_str()));
+  // Confirm rule: hotspot_only 3 min of local health, otherwise the 30 s cloud rule unchanged.
+  CHECK(confirmAfterMs(true, 30000) == 180000 && confirmAfterMs(false, 30000) == 30000);
+  CHECK(healthyNow(true, false, 40000) && !healthyNow(true, true, 20000));
+  CHECK(healthyNow(false, true, 1000) && !healthyNow(false, false, 100000));
+  // The real image, if one was built: its tag is found for its own model only.
+  if (FILE *f = fopen("../../.pio/build/esp32dev_dsp011_5kw/firmware.bin", "rb")) {
+    TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
+    while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
+    fclose(f);
+    CHECK(sr.found() && sr.version() == "2.5.13" && !s35.found());
+  }
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -2513,7 +2558,7 @@ int main() {
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
-  test_payment_lock(); test_ac_limit_events();
+  test_payment_lock(); test_ac_limit_events(); test_lan_ota();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

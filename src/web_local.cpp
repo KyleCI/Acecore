@@ -23,6 +23,7 @@
 #include "telemetry.h"
 #include "events.h"
 #include "payment_lock.h"
+#include "socket_cfg.h"
 
 namespace web {
 namespace {
@@ -203,6 +204,81 @@ void postRoute(const char *path, bool allowSetup, Handler h) {
       h(r, doc, c);
     },
     nullptr, onBody);
+}
+
+// ---- Local hotspot OTA: POST /ota (ported from collector 2.5.12) ----
+// State per request in _tempObject (malloc'd POD; the request frees it).
+struct OtaReq { bool checked; bool started; int code; char err[40]; };
+OtaReq *otaState(AsyncWebServerRequest *r) {
+  if (!r->_tempObject) { OtaReq *s = static_cast<OtaReq *>(calloc(1, sizeof(OtaReq))); r->_tempObject = s; }
+  return static_cast<OtaReq *>(r->_tempObject);
+}
+void otaSetErr(OtaReq *s, int code, const char *e) { if (s->err[0]) return; s->code = code; strlcpy(s->err, e, sizeof s->err); }
+// Auth + preconditions once, at the first byte. Same credential rules as postRoute(allowSetup=false):
+// Basic powercell:<local token> or a Bearer session / lan token. The setup credential is refused.
+void otaChunk(AsyncWebServerRequest *r, const uint8_t *data, size_t len, size_t index, bool final) {
+  OtaReq *s = otaState(r);
+  if (!s) return;
+  if (!s->checked) {
+    s->checked = true;
+    Cred c = credOf(r);
+    if (c == Cred::None || c == Cred::Setup) {
+      LOGW("WEB", "POST_UNAUTH", "/ota cred=%d", (int)c);
+      otaSetErr(s, 401, "unauthorized"); return;
+    }
+    String sha = r->hasHeader("X-Firmware-SHA256") ? r->header("X-Firmware-SHA256") : String();
+    sha.trim();
+    bool force = r->hasParam("force") && r->getParam("force")->value() == "1";
+    int code = 0;
+    const char *e = ota::lanBegin(sha.c_str(), force, &code);
+    if (e) { LOGW("OTA", "OTA_LAN_FAIL", "%s -> %d", e, code); otaSetErr(s, code, e); return; }
+    s->started = true;
+  }
+  if (s->err[0] || !s->started) return;
+  if (len) {
+    int code = 0;
+    const char *e = ota::lanWrite(data, len, &code);
+    if (e) { otaSetErr(s, code, e); s->started = false; return; }
+  }
+  if (final) {
+    int code = 0; String ver;
+    const char *e = ota::lanEnd(&code, &ver);
+    s->started = false;
+    if (e) otaSetErr(s, code, e);
+    else s->code = 200;
+  }
+  (void)index;
+}
+
+void registerOta() {
+  server.on("/ota", HTTP_ANY,
+    [](AsyncWebServerRequest *r) {
+      if (r->method() != HTTP_POST) {
+        AsyncWebServerResponse *res = new (std::nothrow) AsyncBasicResponse(405, "application/json", "{\"ok\":false,\"error\":\"method not allowed\"}");
+        if (!res) { dropOom(r); return; }
+        res->addHeader("Allow", "POST"); r->send(res); return;
+      }
+      OtaReq *s = static_cast<OtaReq *>(r->_tempObject);
+      if (!s || !s->checked) {  // no body: still answer auth first
+        Cred c = credOf(r);
+        if (c == Cred::None || c == Cred::Setup) { LOGW("WEB", "POST_UNAUTH", "/ota cred=%d", (int)c); return unauthorized(r); }
+        return fail(r, 400, "empty body");
+      }
+      if (s->started) { ota::lanAbort("incomplete_upload"); s->started = false; otaSetErr(s, 400, "incomplete_upload"); }
+      if (s->code == 401) return unauthorized(r);
+      if (s->err[0]) return fail(r, s->code ? s->code : 500, s->err);
+      if (s->code != 200) return fail(r, 500, "upload_not_finished");
+      JsonDocument d;
+      d["ok"] = true; d["message"] = "installed; rebooting"; d["from"] = POWERCELL_FIRMWARE_VERSION;
+      d["model"] = POWERCELL_HARDWARE_MODEL;
+      d["pending_verify"] = true; d["reboot_in_ms"] = 1500;
+      json(r, 200, d);
+      g_restart = true; g_restartAt = millis() + 1500;  // reboot after the reply is out
+    },
+    // multipart/form-data (file field any name)
+    [](AsyncWebServerRequest *r, const String &, size_t index, uint8_t *data, size_t len, bool final) { otaChunk(r, data, len, index, final); },
+    // raw application/octet-stream
+    [](AsyncWebServerRequest *r, uint8_t *data, size_t len, size_t index, size_t total) { otaChunk(r, data, len, index, index + len >= total); });
 }
 
 // ---- snapshot / notifications ----
@@ -411,6 +487,7 @@ void begin() {
   });
   server.addHandler(&events);
 
+  registerOta();  // before the catch-all handlers
   postRoute("/login", true, [](AsyncWebServerRequest *r, JsonDocument &doc, Cred c) {
     // If both body and header are sent they must name the same token.
     String t = doc["token"] | "";
@@ -489,6 +566,9 @@ void begin() {
     String id = field(r, doc, "socket_id"); if (!id.length()) id = field(r, doc, "id");
     if (!id.length() || id.length() > 32) return fail(r, 400, "socket_id required");
     unregisterDevice(id);
+    bool nameCleared = socketcfg::clearName(id);
+    g_stateChanged = true;  // SSE state push at once so the app drops the plug
+    LOGI("WEB", "SOCK_REMOVE_OK", "socket=%s name_cleared=%d", id.c_str(), nameCleared);
     ok(r, "forget pending", 202);
   });
   postRoute("/provision", true, [](AsyncWebServerRequest *r, JsonDocument &doc, Cred) {

@@ -164,6 +164,10 @@ static_assert(TELEMETRY_PERIOD_MS < BACKEND_ONLINE_WINDOW_S * 1000 / 3, "telemet
 #define WIFI_TEST_TIMEOUT_MS 20000    // /v2/wifi/test
 #define NTP_LOG_PERIOD_MS 10000
 #define OTA_HEALTHY_MS 30000          // continuous healthy time before an OTA image is marked valid
+#define OTA_LAN_HEALTHY_MS 180000     // hotspot_only (no cloud): 3 min healthy local run confirms an image (lan_ota.h)
+#ifndef OTA_LAN_IDLE_MS
+#define OTA_LAN_IDLE_MS 30000         // a POST /ota upload with no data this long is aborted
+#endif
 #define OTA_VERIFY_DEADLINE_MS 300000 // roll back if never healthy within 5 min of first boot
 #define OTA_CHECK_PERIOD_MS 300000
 
