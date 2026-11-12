@@ -1,5 +1,9 @@
 # Collector firmware changelog
 
+## 2.5.25 (OTA test of the 2.5.24 updater)
+
+Version is 2.5.25 on all four product images so a unit already on 2.5.24 will accept the file. No other functional change on top of e814f46.
+
 ## 2.5.24 (WS offer dropped when the OTA task stack does not fit: stage from the main loop, Caleb 12 Nov 2026)
 
 On top of 2.5.23 (21299fc, = 2.5.22 00db613 code). All four product images. Prompted by ACE-000001 (DSP 5 kW) on 2.5.22: `[OTA][WS_AVAILABLE] version=2.5.23 size=1393408`, then nothing, with `LOOP STATS heap_free=35676 heap_largest=14836 largest_min=9204 iram_free=42844`. `service()` creates the 16384 B `ota` worker for a WS offer; with a 14836 B largest DRAM block `xTaskCreatePinnedToCore` failed and the offer was dropped without a log every check period, so the boot-path staging in `handleOffer()` never ran.
