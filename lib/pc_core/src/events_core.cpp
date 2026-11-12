@@ -155,6 +155,19 @@ void Engine::update(const Inputs &in, uint32_t now, uint32_t ts) {
     cond({"temp_sensor_fault", Type::TempSensorFault, Sev::Warning, false, 0, "ntc_open_short_range", nullptr, "esp", false,
           kTempSensorFaultOnMs, kTempSensorFaultOffMs}, in.sysTempFault, now, ts);
   }
+  // ---- DSP Manual output power limit ----------------------------------------------
+  // ac_output_limit (warning): load above the Manual ceiling or the usable rating for 3 s.
+  // One event per episode: the policy rearms only after 10 s under, and the clear waits 10 s.
+  // ac_output_shutdown (critical): the output was turned off (GPIO15) by warn_and_shutdown or
+  // the usable rating. Clears when the latch releases (30 s under); the output stays off until ON.
+  if (in.acLimit) {
+    cond({"ac_output_limit", Type::Overload, Sev::Warning, in.acWattsValid, in.acWatts, "output_limit_w", nullptr, "esp", false,
+          0, kAcLimitClearMs}, in.acWarn, now, ts);
+    if (!isActive("ac_output_shutdown")) acRated_ = in.acRatedShutdown;
+    cond({"ac_output_shutdown", Type::Overload, Sev::Critical, in.acWattsValid, in.acWatts,
+          acRated_ ? "rated_overload_off" : "output_limit_off", nullptr, "esp", false, 0, 0, "load_below_limit_30s"},
+         in.acShutdown, now, ts);
+  }
   // ---- Battery full ----------------------------------------------------------
   {
     bool flag = in.stmOnline && ((in.fault & kStatusChargerFull) || in.chr == ChargeState::Float);

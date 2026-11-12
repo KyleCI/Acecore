@@ -310,6 +310,8 @@ void service() {
   manualLimitsService(now);
   if (powercell::acOutputPolicy().shutdownLatched()) {
     const bool edge = powercell::acOutputPolicy().takeShutdownEdge();
+    if (edge) LOGW("PWR", "AC_LIMIT_SHUTDOWN", "%s: inverter output off (ac_output_shutdown event)",
+                   powercell::acOutputPolicy().systemOverloadLatched() ? "usable rating exceeded 8 s" : "Manual ceiling exceeded 8 s");
     if (gateway::state() || edge) gateway::set(false, "ac_overload");
   }
   return;

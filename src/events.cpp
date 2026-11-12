@@ -12,6 +12,8 @@
 #include "stm32_link.h"
 #include "grid_sense.h"
 #include "dsp_thermal.h"
+#include "ac_output_policy.h"
+#include "dsp011_pzem.h"
 
 namespace events {
 namespace {
@@ -50,7 +52,10 @@ void gatherSockets(pc::ev::Inputs &in) {
 const char *title(const Event &e) {
   using T = pc::ev::Type;
   switch (e.type) {
-    case T::Overload: return e.active ? "Inverter overload" : "Inverter load back to normal";
+    case T::Overload:
+      if (!strcmp(e.id, "ac_output_limit")) return e.active ? "Output power limit exceeded" : "Output power back under the limit";
+      if (!strcmp(e.id, "ac_output_shutdown")) return e.active ? "Output off: power limit exceeded" : "Output power limit cleared";
+      return e.active ? "Inverter overload" : "Inverter load back to normal";
     case T::Overcurrent: return e.socket[0] ? (e.active ? "Socket current too high" : "Socket current normal") : (e.active ? "Overcurrent fault" : "Overcurrent cleared");
     case T::InverterFault: return e.active ? "Inverter fault" : "Inverter fault cleared";
     case T::BmsFault: return e.active ? "Battery protection alarm" : "Battery alarm cleared";
@@ -138,6 +143,17 @@ void service() {
     in.sysTemp = t.temp_c;
     in.sysTempFault = powercell::thermal::sensorFaulted(t.sampled, t.fault, t.age_ms);
     in.overTempLatched = powerguard::overTempLatched();
+  }
+#endif
+#if POWERCELL_DSP011
+  {  // Manual output power limit (DSP only: STM has no PZEM-based enforcement)
+    const powercell::AcOutputPolicy &pol = powercell::acOutputPolicy();
+    in.acLimit = true;
+    in.acWarn = pol.warning();
+    in.acShutdown = pol.shutdownLatched();
+    in.acRatedShutdown = pol.systemOverloadLatched();
+    float v = 0, a = 0, w = 0; uint32_t wh = 0, age = 0;
+    if (hwPzemSample(&v, &a, &w, &wh, &age) && age <= powercell::AcOutputPolicy::FreshnessMs) { in.acWattsValid = true; in.acWatts = w; }
   }
 #endif
   in.stmReserve = in.stmOnline && s.has_rsv && s.rsv_latched;

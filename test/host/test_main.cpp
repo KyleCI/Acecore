@@ -22,6 +22,7 @@
 #include "../../smart-socket-firmware/src/trip_lockout.h"
 #include "payment_lock.h"
 #include "hw_output.h"
+#include "ac_output_policy.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(c) do { if (c) ++g_pass; else { ++g_fail; printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -2442,6 +2443,65 @@ static void test_factory_reset_scope() {
   CHECK(kFactoryResetUserKeyCount == 7);
 }
 
+static void test_ac_limit_events() {  // 2.5.13: Manual output power limit warning / shutdown events (DSP)
+  using namespace ev;
+  powercell::AcOutputPolicy pol; pol.setUsable(4500); pol.setCeiling(3000, powercell::AcMode::WarnAndShutdown);
+  Engine g; Event e[24]; size_t n;
+  auto step = [&](float w, uint32_t t) {
+    powercell::AcWatts s; s.valid = true; s.watts = w; s.receivedAtMs = t; pol.update(s, t);
+    Inputs in; in.acLimit = true; in.acWarn = pol.warning(); in.acShutdown = pol.shutdownLatched();
+    in.acRatedShutdown = pol.systemOverloadLatched(); in.acWattsValid = true; in.acWatts = w;
+    g.update(in, t, t / 1000);
+    return g.drain(e, 24);
+  };
+  uint32_t t = 0;
+  for (; t <= 4000; t += 1000) CHECK(step(1000, t) == 0);           // startup grace + normal load
+  CHECK(step(3200, 5000) == 0 && step(3200, 6000) == 0 && step(3200, 7000) == 0);  // 3 s hold
+  n = step(3200, 8000);
+  CHECK(n == 1 && !strcmp(e[0].id, "ac_output_limit") && e[0].active && e[0].type == Type::Overload &&
+        e[0].severity == Sev::Warning && !strcmp(e[0].code, "output_limit_w") && e[0].hasValue && e[0].value == 3200.0f &&
+        !strcmp(typeName(e[0].type), "overload"));
+  for (t = 9000; t < 13000; t += 1000) CHECK(step(3200, t) == 0);   // one-shot while over
+  n = step(3200, 13000);                                             // 8 s: warn_and_shutdown latches
+  CHECK(n == 1 && !strcmp(e[0].id, "ac_output_shutdown") && e[0].active && e[0].severity == Sev::Critical &&
+        !strcmp(e[0].code, "output_limit_off") && !strcmp(e[0].releaseRequires, "load_below_limit_30s"));
+  CHECK(step(3200, 14000) == 0);
+  // Output off: load 0. Warning clears after the 10 s rearm + 10 s debounce, shutdown after 30 s.
+  size_t clrWarn = 0, clrShut = 0; uint32_t warnAt = 0, shutAt = 0;
+  for (t = 15000; t <= 60000; t += 1000) {
+    n = step(0, t);
+    for (size_t i = 0; i < n; ++i) {
+      if (!strcmp(e[i].id, "ac_output_limit") && !e[i].active) { ++clrWarn; warnAt = t; }
+      if (!strcmp(e[i].id, "ac_output_shutdown") && !e[i].active) { ++clrShut; shutAt = t; }
+    }
+  }
+  CHECK(clrWarn == 1 && warnAt == 35000 && clrShut == 1 && shutAt == 45000);
+  // Warn-only: warning event, no shutdown event.
+  powercell::AcOutputPolicy wo; wo.setUsable(4500); wo.setCeiling(3000, powercell::AcMode::WarnOnly);
+  Engine h; int warns = 0, shuts = 0;
+  for (t = 0; t <= 40000; t += 1000) {
+    float w = t < 4000 ? 500 : 3500;
+    powercell::AcWatts s; s.valid = true; s.watts = w; s.receivedAtMs = t; wo.update(s, t);
+    Inputs in; in.acLimit = true; in.acWarn = wo.warning(); in.acShutdown = wo.shutdownLatched(); in.acWattsValid = true; in.acWatts = w;
+    h.update(in, t, 0); n = h.drain(e, 24);
+    for (size_t i = 0; i < n; ++i) { warns += !strcmp(e[i].id, "ac_output_limit") && e[i].active; shuts += !strcmp(e[i].id, "ac_output_shutdown"); }
+  }
+  CHECK(warns == 1 && shuts == 0 && !wo.shutdownLatched());
+  // Usable rating exceeded (any mode): rated_overload_off.
+  powercell::AcOutputPolicy rp; rp.setUsable(4500); rp.setCeiling(0, powercell::AcMode::WarnOnly);
+  Engine r; bool rated = false;
+  for (t = 0; t <= 20000; t += 1000) {
+    float w = t < 4000 ? 500 : 4800;
+    powercell::AcWatts s; s.valid = true; s.watts = w; s.receivedAtMs = t; rp.update(s, t);
+    Inputs in; in.acLimit = true; in.acWarn = rp.warning(); in.acShutdown = rp.shutdownLatched(); in.acRatedShutdown = rp.systemOverloadLatched();
+    r.update(in, t, 0); n = r.drain(e, 24);
+    for (size_t i = 0; i < n; ++i) if (!strcmp(e[i].id, "ac_output_shutdown") && e[i].active) rated = !strcmp(e[i].code, "rated_overload_off");
+  }
+  CHECK(rated);
+  // STM images (acLimit false): never raised.
+  Engine st; Inputs si; si.acWarn = true; si.acShutdown = true; st.update(si, 0, 0); st.update(si, 20000, 0); CHECK(st.drain(e, 24) == 0);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -2453,7 +2513,7 @@ int main() {
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
-  test_payment_lock();
+  test_payment_lock(); test_ac_limit_events();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }
