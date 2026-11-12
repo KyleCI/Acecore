@@ -1728,16 +1728,36 @@ static void test_solar_energy() {  // 2.5.8
   en.update(true, -50.0f, t + 20500, 100); CHECK(fabs(en.totalWh() - 1000.0) < 0.01);
   en.update(false, 0, t + 21000, 100); en.update(true, 1000.0f, t + 21500, 100);
   CHECK(fabs(en.totalWh() - 1000.0) < 0.01);
-  // save: first time once >= 50 Wh
-  CHECK(en.saveDue(t)); en.markSaved(t); CHECK(!en.saveDue(t));
-  // +100 Wh within 30 min: not yet; after 30 min: due
-  uint32_t u = t + 22000;
-  for (int i = 0; i <= 720; ++i) { en.update(true, 1000.0f, u, 100); u += 500; }  // 6 min, 100 Wh
-  CHECK(!en.saveDue(u)); CHECK(en.saveDue(t + kSaveMinMs));
-  // day rollover: today -> 0, total kept, save due
-  double tot = en.totalWh();
-  en.update(true, 0.0f, u + 500, 101);
-  CHECK(en.todayWh() == 0); CHECK(fabs(en.totalWh() - tot) < 1e-9); CHECK(en.saveDue(u + 500)); CHECK(en.day() == 101);
+  // save policy: 10 Wh after 5 min; 10 Wh before 5 min does not
+  Energy s;
+  s.update(true, 3600.0f, 0, 100);
+  s.update(true, 3600.0f, 10000, 100);  // 10 Wh in 10 s
+  CHECK(fabs(s.totalWh() - 10.0) < 0.01);
+  CHECK(!s.saveDue(10000));
+  CHECK(s.saveDue(kSaveMinMs));
+  s.markSaved(kSaveMinMs);
+  CHECK(!s.saveDue(kSaveMinMs));
+  // 1 Wh after 15 min saves; 0.2 Wh after 15 min does not
+  uint32_t t1 = kSaveMinMs + 1000;
+  s.update(true, 3600.0f, t1, 100);
+  s.update(true, 3600.0f, t1 + 1000, 100);  // +1 Wh
+  CHECK(fabs(s.totalWh() - 11.0) < 0.01);
+  CHECK(!s.saveDue(t1 + 1000));
+  CHECK(s.saveDue(kSaveMinMs + kSaveIdleMs));
+  Energy trickle;
+  trickle.update(true, 720.0f, 0, 100);
+  trickle.update(true, 720.0f, 1000, 100);  // 0.2 Wh in 1 s
+  CHECK(fabs(trickle.totalWh() - 0.2) < 0.01);
+  CHECK(!trickle.saveDue(kSaveIdleMs));
+  CHECK(!trickle.saveDue(kSaveIdleMs + kSaveMinMs));
+  // day rollover: today -> 0, total kept, save due even with no unsaved Wh
+  Energy enDay;
+  uint32_t tDay = 0;
+  for (int i = 0; i <= 7200; ++i) { enDay.update(true, 1000.0f, tDay, 100); tDay += 500; }
+  enDay.markSaved(tDay);
+  double tot = enDay.totalWh();
+  enDay.update(true, 0.0f, tDay + 500, 101);
+  CHECK(enDay.todayWh() == 0); CHECK(fabs(enDay.totalWh() - tot) < 1e-9); CHECK(enDay.saveDue(tDay + 500)); CHECK(enDay.day() == 101);
   // unknown day keeps counting on the last day, no reset
   Energy b; b.restore(5000, 300, 101);
   b.update(true, 0, 0, kNoDay); CHECK(b.todayWh() == 300); CHECK(b.day() == 101);

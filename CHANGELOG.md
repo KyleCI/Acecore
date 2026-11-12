@@ -1,5 +1,9 @@
 # Collector firmware changelog
 
+## Unreleased (PV energy saved more often)
+
+- Solar NVS (`solar` / tot_wh, tdy_wh, day; same keys so existing totals still load) now saves when unsaved energy is at least 10 Wh and 5 minutes have passed since the last save, or when any unsaved energy above 0.5 Wh has waited 15 minutes, or on a day change. Was 50 Wh and 30 minutes, both required. A power cut now loses at most about 5 minutes of production (~250 Wh at 3 kW). Worst case is 288 writes/day of those 3 small keys, within ESP32 NVS wear levelling. STM estimated-energy (15 min) and PZEM energy-today (baseline/day changes only) are unchanged.
+
 ## Unreleased (DSP over-temperature cutoff, sensor fault alert, NTC on GPIO33)
 
 Caleb 2026-11-11 18:30 WAT: "RX is 17, TX is 16, let the fan stop at 60, let there be over-temperature cutoff and alert at 80, the sensor was now moved to pin 33". Then: a faulty sensor must raise a notification alert.
