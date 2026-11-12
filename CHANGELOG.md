@@ -1,5 +1,31 @@
 # Collector firmware changelog
 
+## Unreleased (one build with everything Caleb asked for, 12 Nov 2026)
+
+Version stays 2.5.13.
+
+**Battery warnings, Caleb's 8 Nov policy, all four images**
+- The local `/events` battery notification and the cloud `battery_soc` event used 20/10/5. Now: `battery_low` at <= 25 %, `battery_critical` at <= 15 % (the one-time shutdown warning, one per episode), output off at <= 10 % (the existing `battery_critical` latch event, code `soc_10pct`), restart blocked until 15 %.
+- `shutdown_imminent` (5 %) is no longer sent. The type and enum value are kept so older apps still parse it.
+- `battery_critical` stays while the output latch holds and clears only after SoC stays above critical + 3 % for 60 s. `battery_low` clears above low + 3 %.
+- The low and critical percents follow the saved Manual values (`/v1/battery-settings` `low_percent`, `warning_percent`), else 25/15. An invalid saved pair falls back to 25/15. Saved values now load at boot on every image (STM loaded them only on the first Manual request, and never fed the notifications).
+- Critical message text: "Output turns off at 10% and stays off until the battery is back to 15%. Recharge now." or, while latched, "Output is off to protect the battery. It can turn on again once the battery is back to 15%."
+- STM: while the ESP battery latch holds, a manual ON needs BMS SoC >= 15 % (was > 10 %). The latch itself was already 10 % / 15 %. The 48.0 V no-BMS fallback and the STM32 reserve-latch rule are unchanged.
+
+**Manual output power limit events (DSP only)**
+- `ac_output_limit`: type `overload`, severity `warning`, code `output_limit_w`, value = PZEM watts. Raised when the load stays above the Manual ceiling or the usable rating for 3 s. One per episode (it re-arms after 10 s under; the clear waits 10 s).
+- `ac_output_shutdown`: type `overload`, severity `critical`, code `output_limit_off` (warn_and_shutdown ceiling) or `rated_overload_off` (usable rating), `release_requires` `load_below_limit_30s`. Raised when GPIO15 is turned off, cleared when the latch releases. The output is not turned back on.
+- Both go to cloud telemetry `events[]` (offline queue `ev_overload`) and the local `/events` SSE. Titles: "Output power limit exceeded", "Output power back under the limit", "Output off: power limit exceeded", "Output power limit cleared". STM images do not raise them (no PZEM-based enforcement).
+
+**Local hotspot OTA and /unregister (ported from collector 2.5.12, esp32_fw 681ebf2)**
+- `POST /ota`: local auth (Basic local token or Bearer session/lan token; the setup credential is refused), required `X-Firmware-SHA256`, streamed via the Update lib. The image must carry this image's own model identity, so another model's image is refused. Version must differ from the running one (the cloud rule); an older one needs `?force=1`. The boot partition is set only after SHA-256 and identity pass. Refused while battery-latched, during a cloud OTA or while the running image is unconfirmed. The WebSocket stays paused and LoRa idles during the upload; an upload idle 30 s is aborted.
+- Rollback: in `hotspot_only` a new image is confirmed after 3 min of healthy local run, else the 5 min rollback. Other modes keep the 30 s cloud rule. The cloud OTA path is unchanged.
+- `/unregister` pushes SSE `state` at once, logs `SOCK_REMOVE_OK` and clears the saved socket name.
+- `tools/ota_upload.py firmware.bin --model <model> [--host] [--force] [--bearer]`. `--model` is required.
+
+**STM estimated output energy save interval**
+- Was a flat 15 min (up to 1250 Wh lost at 5 kW on a power cut). Now save when >= 10 Wh is unsaved and >= 5 min have passed, or after 15 min with > 0.5 Wh, or on a day change. Loss is at most about 5 min at rated power (417 Wh at 5 kW, 292 Wh at 3.5 kW). Worst case 288 NVS writes/day plus one day change (was 96 + 1).
+
 ## Unreleased (mDNS on the home network)
 
 Caleb approved 2026-11-12 14:31 WAT (via the Software VP). App home Wi-Fi setup could not find units because `net.cpp` only called `WiFi.setHostname()` and nothing started mDNS.
