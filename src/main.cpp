@@ -85,6 +85,25 @@ void setup() {
   ota::begin(prepareForUpdate, backend::pauseForOta);
 }
 
+// 2.5.30: heap / stack breakdown every 5 min (first at 60 s): never-used stack bytes per task
+// (uxTaskGetStackHighWaterMark is in bytes on the ESP32) and what holds DRAM now, so task
+// stacks can be trimmed on evidence. A missing task prints -1.
+void logMemTasks() {
+  static const char *const kTasks[] = {"loopTask", "async_tcp", "ws", "hwlog", "pzem", "bms", "grid", "thermal", "solar", "mdns", "ota", "ota_boot", "tiT", "wifi"};
+  char line[200]; size_t n = 0;
+  for (const char *t : kTasks) {
+    TaskHandle_t h = xTaskGetHandle(t);
+    long hw = h ? (long)uxTaskGetStackHighWaterMark(h) : -1L;
+    int k = snprintf(line + n, sizeof line - n, "%s%s=%ld", n ? " " : "", t, hw);
+    if (k < 0 || (size_t)k >= sizeof line - n) break;
+    n += (size_t)k;
+  }
+  LOGI("MEM", "TASKS", "stack_free %s", line);  // log lines are capped at 224 chars: state on the next line
+  LOGI("MEM", "HOLD", "tasks=%u ws_up=%d ap=%d mdns=%d sd=%d free=%lu largest=%lu min=%lu", (unsigned)uxTaskGetNumberOfTasks(),
+       (int)backend::connected(), (int)net::apActive(), (int)net::mdnsRunning(), (int)periph::sdPresent(), (unsigned long)heapguard::freeNow(),
+       (unsigned long)heapguard::largestNow(), (unsigned long)heapguard::heapMin());
+}
+
 void loop() {
   static uint32_t worst = 0, lastReport = 0;
   uint32_t t0 = millis();
@@ -110,5 +129,7 @@ void loop() {
   if (dt > worst) worst = dt;
   if (dt > LOOP_SLOW_MS) LOGW("LOOP", "SLOW", "pass took %lu ms", (unsigned long)dt);
   if (millis() - lastReport > 60000) { lastReport = millis(); LOGI("LOOP", "STATS", "worst pass %lu ms in the last minute heap_free=%lu heap_min=%lu heap_largest=%lu largest_min=%lu iram_free=%lu", (unsigned long)worst, (unsigned long)heapguard::freeNow(), (unsigned long)heapguard::heapMin(), (unsigned long)heapguard::heapLargest(), (unsigned long)heapguard::heapLargestMin(), (unsigned long)heapguard::iramFree()); worst = 0; }
+  static uint32_t lastTasks = 0;
+  if (millis() > 60000 && (!lastTasks || millis() - lastTasks >= 300000)) { lastTasks = millis() | 1; logMemTasks(); }
   delay(2);
 }

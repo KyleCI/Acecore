@@ -16,6 +16,7 @@ void service();
 bool staConnected();
 bool backendAllowed();  // saved network, no Wi-Fi test running or unsaved
 bool apActive();
+bool mdnsRunning();  // 2.5.30: for the MEM TASKS line
 const char *stateName();
 void forceAp();                 // console "AP ON"
 void restartAp(uint32_t delayMs);  // hotspot password changed

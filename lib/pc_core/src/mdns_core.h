@@ -28,6 +28,27 @@ inline bool waitForTls(bool backendEnabled, bool wsConnectedOnce, uint32_t ipAge
   return backendEnabled && !wsConnectedOnce && ipAgeMs < kTlsFirstMaxMs;
 }
 
+// 2.5.30 heap rule (ACE-000003): the mDNS task (4 KB stack), PCBs, records and the
+// multicast RX it attracts cost ~8-12 KB of DRAM. On 2.5.29 it was restarted on every
+// got-IP, 0.5 s before the WS TLS reconnect (MDNS_UP 181309, TLS_FAILED -9984 181782),
+// and with the WS up at free=17.6 KB MDNS.begin failed every 30 s (fragmenting churn).
+//  - backend disabled: no WS to protect, always Ok.
+//  - running: Release (stop it) when the WS is down and free DRAM is below the TLS floor,
+//    so the reconnect gets that memory; otherwise keep it.
+//  - not running: start only with a block >= kStartBlock and, WS up: free >= kStartFreeWsUp;
+//    WS down: free >= tlsFloor + kHeapCost (the TLS floor still holds after the start).
+constexpr uint32_t kHeapCost = 12288;
+constexpr uint32_t kStartFreeWsUp = 32768;
+constexpr uint32_t kStartBlock = 8192;
+constexpr uint32_t kDeferLogMs = 300000;   // MDNS_DEFERRED at most every 5 min
+enum class HeapRule : uint8_t { Ok, Defer, Release };
+inline HeapRule heapRule(bool running, bool backendEnabled, bool wsUp, uint32_t freeB, uint32_t largest, uint32_t tlsFloor) {
+  if (!backendEnabled) return HeapRule::Ok;
+  if (running) return (!wsUp && freeB < tlsFloor) ? HeapRule::Release : HeapRule::Ok;
+  if (largest < kStartBlock) return HeapRule::Defer;
+  if (wsUp) return freeB >= kStartFreeWsUp ? HeapRule::Ok : HeapRule::Defer;
+  return freeB >= tlsFloor + kHeapCost ? HeapRule::Ok : HeapRule::Defer;
+}
 enum class Action : uint8_t { None, Start, Restart, Stop };
 
 // Decides when to (re)announce. allowed = station has an IP on the saved home

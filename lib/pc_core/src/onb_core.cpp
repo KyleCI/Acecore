@@ -182,7 +182,11 @@ bool ApPolicy::update(bool hasSsid, bool staUp, bool testing, uint32_t now, bool
   if (forced && (int32_t)(now - forcedUntil) >= 0) forced = false;
   if (hotspotOnly || !hasSsid || testing || forced) ap = true;
   else if (!staUp) ap = ap || now - downSince >= fallbackMs;
-  else ap = ap && now - upSince < graceMs;
+  else {
+    const uint32_t g = (saveGrace || apClients || !quickGraceMs) ? graceMs : quickGraceMs;
+    ap = ap && now - upSince < g;
+  }
+  if (!ap) saveGrace = false;
   return ap;
 }
 const char *ApPolicy::stateName(bool hasSsid, bool staUp, bool testing, bool ap, bool hotspotOnly) {

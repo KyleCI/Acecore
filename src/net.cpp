@@ -8,6 +8,7 @@
 #include "backend_ws.h"
 #include "onb_core.h"
 #include "settings.h"
+#include "heapguard.h"
 
 namespace net {
 namespace {
@@ -73,6 +74,27 @@ void serviceMdns(uint32_t now, bool allowed) {
   if (allowed && !g_mdns.running && pc::mdns::waitForTls(backend::enabled(), backend::reconnects() > 0, now - ipAt)) {
     if (!waitLogged) { waitLogged = true; LOGI("WIFI", "MDNS_WAIT", "first WS TLS connect first (max %lu s)", (unsigned long)(pc::mdns::kTlsFirstMaxMs / 1000)); }
     return;
+  }
+  // 2.5.30 heap rule: keep the TLS floor for a WS reconnect, no MDNS.begin churn at low heap.
+  if (allowed) {
+    const uint32_t freeB = heapguard::freeNow(), largest = heapguard::largestNow();
+    const pc::mdns::HeapRule hr = pc::mdns::heapRule(g_mdns.running, backend::enabled(), backend::connected(), freeB, largest, pc::kTlsMinFree);
+    if (hr == pc::mdns::HeapRule::Release) {
+      MDNS.end();
+      g_mdns.stopped();
+      LOGW("WIFI", "MDNS_OFF", "released for the WS TLS reconnect free=%lu largest=%lu need_free=%lu", (unsigned long)freeB, (unsigned long)largest, (unsigned long)pc::kTlsMinFree);
+      return;
+    }
+    if (hr == pc::mdns::HeapRule::Defer) {
+      static uint32_t deferLogAt = 0;
+      if (!deferLogAt || now - deferLogAt >= pc::mdns::kDeferLogMs) {
+        deferLogAt = now | 1;
+        LOGW("WIFI", "MDNS_DEFERRED", "low heap free=%lu largest=%lu ws=%d (start needs block %lu and free %lu)", (unsigned long)freeB, (unsigned long)largest,
+             (int)backend::connected(), (unsigned long)pc::mdns::kStartBlock,
+             (unsigned long)(backend::connected() ? pc::mdns::kStartFreeWsUp : pc::kTlsMinFree + pc::mdns::kHeapCost));
+      }
+      return;
+    }
   }
   switch (g_mdns.decide(allowed, gen, host, now)) {
     case pc::mdns::Action::None: return;
@@ -190,6 +212,7 @@ void begin() {
   WiFi.onEvent(onWifiEvent);
   g_policy.fallbackMs = pc::onb::kApFallbackMs;  // loss to hotspot. No saved network still starts it at once.
   g_policy.graceMs = pc::onb::kApGraceMs;
+  g_policy.quickGraceMs = pc::onb::kApQuickGraceMs;  // 2.5.30: fallback hotspot closes 10 s after the router returns (no phone on it)
   g_policy.begin(millis());
   g_ssid = settings::wifiSsid();
   g_mode = pc::onb::netModeFromStored(settings::getString("net_mode").c_str());
@@ -222,6 +245,7 @@ void service() {
     if (g_ap && up && !testing && !g_policy.forced) LOGI("WIFI", "AP_RESTART_SKIPPED", "station connected; new hotspot password applies at the next start");
     else if (g_ap) { WiFi.softAPdisconnect(false); g_ap = false; startAp(); }
   }
+  g_policy.apClients = g_ap ? WiFi.softAPgetStationNum() : 0;
   bool want = g_policy.update(g_ssid.length() > 0, up, testing, now, hotspotOnlyNow());
   if (want && !g_ap) startAp();
   if (!want && g_ap) stopAp();
@@ -247,6 +271,7 @@ bool backendAllowed() {
   return g_ssid.length() > 0 && t != Test::Pending && t != Test::Running && t != Test::Ok;
 }
 bool apActive() { return g_ap; }
+bool mdnsRunning() { return g_mdns.running; }
 const char *stateName() {
   bool testing = g_test == Test::Pending || g_test == Test::Running;
   return pc::onb::ApPolicy::stateName(g_ssid.length() > 0, WiFi.status() == WL_CONNECTED, testing, g_ap, hotspotOnlyNow());

@@ -2859,7 +2859,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.29" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.30" && !s35.found());
   }
 }
 
@@ -2980,6 +2980,55 @@ static void test_ota_errors() {  // 2.5.18: specific OTA failure codes and the h
   CHECK(isOverride("https://api-dev.acecore.tech/v2", "https://api-dev.acecore.tech"));
 }
 
+static void test_heap_headroom_2530() {  // 2.5.30 ACE-000003: quick AP close, mDNS heap rule, SD unmount, tls fd, MEM TASKS
+  using namespace pc::onb;
+  // Fallback hotspot: router back, nobody on the hotspot -> off after 10 s, not 120 s.
+  ApPolicy a; a.fallbackMs = kApFallbackMs; a.graceMs = kApGraceMs; a.quickGraceMs = kApQuickGraceMs; a.begin(0);
+  CHECK(!a.update(true, true, false, 1000));                         // online, hotspot off
+  CHECK(!a.update(true, false, false, 2000) && a.update(true, false, false, 2000 + kApFallbackMs));  // fallback
+  CHECK(a.update(true, true, false, 100000) && a.update(true, true, false, 109999) && !a.update(true, true, false, 110000));
+  // A phone on the hotspot keeps the 120 s grace.
+  ApPolicy b = a; b.ap = false; b.wasUp = true; b.update(true, false, false, 200000); CHECK(b.update(true, false, false, 200000 + kApFallbackMs));
+  b.apClients = 1; CHECK(b.update(true, true, false, 300000) && b.update(true, true, false, 419999) && !b.update(true, true, false, 420000));
+  // ...and leaving it ends the grace once 10 s have passed.
+  ApPolicy c = a; c.ap = false; c.wasUp = true; c.update(true, false, false, 500000); CHECK(c.update(true, false, false, 500000 + kApFallbackMs));
+  c.apClients = 1; CHECK(c.update(true, true, false, 600000) && c.update(true, true, false, 650000));
+  c.apClients = 0; CHECK(!c.update(true, true, false, 650001));
+  // /v2/wifi/save (restartGrace) keeps the full 120 s with nobody on the hotspot; cleared after.
+  ApPolicy d; d.graceMs = kApGraceMs; d.quickGraceMs = kApQuickGraceMs; d.begin(0);
+  CHECK(d.update(false, false, false, 0));                            // unconfigured: hotspot on
+  d.restartGrace(1000); CHECK(d.update(true, true, false, 1001) && d.update(true, true, false, 120999) && !d.update(true, true, false, 121000));
+  CHECK(!d.saveGrace);
+  // Testing / forced / hotspot-only unchanged.
+  CHECK(d.update(true, true, true, 130000)); d.restartGrace(130000);
+  ApPolicy f = a; f.force(700000); CHECK(f.update(true, true, false, 700001) && f.update(true, true, false, 799999));
+  ApPolicy z; z.begin(0); z.ap = true; z.wasUp = true; z.upSince = 0; CHECK(z.update(true, true, false, 119999));  // quickGraceMs 0: engine default unchanged
+
+  // mDNS heap rule.
+  using pc::mdns::heapRule; using pc::mdns::HeapRule; const uint32_t F = pc::kTlsMinFree;
+  CHECK(heapRule(false, false, false, 1000, 100, F) == HeapRule::Ok);                    // no backend
+  CHECK(heapRule(false, true, true, 17592, 4084, F) == HeapRule::Defer);                 // ACE-000003 2.5.29 WS up: was MDNS_FAILED every 30 s
+  CHECK(heapRule(false, true, true, 32768, 8192, F) == HeapRule::Ok && heapRule(false, true, true, 32767, 9000, F) == HeapRule::Defer);
+  CHECK(heapRule(false, true, false, 52640, 42996, F) == HeapRule::Defer);               // 2.5.29 181309: restarted before the TLS reconnect
+  CHECK(heapRule(false, true, false, F + pc::mdns::kHeapCost, 40000, F) == HeapRule::Ok);
+  CHECK(heapRule(true, true, false, F - 1, 40000, F) == HeapRule::Release && heapRule(true, true, false, F, 40000, F) == HeapRule::Ok);
+  CHECK(heapRule(true, true, true, 10000, 2000, F) == HeapRule::Ok);                     // running with the WS up: kept
+  CHECK(heapRule(false, true, true, 60000, 8191, F) == HeapRule::Defer);
+
+  // SD: keep the mount only with a usable file; TLS lastError fd is not an error.
+  CHECK(!pc::sdKeepMount(false, false) && pc::sdKeepMount(true, false) && pc::sdKeepMount(false, true));
+  CHECK(!pc::tlsErrIsError(48) && !pc::tlsErrIsError(0) && pc::tlsErrIsError(-9984) && pc::tlsErrIsError(-76));
+
+  // Source checks.
+  std::string n = slurp("../../src/net.cpp"), l = slurp("../../src/dsp011_log.cpp"), w = slurp("../../src/backend_ws.cpp"), m = slurp("../../src/main.cpp");
+  CHECK(n.find("g_policy.quickGraceMs = pc::onb::kApQuickGraceMs;") != std::string::npos && n.find("g_policy.apClients = g_ap ? WiFi.softAPgetStationNum() : 0;") != std::string::npos);
+  CHECK(n.find("pc::mdns::heapRule(") != std::string::npos && n.find("MDNS_DEFERRED") != std::string::npos);
+  CHECK(l.find("pc::sdKeepMount(") != std::string::npos && l.find("SD.end();") != std::string::npos && l.find("vTaskDelete(nullptr);") != std::string::npos);
+  CHECK(l.find("dram_used") == std::string::npos);
+  { size_t k = 0, c2 = 0; while ((k = w.find("pc::tlsErrIsError(", k)) != std::string::npos) { ++c2; ++k; } CHECK(c2 == 2); }
+  CHECK(m.find("logMemTasks()") != std::string::npos && m.find("\"MEM\", \"TASKS\"") != std::string::npos);
+}
+
 static void test_sd_mount_dram() {  // 2.5.29 ACE-000003: SD mount context with 2 files, not the Arduino default 5
   using namespace pc;
   CHECK(fatVfsCtxBytes(kSdArduinoDefaultFiles) == 26928 && fatVfsCtxBytes(kSdMaxFiles) == 14520);
@@ -3048,7 +3097,7 @@ int main() {
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity(); test_mdns();
   test_ota_hardware_model();
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
-  test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_factory_reset_scope(); test_ws_rules();
+  test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
   printf("%d passed, %d failed\n", g_pass, g_fail);

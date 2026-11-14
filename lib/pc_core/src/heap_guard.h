@@ -65,6 +65,16 @@ constexpr uint32_t fatVfsCtxBytes(uint8_t maxFiles) { return kFatFsCtxBase + kFa
 static_assert(fatVfsCtxBytes(kSdArduinoDefaultFiles) == 26928, "SD context with the Arduino default");
 static_assert(fatVfsCtxBytes(kSdMaxFiles) == 14520, "SD context with two files");
 
+// 2.5.30: keep the mount only while one of the two files is usable. ACE-000003 2.5.29 without
+// a card logged the mount-success branch (present=0): SD.begin returned true, no file opened,
+// and the 14520 B context stayed allocated with nothing using it.
+inline bool sdKeepMount(bool blackboxOpen, bool energyOpen) { return blackboxOpen || energyOpen; }
+
+// 2.5.30: WiFiClientSecure::lastError() is the return of start_ssl_client(): an mbedTLS
+// error (< 0) or, after a good connect, the lwIP socket fd (>= 0, first fd 48 on the
+// ESP32). Only a negative value is an error.
+inline bool tlsErrIsError(int lastError) { return lastError < 0; }
+
 enum class TlsHeap : uint8_t { Ok, Probe, LowFree, LowBlock };
 inline TlsHeap tlsHeapVerdict(uint32_t largest, uint32_t freeBytes) {
   if (freeBytes < kTlsMinFree) return TlsHeap::LowFree;

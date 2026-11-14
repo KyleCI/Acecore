@@ -96,18 +96,26 @@ NetMode netModeFromStored(const char *s);     // anything unknown/empty -> Unset
 constexpr uint32_t kApFallbackMs = 30000;   // saved network lost -> hotspot
 constexpr uint32_t kApGraceMs = 120000;     // hotspot stays after the station returns
 constexpr uint32_t kWifiRetryMs = 5000;     // WiFi.reconnect interval after the first begin
+// 2.5.30: after a FALLBACK the router came back and nobody is on the hotspot: close it
+// after this instead of the 120 s grace (AP+STA during the WS TLS reconnect cost heap on
+// ACE-000003). The 120 s grace stays after /v2/wifi/save, a network-mode change, and
+// whenever a phone is associated to the hotspot.
+constexpr uint32_t kApQuickGraceMs = 10000;
 
 struct ApPolicy {
   uint32_t fallbackMs = 300000;  // engine default; product images set kApFallbackMs
   uint32_t graceMs = 120000;     // hotspot stays 120 s after STA is up / after wifi save
   uint32_t forceMs = 600000;     // console "AP ON" keeps it at least 10 min
+  uint32_t quickGraceMs = 0;     // 0 = off (engine default); product images set kApQuickGraceMs
   bool ap = false, wasUp = false, forced = false;
+  bool saveGrace = false;        // 2.5.30: grace from /v2/wifi/save or a mode change (full graceMs)
+  uint8_t apClients = 0;         // 2.5.30: stations on the hotspot (set before update)
   uint32_t downSince = 0, upSince = 0, forcedUntil = 0;
   void begin(uint32_t now) { downSince = now; }
   // Returns whether the hotspot should be on now.
   bool update(bool hasSsid, bool staUp, bool testing, uint32_t now, bool hotspotOnly = false);
   void force(uint32_t now) { forced = true; forcedUntil = now + forceMs; }
-  void restartGrace(uint32_t now) { upSince = now; wasUp = true; }
+  void restartGrace(uint32_t now) { upSince = now; wasUp = true; saveGrace = true; }
   static const char *stateName(bool hasSsid, bool staUp, bool testing, bool ap, bool hotspotOnly = false);  // hotspot_only|unconfigured|testing|online|grace|fallback|connecting
 };
 

@@ -54,7 +54,13 @@ class DiagWsClient : public WebSocketsClient {
     g_drop.path = path; g_drop.err = probeErrno_ ? probeErrno_ : errno; g_drop.pongMisses = c->pongTimeoutCount;
     g_drop.tls = probeErr_;
 #if defined(HAS_SSL)
-    if (!g_drop.tls && c->isSSL && c->ssl) g_drop.tls = c->ssl->lastError(g_drop.tlsMsg, sizeof g_drop.tlsMsg);
+    if (!g_drop.tls && c->isSSL && c->ssl) {
+      g_drop.tls = c->ssl->lastError(g_drop.tlsMsg, sizeof g_drop.tlsMsg);
+      // 2.5.30: after a successful connect WiFiClientSecure::lastError() returns the
+      // socket fd (connect() stores start_ssl_client()'s return, the fd, e.g. 48), and
+      // mbedtls_strerror(48) printed "PADLOCK - Input data should be aligned" (ACE-000003).
+      if (!pc::tlsErrIsError(g_drop.tls)) { g_drop.tls = 0; g_drop.tlsMsg[0] = 0; }
+    }
 #endif
     if (g_drop.tls && !g_drop.tlsMsg[0]) mbedtls_strerror(g_drop.tls, g_drop.tlsMsg, sizeof g_drop.tlsMsg);
   }
@@ -79,7 +85,12 @@ class DiagWsClient : public WebSocketsClient {
   // mbedTLS error of the last connect attempt (the library keeps the client until the next attempt).
   int lastTlsError(char *buf, size_t n) {
 #if defined(HAS_SSL)
-    if (_client.isSSL && _client.ssl) return _client.ssl->lastError(buf, n);
+    if (_client.isSSL && _client.ssl) {
+      const int e = _client.ssl->lastError(buf, n);
+      if (pc::tlsErrIsError(e)) return e;  // 2.5.30: a positive value is the socket fd of a good connect
+      if (n) buf[0] = 0;
+      return 0;
+    }
 #endif
     if (n) buf[0] = 0;
     return 0;
