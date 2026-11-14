@@ -1,5 +1,14 @@
 # Collector firmware changelog
 
+## 2.5.28 (Wi-Fi scan in AP+STA fallback, ACE-000003, Caleb 14 Nov 2026)
+
+On top of 2.5.27 (34a3b1d, = 2.5.26 7e6f960 code). All four product images. Prompted by ACE-000003 (DSP 5 kW): with the saved router off, the unit is in AP+STA fallback and `service()` called `WiFi.reconnect()` every 5 s (`kWifiRetryMs`) on top of the SDK auto-reconnect. That refused the async scan (`ESP_ERR_WIFI_STATE`) or aborted it (SCAN_DONE with 0 records), and the 0 was cached as fresh for 30 s, so `POST /v2/wifi/scan` answered `scanning:false` with an empty list.
+
+- **Reconnect pause:** while a scan is requested or running, and 4 s (`kScanQuietMs`) after the last attempt, the 5 s `WiFi.reconnect()` loop is skipped and the SDK auto-reconnect is switched off; it is restored afterwards (off again in hotspot-only mode). A pending connect attempt for the lost router is dropped (`WiFi.disconnect(false,false)`, no SDK retry) right before a scan starts when the station is down. Logs `[WIFI][SCAN_PAUSE]` / `[WIFI][SCAN_RESUME]`.
+- **No empty cache, retries:** only a non-empty result is cached for 30 s. A refused, timed out, aborted or empty scan is retried 1.5 s later, up to 3 attempts in total, and `/v2/wifi/scan` keeps `scanning:true` (with the previous list, if any) meanwhile. After 3 failed/empty attempts it answers `scanning:false` with `[]` for 5 s, then the next poll starts a new scan. Logs `[WIFI][SCAN_START] attempt=n/3`, `SCAN_DONE networks=n`, `SCAN_RETRY`, `SCAN_EMPTY`.
+- **`/v2/wifi/test`:** the reconnect loop for the saved SSID stays off while a test is pending or running and while a successful test awaits `/v2/wifi/save` (now one tested gate, `pc::onb::stationRetryAllowed`). A scan pause never switches the SDK auto-reconnect off during a test (it retries the test network, not the saved one).
+- Logic in `pc_core` (`ScanCtl`, `stationRetryAllowed`); host test `test_wifi_scan_ctl` (retry, no fresh empty cache, empty hold, quiet window, millis wrap, reconnect gate, source checks).
+
 ## 2.5.27 (OTA test of the 2.5.26 updater)
 
 Version is 2.5.27 on all four product images so a unit already on 2.5.26 will accept the file. No other functional change on top of 7e6f960.

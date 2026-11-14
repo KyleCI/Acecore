@@ -157,6 +157,24 @@ bool parseNetMode(const char *s, NetMode &out) {
 }
 NetMode netModeFromStored(const char *s) { NetMode m = NetMode::Unset; return parseNetMode(s, m) ? m : NetMode::Unset; }
 
+bool ScanCtl::poll(uint32_t now) {
+  if (haveResult && now - resultAt < kScanFreshMs && !requested) return true;
+  if (gaveUp && !requested && now - gaveUpAt < kScanEmptyHoldMs) return true;
+  if (!requested) { requested = true; attempts = 0; gaveUp = false; nextAt = now; }
+  return false;
+}
+ScanCtl::Done ScanCtl::finished(int n, uint32_t now) {
+  running = false;
+  quiet = true; quietUntil = now + kScanQuietMs;
+  if (n > 0) { requested = false; haveResult = true; resultAt = now; gaveUp = false; return Done::Store; }
+  if (attempts < kScanMaxAttempts) { nextAt = now + kScanRetryGapMs; return Done::Retry; }
+  requested = false; haveResult = false; gaveUp = true; gaveUpAt = now;
+  return Done::Empty;
+}
+bool stationRetryAllowed(bool hasSsid, bool staUp, bool testing, bool testOk, bool scanPause, uint32_t sinceLastRetryMs) {
+  return hasSsid && !staUp && !testing && !testOk && !scanPause && sinceLastRetryMs >= kWifiRetryMs;
+}
+
 bool ApPolicy::update(bool hasSsid, bool staUp, bool testing, uint32_t now, bool hotspotOnly) {
   if (staUp && !wasUp) upSince = now;
   if (!staUp && wasUp) downSince = now;

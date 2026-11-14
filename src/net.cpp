@@ -16,7 +16,10 @@ bool g_ap = false, g_wasUp = false;
 uint32_t g_lastRetry = 0, g_apRestartAt = 0;
 String g_ssid;
 pc::onb::ApPolicy g_policy;
-volatile bool g_forceReq = false, g_scanReq = false;
+volatile bool g_forceReq = false;
+// 2.5.28: scan request/retry/reconnect-pause state (pc_core ScanCtl), under g_mx.
+pc::onb::ScanCtl g_scan;
+bool g_arPaused = false;  // SDK auto-reconnect switched off for a scan
 
 SemaphoreHandle_t g_mx = nullptr;
 struct Lock { Lock() { xSemaphoreTakeRecursive(g_mx, portMAX_DELAY); } ~Lock() { xSemaphoreGiveRecursive(g_mx); } };
@@ -28,7 +31,6 @@ volatile uint8_t g_tDisc = 0;
 uint32_t g_tStart = 0;
 int g_tRssi = 0, g_tCh = 0;
 String g_scanJson = "[]";
-uint32_t g_scanAt = 0;
 pc::onb::NetMode g_mode = pc::onb::NetMode::Unset;  // v14
 bool hotspotOnlyNow() { return g_mode == pc::onb::NetMode::HotspotOnly; }
 // mDNS (2.5.13): "<display id>.local" plus _http._tcp on LOCAL_HTTP_PORT, so the app
@@ -52,7 +54,7 @@ void stopAp() {
   g_ap = false;
   // v13: free setup-only scan state (the scan list String grows during onboarding and
   // stayed allocated for the whole uptime, splitting the heap)
-  { Lock l; WiFi.scanDelete(); g_scanJson = String(); g_scanAt = 0; }
+  { Lock l; WiFi.scanDelete(); g_scanJson = String(); g_scan.reset(); }
   LOGI("WIFI", "SETUP_AP_OFF", "station connected free_heap=%lu largest=%lu", (unsigned long)ESP.getFreeHeap(), (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 }
 void onWifiEvent(WiFiEvent_t e, WiFiEventInfo_t info) {
@@ -139,6 +141,45 @@ void serviceTest(uint32_t now) {
     restoreSaved();
   }
 }
+void serviceScan(uint32_t now, bool up) {
+  using Done = pc::onb::ScanCtl::Done;
+  int n;
+  {
+    Lock l;
+    if (g_scan.shouldStart(now)) {
+      // A pending connect attempt for the lost router refuses the scan (ESP_ERR_WIFI_STATE)
+      // or aborts it: drop that attempt first (reason ASSOC_LEAVE, so no SDK reconnect).
+      if (!up && g_ssid.length() && WiFi.getMode() != WIFI_AP) WiFi.disconnect(false, false);
+      g_scan.started();
+      int16_t r = WiFi.scanNetworks(true, false, false, 300);
+      LOGI("WIFI", "SCAN_START", "attempt=%u/%u %s", (unsigned)g_scan.attempts, (unsigned)pc::onb::kScanMaxAttempts, r == WIFI_SCAN_RUNNING ? "running" : "refused");
+      if (r == WIFI_SCAN_RUNNING) return;
+      n = -1;
+    } else if (g_scan.running) {
+      int16_t c = WiFi.scanComplete();
+      if (c == WIFI_SCAN_RUNNING) return;
+      n = c;
+    } else {
+      return;
+    }
+  }
+  String s;
+  if (n > 0) {
+    JsonDocument d; JsonArray a = d.to<JsonArray>();
+    for (int i = 0; i < n && i < 20; ++i) {
+      if (WiFi.SSID(i).isEmpty()) continue;
+      JsonObject o = a.add<JsonObject>();
+      o["ssid"] = WiFi.SSID(i); o["rssi"] = WiFi.RSSI(i); o["secure"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+    }
+    serializeJson(d, s);
+  }
+  if (n >= 0) WiFi.scanDelete();
+  Lock l;
+  Done done = g_scan.finished(n, now);
+  if (done == Done::Store) { g_scanJson = s; LOGI("WIFI", "SCAN_DONE", "networks=%d", n); }
+  else if (done == Done::Retry) LOGW("WIFI", "SCAN_RETRY", "result=%d attempt=%u/%u", n, (unsigned)g_scan.attempts, (unsigned)pc::onb::kScanMaxAttempts);
+  else { g_scanJson = "[]"; LOGW("WIFI", "SCAN_EMPTY", "result=%d after %u attempts", n, (unsigned)g_scan.attempts); }
+}
 }  // namespace
 
 void begin() {
@@ -184,25 +225,17 @@ void service() {
   bool want = g_policy.update(g_ssid.length() > 0, up, testing, now, hotspotOnlyNow());
   if (want && !g_ap) startAp();
   if (!want && g_ap) stopAp();
-  if (g_scanReq && !testing) {
-    int16_t n = WiFi.scanComplete();
-    if (n == WIFI_SCAN_FAILED) WiFi.scanNetworks(true, false, false, 300);
-    else if (n >= 0) {
-      JsonDocument d; JsonArray a = d.to<JsonArray>();
-      for (int i = 0; i < n && i < 20; ++i) {
-        if (WiFi.SSID(i).isEmpty()) continue;
-        JsonObject o = a.add<JsonObject>();
-        o["ssid"] = WiFi.SSID(i); o["rssi"] = WiFi.RSSI(i); o["secure"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
-      }
-      WiFi.scanDelete();
-      String s; serializeJson(d, s);
-      Lock l; g_scanJson = s; g_scanAt = now; g_scanReq = false;
-    }
-  }
+  // 2.5.28 scan (ACE-000003): reconnects are paused while a scan is requested or running
+  // and kScanQuietMs after it; failed/empty scans are retried; empty is never cached fresh.
+  bool scanPause;
+  { Lock l; scanPause = !testing && g_scan.pauseReconnect(now); }  // a Wi-Fi test keeps the SDK retry for the test network
+  if (scanPause && !g_arPaused) { WiFi.setAutoReconnect(false); g_arPaused = true; LOGI("WIFI", "SCAN_PAUSE", "station reconnects paused for a scan"); }
+  else if (!scanPause && g_arPaused) { WiFi.setAutoReconnect(!hotspotOnlyNow()); g_arPaused = false; LOGI("WIFI", "SCAN_RESUME", "station reconnects resumed"); }
+  if (!testing) serviceScan(now, up);
   serviceMdns(now, up && WiFi.localIP() != IPAddress(0, 0, 0, 0) && !hotspotOnlyNow() && g_ssid.length() > 0 && !testing && g_test != Test::Ok);
-  if (g_ssid.isEmpty() || testing || g_test == Test::Ok) return;
-  const uint32_t retryMs = pc::onb::kWifiRetryMs;  // WiFi.begin ran once; reconnect on this interval
-  if (!up && now - g_lastRetry >= retryMs) { g_lastRetry = now; WiFi.reconnect(); }
+  // WiFi.begin ran once; reconnect every kWifiRetryMs. Not during a Wi-Fi test (the old
+  // SSID would replace the test network), not while its result awaits save, not for a scan.
+  if (pc::onb::stationRetryAllowed(g_ssid.length() > 0, up, testing, g_test == Test::Ok, scanPause, now - g_lastRetry)) { g_lastRetry = now; WiFi.reconnect(); }
 }
 
 bool staConnected() { return WiFi.status() == WL_CONNECTED; }
@@ -231,7 +264,7 @@ bool setNetworkMode(pc::onb::NetMode m) {
     if (g_test != Test::Pending && g_test != Test::Running) WiFi.disconnect(false, false);
     LOGI("WIFI", "NETWORK_MODE", "hotspot_only (was %s): hotspot stays on, station off, cloud idle", pc::onb::netModeName(was));
   } else {
-    WiFi.setAutoReconnect(true);
+    if (!g_arPaused) WiFi.setAutoReconnect(true);  // a scan pause restores it when it ends
     g_policy.restartGrace(millis());  // existing grace: AP off 120 s after the station is up
     if (was == NetMode::HotspotOnly && g_ssid.length() && g_test != Test::Pending && g_test != Test::Running) WiFi.begin(g_ssid.c_str(), settings::wifiPass().c_str());
     LOGI("WIFI", "NETWORK_MODE", "station (was %s)%s", pc::onb::netModeName(was), g_ssid.length() ? "" : ": no saved network yet, hotspot stays on");
@@ -272,8 +305,7 @@ bool saveTested(String &ip) {
 }
 bool scan(JsonArray out) {
   Lock l;
-  bool fresh = g_scanAt && millis() - g_scanAt < 30000;
-  if (!fresh) g_scanReq = true;
+  bool fresh = g_scan.poll(millis());  // false: a scan is requested or retrying (scanning:true)
   JsonDocument d; deserializeJson(d, g_scanJson);
   for (JsonVariant v : d.as<JsonArray>()) out.add(v);
   return fresh;

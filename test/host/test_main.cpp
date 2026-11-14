@@ -2859,7 +2859,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.27" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.28" && !s35.found());
   }
 }
 
@@ -2980,6 +2980,49 @@ static void test_ota_errors() {  // 2.5.18: specific OTA failure codes and the h
   CHECK(isOverride("https://api-dev.acecore.tech/v2", "https://api-dev.acecore.tech"));
 }
 
+static void test_wifi_scan_ctl() {  // 2.5.28 ACE-000003: scan retry, no fresh empty cache, reconnect pause
+  using namespace pc::onb;
+  using Done = ScanCtl::Done;
+  ScanCtl c;
+  CHECK(!c.pauseReconnect(0));
+  CHECK(!c.poll(1000) && c.requested && c.pauseReconnect(1000));  // scanning:true, reconnects paused
+  CHECK(!c.poll(1500));                                            // still scanning, not re-armed
+  CHECK(c.shouldStart(1000)); c.started(); CHECK(c.running && !c.shouldStart(1001) && c.attempts == 1);
+  // Aborted by a reconnect: 0 records. Not cached, retried, still scanning.
+  CHECK(c.finished(0, 2000) == Done::Retry && !c.haveResult && c.requested && !c.poll(2100) && c.pauseReconnect(2100));
+  CHECK(!c.shouldStart(3499) && c.shouldStart(3500));
+  c.started(); CHECK(c.finished(-1, 3600) == Done::Retry && c.attempts == 2);  // refused (ESP_ERR_WIFI_STATE)
+  c.started(); CHECK(c.finished(7, 9000) == Done::Store && c.haveResult && !c.requested);
+  CHECK(c.poll(9001) && c.poll(38999) && !c.requested);           // fresh for 30 s
+  CHECK(c.pauseReconnect(12999) && !c.pauseReconnect(13000));     // 4 s quiet after the last attempt
+  CHECK(!c.poll(39000) && c.requested && c.attempts == 0);         // stale: new scan
+  // Three failed/empty attempts: empty reported only then, held 5 s, then a new scan.
+  ScanCtl e; CHECK(!e.poll(0));
+  e.started(); CHECK(e.finished(0, 100) == Done::Retry);
+  e.started(); CHECK(e.finished(-2, 2000) == Done::Retry);
+  e.started(); CHECK(e.finished(0, 4000) == Done::Empty && e.gaveUp && !e.haveResult && !e.requested);
+  CHECK(e.poll(4001) && e.poll(8999) && !e.requested);
+  CHECK(e.pauseReconnect(7999) && !e.pauseReconnect(8000));
+  CHECK(!e.poll(9000) && e.requested && !e.gaveUp && e.attempts == 0);
+  CHECK(kScanMaxAttempts >= 2 && kScanMaxAttempts <= 4);
+  // millis wrap
+  ScanCtl w; w.poll(0xFFFFFF00u); w.started(); CHECK(w.finished(3, 0xFFFFFF80u) == Done::Store && w.poll(0x00001000u) && w.pauseReconnect(0x00000100u));
+  w.reset(); CHECK(!w.requested && !w.haveResult && !w.pauseReconnect(5));
+  // Reconnect loop gate: saved + down + interval, never during a test, its unsaved success, or a scan.
+  CHECK(stationRetryAllowed(true, false, false, false, false, kWifiRetryMs));
+  CHECK(!stationRetryAllowed(true, false, false, false, false, kWifiRetryMs - 1));
+  CHECK(!stationRetryAllowed(false, false, false, false, false, 99999) && !stationRetryAllowed(true, true, false, false, false, 99999));
+  CHECK(!stationRetryAllowed(true, false, true, false, false, 99999));   // /v2/wifi/test running
+  CHECK(!stationRetryAllowed(true, false, false, true, false, 99999));   // test ok, awaiting save
+  CHECK(!stationRetryAllowed(true, false, false, false, true, 99999));   // scan pause
+  // Source checks: net.cpp uses the gate and the pause, and no longer caches by scan time.
+  std::string n = slurp("../../src/net.cpp");
+  CHECK(n.find("stationRetryAllowed(") != std::string::npos && n.find("g_scan.pauseReconnect(") != std::string::npos);
+  CHECK(n.find("WiFi.setAutoReconnect(false); g_arPaused = true;") != std::string::npos);
+  CHECK(n.find("g_scanAt") == std::string::npos && n.find("g_scan.poll(") != std::string::npos);
+  CHECK(n.find("g_scan.finished(") != std::string::npos);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -2989,7 +3032,7 @@ int main() {
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity(); test_mdns();
   test_ota_hardware_model();
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
-  test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_factory_reset_scope(); test_ws_rules();
+  test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
   printf("%d passed, %d failed\n", g_pass, g_fail);

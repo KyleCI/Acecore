@@ -208,7 +208,7 @@ void registerRoutes(AsyncWebServer &s) {
   route(s, "/v2/wifi/scan", HTTP_POST, true, [](AsyncWebServerRequest *r, JsonDocument &, const Caller &) {
     JsonDocument d;
     bool fresh = net::scan(d["networks"].to<JsonArray>());
-    d["scanning"] = !fresh;  // results older than 30 s: a new scan runs; poll again in ~3 s
+    d["scanning"] = !fresh;  // 2.5.28: true while a scan or its retries run (poll again in ~3 s); false with [] only after 3 failed/empty attempts
     send(r, 200, d);
   });
   route(s, "/v2/wifi/test", HTTP_POST, true, [](AsyncWebServerRequest *r, JsonDocument &doc, const Caller &) {

@@ -111,6 +111,41 @@ struct ApPolicy {
   static const char *stateName(bool hasSsid, bool staUp, bool testing, bool ap, bool hotspotOnly = false);  // hotspot_only|unconfigured|testing|online|grace|fallback|connecting
 };
 
+// ---- Wi-Fi scan control (2.5.28, ACE-000003) ---------------------------------------
+// In AP+STA fallback the 5 s WiFi.reconnect() and the SDK auto-reconnect aborted or
+// refused the async scan (ESP_ERR_WIFI_STATE, or SCAN_DONE with 0 records), and 0 was
+// cached as fresh for 30 s, so /v2/wifi/scan said scanning:false with an empty list.
+// ScanCtl: a request pauses station reconnects until kScanQuietMs after the last scan
+// attempt ends; a failed or empty attempt is retried up to kScanMaxAttempts in total; only
+// a non-empty result is cached as fresh. When every attempt failed the empty list is
+// reported (scanning:false) for kScanEmptyHoldMs, then the next poll starts a new scan.
+constexpr uint32_t kScanFreshMs = 30000;     // a non-empty result is served this long
+constexpr uint8_t kScanMaxAttempts = 3;      // first try + 2 retries
+constexpr uint32_t kScanRetryGapMs = 1500;   // lets a pending connect attempt end first
+constexpr uint32_t kScanQuietMs = 4000;      // reconnects stay paused after the last attempt
+constexpr uint32_t kScanEmptyHoldMs = 5000;  // "no networks" is reported this long
+
+struct ScanCtl {
+  enum class Done : uint8_t { Store, Retry, Empty };
+  bool requested = false, running = false, haveResult = false, gaveUp = false, quiet = false;
+  uint8_t attempts = 0;
+  uint32_t nextAt = 0, resultAt = 0, gaveUpAt = 0, quietUntil = 0;
+  // From /v2/wifi/scan. True = results are current (scanning:false); false = a scan is
+  // requested or running (scanning:true), the caller serves the previous list meanwhile.
+  bool poll(uint32_t now);
+  bool shouldStart(uint32_t now) const { return requested && !running && (int32_t)(now - nextAt) >= 0; }
+  void started() { running = true; ++attempts; }
+  // n = scan record count, or < 0 when the scan failed to start, timed out or was aborted.
+  Done finished(int n, uint32_t now);
+  // Station reconnects (WiFi.reconnect loop and SDK auto-reconnect) must wait.
+  bool pauseReconnect(uint32_t now) const { return requested || running || (quiet && (int32_t)(quietUntil - now) > 0); }
+  void reset() { *this = ScanCtl(); }
+};
+// The 5 s WiFi.reconnect loop for the saved network may run now. Never during a Wi-Fi
+// test (pending/running) or while its success awaits /v2/wifi/save, never while a scan
+// pauses reconnects, and only with a saved network that is down.
+bool stationRetryAllowed(bool hasSsid, bool staUp, bool testing, bool testOk, bool scanPause, uint32_t sinceLastRetryMs);
+
 // ---- WebSocket message rules (section 13) -----------------------------------------
 // Error for set_passcode, or nullptr to apply. tls=false -> insecure_transport.
 const char *setPasscodeError(const char *requestId, bool tls, uint64_t nowUnix, uint64_t expiresAt, const char *passcode);

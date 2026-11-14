@@ -24,6 +24,7 @@ bool startTest(const String &ssid, const String &pass, bool phoneSees5Ghz, Strin
 void testStatus(JsonDocument &doc);
 // Saves the last successful test. False if none. ip = station IP.
 bool saveTested(String &ip);
-// Cached scan results; starts an async scan when stale. Returns true if results are fresh.
+// Cached scan results; starts an async scan when stale. Returns true if results are current
+// (a non-empty scan < 30 s old, or 3 failed/empty attempts just ended); false = scanning.
 bool scan(JsonArray out);
 }  // namespace net
