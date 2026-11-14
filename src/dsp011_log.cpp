@@ -9,6 +9,9 @@
 #include "sd_log.h"
 #include "serial_spool.h"
 #include <SD.h>
+#include <heap_guard.h>  // pc::kSdMaxFiles, FatFs context size (2.5.29)
+#include "heapguard.h"
+#include "ff.h"
 #include <SPI.h>
 #include <stdio.h>
 #include <string.h>
@@ -20,6 +23,8 @@ constexpr uint32_t kSdBlocks = 1024;
 constexpr uint32_t kEnergyBytes = 65536;
 constexpr uint32_t kSector = 4096;
 static_assert(kSdCs == 5, "DSP SD chip select is GPIO5");
+// 2.5.29: the mount context holds max_files FIL objects (4136 B each) for the uptime.
+static_assert(sizeof(FIL) == pc::kFatFsFilBytes, "FatFs FIL size (per-file 4096 B cache) as documented in heap_guard.h");
 static_assert(kSdCs != PIN_PZEM_RX && kSdCs != PIN_PZEM_TX, "SD chip select is not a PZEM pin");
 static_assert(PIN_SPI_SCK == 18 && PIN_SPI_MISO == 19 && PIN_SPI_MOSI == 23, "SD SPI pins");
 static_assert(PIN_SD_CS == 14, "original profile SD CS stays GPIO14");
@@ -162,7 +167,10 @@ void observeEnergy() {
 void task(void*) {
   bool mounted = false;
   if (periph::spiMutex()) xSemaphoreTake(periph::spiMutex(), portMAX_DELAY);
-  if (SD.begin(kSdCs, SPI, 1000000)) {
+  const uint32_t freeBefore = heapguard::freeNow();
+  // 2.5.29: two files (blackbox.bin + acenergy.bin) instead of the Arduino default 5:
+  // the FatFs mount context drops from 26928 to 14520 B of DRAM (ACE-000003: no WS TLS).
+  if (SD.begin(kSdCs, SPI, 1000000, "/sd", pc::kSdMaxFiles)) {
     card = new FileCard();
     energyStore = new FileNor();
     if (card->begin()) {
@@ -182,7 +190,9 @@ void task(void*) {
     }
     uint32_t mb = uint32_t(SD.cardSize() / (1024 * 1024));
     periph::noteSd(mounted, mb);
-    LOGI("SD", "CARD", "cs=%d present=%d", kSdCs, (int)mounted);
+    const uint32_t freeAfter = heapguard::freeNow();
+    LOGI("SD", "CARD", "cs=%d present=%d max_files=%u dram_used=%ld free=%lu", kSdCs, (int)mounted, (unsigned)pc::kSdMaxFiles,
+         (long)freeBefore - (long)freeAfter, (unsigned long)freeAfter);
   } else {
     periph::noteSd(false, 0);
     LOGW("SD", "CARD", "no card on GPIO%d", kSdCs);

@@ -1,5 +1,15 @@
 # Collector firmware changelog
 
+## 2.5.29 (SD mount DRAM: WS TLS never started on the real DSP board, ACE-000003, Caleb 14 Nov 2026)
+
+On top of 2.5.28 (3427597). All four product images (the change is in the DSP SD path; STM images only get the version). Prompted by ACE-000003 (DSP 5 kW) on 2.5.28, on the board: `[MEM][HEAP_LOW] ws TLS deferred: low_free largest=32756 free=45432 min=48 need_free=51200`, while the same ESP32 off the board connects.
+
+- **Cause:** the DSP log task mounts the SD card with `SD.begin(5, SPI, 1000000)`, i.e. the Arduino default `max_files = 5`. IDF 4.4 `esp_vfs_fat_register()` makes one DRAM allocation of `6248 + 5 x sizeof(FIL)` for the uptime; with 4096 B sectors and per-file cache `sizeof(FIL)` is 4136, so 26928 B. The firmware only ever has two files open (`/blackbox.bin`, `/acenergy.bin`). The bench ESP32 has no card, so its DRAM was ~27 KB higher and passed the 51200 B TLS floor; on the board free sat at ~45 KB and the WS never tried.
+- **Fix:** mount with `max_files = 2` (`pc::kSdMaxFiles`): 14520 B, 12408 B of DRAM returned (45432 -> ~57840 expected, above the floor; the two-record-buffer probe then decides because largest < 35520). A compile-time check ties `sizeof(FIL)` to the documented 4136. The TLS gate (51200 free, 18432/35520 blocks) is unchanged: the handshake still needs both 16717 B record buffers (precompiled mbedTLS, 16384 content length, no variable buffers, so MFLN would not shrink them).
+- **Log:** `[SD][CARD] cs=5 present=1 max_files=2 dram_used=<B> free=<B>` at boot.
+- `heap_min=48` / `largest_min=500` is a transient low since boot that these lines do not identify (every TLS connect is behind the guard, which logs `TLS_UP`/`TLS_FAILED` with `min=`). No leak found in the PZEM no_reply or JK-PB parse paths (stack buffers only).
+- Host test `test_sd_mount_dram` (context sizes, 12408 B saving, ACE-000003 numbers vs the gate, source checks).
+
 ## 2.5.28 (Wi-Fi scan in AP+STA fallback, ACE-000003, Caleb 14 Nov 2026)
 
 On top of 2.5.27 (34a3b1d, = 2.5.26 7e6f960 code). All four product images. Prompted by ACE-000003 (DSP 5 kW): with the saved router off, the unit is in AP+STA fallback and `service()` called `WiFi.reconnect()` every 5 s (`kWifiRetryMs`) on top of the SDK auto-reconnect. That refused the async scan (`ESP_ERR_WIFI_STATE`) or aborted it (SCAN_DONE with 0 records), and the 0 was cached as fresh for 30 s, so `POST /v2/wifi/scan` answered `scanning:false` with an empty list.

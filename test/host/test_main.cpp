@@ -2859,7 +2859,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.28" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.29" && !s35.found());
   }
 }
 
@@ -2980,6 +2980,22 @@ static void test_ota_errors() {  // 2.5.18: specific OTA failure codes and the h
   CHECK(isOverride("https://api-dev.acecore.tech/v2", "https://api-dev.acecore.tech"));
 }
 
+static void test_sd_mount_dram() {  // 2.5.29 ACE-000003: SD mount context with 2 files, not the Arduino default 5
+  using namespace pc;
+  CHECK(fatVfsCtxBytes(kSdArduinoDefaultFiles) == 26928 && fatVfsCtxBytes(kSdMaxFiles) == 14520);
+  CHECK(fatVfsCtxBytes(kSdArduinoDefaultFiles) - fatVfsCtxBytes(kSdMaxFiles) == 12408);
+  // ACE-000003 2.5.28 board numbers: free 45432 (< 51200 floor). With 12408 B back it clears the floor.
+  CHECK(45432u < kTlsMinFree && 45432u + 12408u >= kTlsMinFree);
+  CHECK(tlsHeapVerdict(32756, 45432) == TlsHeap::LowFree && tlsHeapVerdict(32756, 45432 + 12408) == TlsHeap::Probe);
+  // Source: the DSP card is mounted with kSdMaxFiles, and only the two log files are opened on it.
+  std::string l = slurp("../../src/dsp011_log.cpp");
+  CHECK(l.find("SD.begin(kSdCs, SPI, 1000000, \"/sd\", pc::kSdMaxFiles)") != std::string::npos);
+  CHECK(l.find("sizeof(FIL) == pc::kFatFsFilBytes") != std::string::npos);
+  size_t opens = 0; for (size_t at = l.find("SD.open("); at != std::string::npos; at = l.find("SD.open(", at + 1)) ++opens;
+  CHECK(opens == 4);  // blackbox.bin r+/w+ and acenergy.bin r+/w+: at most 2 open at once
+  CHECK(kSdMaxFiles == 2);
+}
+
 static void test_wifi_scan_ctl() {  // 2.5.28 ACE-000003: scan retry, no fresh empty cache, reconnect pause
   using namespace pc::onb;
   using Done = ScanCtl::Done;
@@ -3032,7 +3048,7 @@ int main() {
   test_crc(); test_frame_roundtrip(); test_status_codec(); test_legacy_parser(); test_ring(); test_jk_bms(); test_identity(); test_mdns();
   test_ota_hardware_model();
   test_local_auth(); test_device_ids(); test_ota_url(); test_battery_policy(); test_power_policy(); test_ota_url_dev_http(); test_ota_gate(); test_heap_guard();
-  test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_factory_reset_scope(); test_ws_rules();
+  test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
   printf("%d passed, %d failed\n", g_pass, g_fail);

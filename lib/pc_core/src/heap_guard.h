@@ -48,6 +48,23 @@ static_assert(kTlsRecordAlloc == 16736, "record buffer allocation size");
 static_assert(kTlsMinBlock > kTlsRecordAlloc && kTlsPairBlock > 2 * kTlsRecordAlloc, "gate covers the record buffers");
 static_assert(kTlsMinFree > 2 * kTlsRecordAlloc + 12288, "free floor covers buffers + handshake");
 
+// SD card DRAM (2.5.29, ACE-000003). Arduino SD.begin(cs, spi, hz) mounts with the default
+// max_files = 5. esp_vfs_fat_register() (IDF 4.4, libfatfs.a) then makes ONE ff_memalloc of
+// sizeof(vfs_fat_ctx_t) + max_files * sizeof(FIL) for the whole uptime; no PSRAM on these
+// boards, so it is internal DRAM. With FF_MAX_SS 4096 (WL sector 4096) and per-file cache
+// (FF_FS_TINY 0), sizeof(FIL) = 4136 and the context (FATFS 4156 + path + fd table) = 6248,
+// read from the disassembly (4136 * n + 0x1868). 5 files: 26928 B. The DSP board has a card
+// (blackbox.bin + acenergy.bin, both open for the uptime); the bench ESP32 has none, so its
+// DRAM was ~27 KB higher. On ACE-000003 2.5.28 this left free=45432 < kTlsMinFree and the WS
+// never connected. Two files are all the firmware opens: 14520 B, 12408 B returned.
+constexpr uint32_t kFatFsFilBytes = 4136;
+constexpr uint32_t kFatFsCtxBase = 6248;
+constexpr uint8_t kSdMaxFiles = 2;            // blackbox.bin + acenergy.bin
+constexpr uint8_t kSdArduinoDefaultFiles = 5;  // SD.begin() default
+constexpr uint32_t fatVfsCtxBytes(uint8_t maxFiles) { return kFatFsCtxBase + kFatFsFilBytes * maxFiles; }
+static_assert(fatVfsCtxBytes(kSdArduinoDefaultFiles) == 26928, "SD context with the Arduino default");
+static_assert(fatVfsCtxBytes(kSdMaxFiles) == 14520, "SD context with two files");
+
 enum class TlsHeap : uint8_t { Ok, Probe, LowFree, LowBlock };
 inline TlsHeap tlsHeapVerdict(uint32_t largest, uint32_t freeBytes) {
   if (freeBytes < kTlsMinFree) return TlsHeap::LowFree;
