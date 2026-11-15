@@ -8,6 +8,7 @@ namespace pc {
 template <typename T, size_t N>
 class RingQueue {
  public:
+  using value_type = T;
   bool push(const T &v) {
     bool dropped = false;
     if (count_ == N) { head_ = (head_ + 1) % N; --count_; ++dropped_; dropped = true; }

@@ -154,6 +154,13 @@ bool overTempLatched() {
   return false;
 #endif
 }
+float overTempTripC() {
+#if POWERCELL_DSP011
+  return (g_ot.latched() && g_otTripC10 != INT16_MIN) ? g_otTripC10 / 10.0f : NAN;
+#else
+  return NAN;
+#endif
+}
 bool overTempBlocksOn() {
 #if POWERCELL_DSP011
   float c = 0;

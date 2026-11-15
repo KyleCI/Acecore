@@ -16,6 +16,8 @@ bool lowPower();             // standby mode active (== latched())
 bool refuseOn(const char *origin);
 // DSP over-temperature cutoff (system NTC >= 80 C, latched in NVS). STM: always false.
 bool overTempLatched();
+// 2.5.31: the reading that tripped the over-temperature latch (deg C); NAN when not latched or unknown.
+float overTempTripC();
 bool overTempBlocksOn();               // ON would be refused now (no state change)
 bool overTempRefuseOn(const char *origin);  // ON gate: clears the latch when valid and < 70 C  // battery gate only. "soc_restore" passes while the ESP latch is set.
 void setPriority(const String &socketId, bool essential);  // console PRIO fallback: writes the socket config priority

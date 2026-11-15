@@ -1,6 +1,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#include <math.h>
 #include "local_auth.h"
 #include "stm32_types.h"
 // Notification event engine (firmware 2.2). Pure logic, host tested.
@@ -10,7 +11,7 @@
 // telemetry, the offline queue, LAN /data and the /events SSE stream.
 namespace pc {
 namespace ev {
-enum class Type : uint8_t { Overload, Overcurrent, InverterFault, BmsFault, RelayFailed, OverTemp, BatteryFull, BatteryLow, GridDown, ApplianceLockout, BatteryCritical, OutputRestored, ModeFallback, LoadShed, TempSensorFault };
+enum class Type : uint8_t { Overload, Overcurrent, InverterFault, BmsFault, RelayFailed, OverTemp, BatteryFull, BatteryLow, GridDown, ApplianceLockout, BatteryCritical, OutputRestored, ModeFallback, LoadShed, TempSensorFault, BmsOverTemp };
 enum class Sev : uint8_t { Info, Warning, Critical };
 const char *typeName(Type t);
 const char *sevName(Sev s);
@@ -27,7 +28,12 @@ inline bool faultActive(uint32_t bits) { return (bits & kFaultMask) != 0; }
 
 constexpr float kOverloadAmps = 19.0f, kOverloadClearAmps = 17.0f;  // ESP rule: any link without bit16
 constexpr float kTempWarnC = 70.0f, kTempWarnClearC = 65.0f;
-constexpr uint32_t kTempSensorFaultOnMs = 4000, kTempSensorFaultOffMs = 10000;  // DSP NTC: 2 samples in, 5 out
+// DSP NTC temp_sensor_fault debounce (2.5.31, anti-flap): raised after 10 s of continuous fault
+// (5 samples), cleared only after 120 s of continuous valid readings. A new episode within
+// 10 min of the last clear needs 60 s of continuous fault. ACE-000001 logged 102 raise / 89 clear
+// with the old 4 s / 10 s rule.
+constexpr uint32_t kTempSensorFaultOnMs = 10000, kTempSensorFaultOffMs = 120000;
+constexpr uint32_t kTempSensorFaultRearmMs = 60000, kTempSensorFaultRearmWindowMs = 600000;
 constexpr float kGridMinV = 160.0f, kGridRestoreV = 170.0f;
 constexpr uint32_t kAcLimitClearMs = 10000;  // ac_output_limit clear debounce (stale PZEM samples)
 constexpr float kSocketTripA = 10.0f, kSocketTripClearA = 9.0f, kSocketWarnA = 8.0f, kSocketWarnClearA = 7.0f;
@@ -79,6 +85,9 @@ struct Inputs {
   // sysTempFault = sensorFaulted(): open, short, out of range or stale.
   bool dspThermal = false, overTempLatched = false, sysTempValid = false, sysTempFault = false;
   float sysTemp = 0;
+  // 2.5.31: the reading that tripped the latch (deg C), NAN if unknown. The over_temp event
+  // carries the live temperature when valid, else this.
+  float overTempTripC = NAN;
   // DSP Manual output power limit (include/ac_output_policy.h). acLimit: this image enforces it
   // (DSP only; STM has no PZEM-based enforcement). acWarn = AcOutputPolicy::warning() (3 s over
   // the ceiling or the usable rating, one-shot until 10 s under). acShutdown = shutdownLatched()
@@ -120,6 +129,7 @@ class Engine {
   bool bit16Seen_ = false;
   bool restorePending_ = false, lastLatchStm_ = false;
   bool acRated_ = false;  // code of the active ac_output_shutdown, fixed at its start
+  bool tsfCleared_ = false; uint32_t tsfClearMs_ = 0;  // last temp_sensor_fault clear (anti-flap re-arm)
   void oneShot(Type t, Sev sev, const char *id, const char *code, const char *source, bool hasValue, float value, uint32_t ts);  // framed STM32 proved it reports bit16
   BatteryAlertPolicy bat_;
 };

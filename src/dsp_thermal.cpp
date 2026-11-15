@@ -92,7 +92,8 @@ void dspThermalBegin() {
   pinMode(PIN_FAN, OUTPUT);
   setFan(false);
   analogSetPinAttenuation(PIN_NTC, ADC_11db);
-  xTaskCreatePinnedToCore(task, "thermal", 3072, nullptr, 1, nullptr, 1);
+  // 2.5.31: 4096 (was 3072; MEM TASKS showed 868 B free on ACE-000003). +1 KB heap, TLS gate unaffected.
+  xTaskCreatePinnedToCore(task, "thermal", powercell::thermal::kTaskStackBytes, nullptr, 1, nullptr, 1);
   LOGI("THERMAL", "BEGIN", "NTC 10k B3950 2k7 on GPIO%d, fan GPIO%d HIGH=ON (ON >= %.0f C, OFF <= %.0f C)", PIN_NTC, PIN_FAN,
        powercell::thermal::kFanOnC, powercell::thermal::kFanOffC);
 }

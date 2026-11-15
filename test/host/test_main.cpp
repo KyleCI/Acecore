@@ -18,6 +18,8 @@
 #include "solar_energy.h"
 #include "stm32_legacy_parser.h"
 #include "events_core.h"
+#include "events_json.h"
+#include "offline_policy.h"
 #include "lora_socket_proto.h"
 #include "../../smart-socket-firmware/src/trip_lockout.h"
 #include "payment_lock.h"
@@ -27,6 +29,8 @@
 #include "ota_errors.h"
 #include "ota_boot.h"
 #include <string>
+#include <vector>
+#include <cstddef>
 #include <algorithm>
 
 static int g_fail = 0, g_pass = 0;
@@ -705,7 +709,8 @@ static void test_events_engine() {
   // BMS alarms
   Engine m; Inputs mi; mi.bmsOnline = true; mi.bmsAlarms = (1u << 13) | (1u << 21);
   m.update(mi, 0, 1); n = m.drain(e, 24);
-  CHECK(countType(e, n, Type::Overcurrent, true) == 1 && countType(e, n, Type::OverTemp, true) == 1);
+  CHECK(countType(e, n, Type::Overcurrent, true) == 1 && countType(e, n, Type::BmsOverTemp, true) == 1);
+  CHECK(countType(e, n, Type::OverTemp, true) == 0);  // 2.5.31: battery_overtemp is bms_over_temp, not over_temp
   mi.bmsAlarms = 0; m.update(mi, 1000, 2); CHECK(m.drain(e, 24) == 0); m.update(mi, 6100, 3); CHECK(m.drain(e, 24) == 2);
   // sockets: 8 A warning, 10 A critical, socket trip flag, relay results
   Engine s; Inputs si; si.nSockets = 1; strcpy(si.sockets[0].id, "A1B2C3D4E5F6"); si.sockets[0].online = true;
@@ -2537,25 +2542,25 @@ static void test_dsp_over_temp() {
   n = e.drain(out, 24);
   CHECK(n == 1 && out[0].type == Type::OverTemp && !out[0].active);
 
-  // temp_sensor_fault: raised once after 4 s of fault, no repeat, cleared after 10 s valid.
+  // temp_sensor_fault (2.5.31): raised once after 10 s of fault, no repeat, cleared after 120 s valid.
   Engine f; Inputs fi; fi.dspThermal = true; fi.sysTempValid = false; fi.sysTempFault = true;
   f.update(fi, 0, 0); CHECK(f.drain(out, 24) == 0);
-  f.update(fi, 3999, 0); CHECK(f.drain(out, 24) == 0);
-  f.update(fi, 4000, 0);
+  f.update(fi, 9999, 0); CHECK(f.drain(out, 24) == 0);
+  f.update(fi, 10000, 0);
   n = f.drain(out, 24);
   CHECK(n == 1 && out[0].type == Type::TempSensorFault && out[0].active && out[0].severity == Sev::Warning);
   CHECK(n == 1 && !strcmp(typeName(out[0].type), "temp_sensor_fault") && !strcmp(out[0].id, "temp_sensor_fault"));
-  for (uint32_t t = 5000; t < 60000; t += 1000) f.update(fi, t, 0);
+  for (uint32_t t = 11000; t < 60000; t += 1000) f.update(fi, t, 0);
   CHECK(f.drain(out, 24) == 0);  // no spam while it stays faulted
   // A fault never raises the cutoff alert.
   for (size_t i = 0; i < f.activeCount(); ++i) CHECK(f.active(i)->type != Type::OverTemp);
   fi.sysTempFault = false; fi.sysTempValid = true; fi.sysTemp = 30.f;
-  f.update(fi, 60000, 0); f.update(fi, 69999, 0); CHECK(f.drain(out, 24) == 0);
-  f.update(fi, 70000, 0);
+  f.update(fi, 60000, 0); f.update(fi, 179999, 0); CHECK(f.drain(out, 24) == 0);
+  f.update(fi, 180000, 0);
   n = f.drain(out, 24);
   CHECK(n == 1 && out[0].type == Type::TempSensorFault && !out[0].active);
-  // A brief flicker (< 4 s) does not alert.
-  fi.sysTempFault = true; f.update(fi, 71000, 0); fi.sysTempFault = false; f.update(fi, 73000, 0); f.update(fi, 90000, 0);
+  // A brief flicker (< 10 s) does not alert.
+  fi.sysTempFault = true; f.update(fi, 181000, 0); fi.sysTempFault = false; f.update(fi, 189000, 0); f.update(fi, 200000, 0);
   CHECK(f.drain(out, 24) == 0);
   // STM images (dspThermal false) never raise either alert.
   Engine s; Inputs si; si.overTempLatched = true; si.sysTempFault = true;
@@ -2563,6 +2568,167 @@ static void test_dsp_over_temp() {
   n = s.drain(out, 24);
   bool any = false; for (size_t i = 0; i < n; ++i) any |= out[i].type == Type::OverTemp || out[i].type == Type::TempSensorFault;
   CHECK(!any);
+}
+
+// 2.5.31 (ACE-000003 / ACE-000001 false repeating alerts).
+struct FakeJson {
+  struct Slot { std::string *dst; void operator=(const char *v) { *dst = std::string("s:") + (v ? v : ""); }
+    void operator=(bool v) { *dst = v ? "b:1" : "b:0"; } void operator=(float v) { char b[32]; snprintf(b, sizeof b, "f:%.1f", v); *dst = b; }
+    void operator=(uint32_t v) { *dst = "u:" + std::to_string(v); } void operator=(std::nullptr_t) { *dst = "null"; } };
+  std::vector<std::pair<std::string, std::string>> *kv;
+  Slot operator[](const char *k) { kv->push_back({k, ""}); return Slot{&kv->back().second}; }
+  std::string get(const char *k) const { for (auto &p : *kv) if (p.first == k) return p.second; return "<none>"; }
+};
+static void test_false_alerts_2531() {
+  using namespace pc::ev;
+  Event out[24]; size_t n;
+  // (2) eventToJson carries the stable condition id; (5) over_temp carries temp_c.
+  {
+    Engine e; Inputs in; in.dspThermal = true; in.sysTempValid = true; in.sysTemp = 82.5f; in.overTempLatched = true;
+    e.update(in, 1000, 1700000100); n = e.drain(out, 24);
+    CHECK(n == 1);
+    std::vector<std::pair<std::string, std::string>> kv; FakeJson j{&kv};
+    eventFieldsTo(j, out[0]);
+    CHECK(j.get("id") == "s:over_temperature" && j.get("type") == "s:over_temp" && j.get("severity") == "s:critical");
+    CHECK(j.get("value") == "f:82.5" && j.get("temp_c") == "f:82.5" && j.get("code") == "s:system_ntc_80c_cutoff");
+    CHECK(j.get("active") == "b:1" && j.get("release_requires") == "s:cool_below_70c_then_on" && j.get("ts") == "u:1700000100");
+    CHECK(kv.front().first == "id");
+    // BMS event: id bms_21, type bms_over_temp, no temp_c field.
+    Engine b; Inputs bi; bi.bmsOnline = true; bi.bmsAlarms = 1u << 21;
+    b.update(bi, 0, 0); n = b.drain(out, 24);
+    CHECK(n == 1);
+    std::vector<std::pair<std::string, std::string>> kv2; FakeJson j2{&kv2};
+    eventFieldsTo(j2, out[0]);
+    CHECK(j2.get("id") == "s:bms_21" && j2.get("type") == "s:bms_over_temp" && j2.get("code") == "s:battery_overtemp");
+    CHECK(j2.get("temp_c") == "<none>" && j2.get("ts") == "null" && j2.get("source") == "s:bms");
+  }
+  // (3) every BMS temperature bit maps to bms_over_temp with its own code, never over_temp.
+  {
+    const int bits[4] = {1, 8, 15, 21};
+    const char *codes[4] = {"mos_overtemp", "charge_overtemp", "discharge_overtemp", "battery_overtemp"};
+    for (int k = 0; k < 4; ++k) {
+      Engine b; Inputs bi; bi.bmsOnline = true; bi.bmsAlarms = 1u << bits[k];
+      b.update(bi, 0, 0); n = b.drain(out, 24);
+      char id[16]; snprintf(id, sizeof id, "bms_%d", bits[k]);
+      CHECK(n == 1 && out[0].type == Type::BmsOverTemp && out[0].severity == Sev::Critical);
+      CHECK(n == 1 && !strcmp(out[0].code, codes[k]) && !strcmp(out[0].id, id));
+    }
+    CHECK(!strcmp(typeName(Type::BmsOverTemp), "bms_over_temp") && !strcmp(typeName(Type::OverTemp), "over_temp"));
+  }
+  // (1)/(4) the ACE-000003 state: NTC valid ~31 C, latch clear, BMS quiet. Hours of service
+  // passes produce no event at all (no periodic over_temp edge from the engine).
+  {
+    Engine e; Inputs in; in.dspThermal = true; in.sysTempValid = true; in.sysTemp = 31.f; in.bmsOnline = true;
+    in.stmOnline = true; in.hasIout = true; in.iout = 1.f;  // DSP: the PZEM stands in for the STM32 status
+    size_t total = 0;
+    for (uint32_t t = 0; t < 2u * 3600u * 1000u; t += 500) { in.sysTemp = 31.f + (t % 7000) / 7000.f; e.update(in, t, 0); total += e.drain(out, 24); }
+    CHECK(total == 0);
+    for (size_t i = 0; i < e.activeCount(); ++i) CHECK(e.active(i)->type != Type::OverTemp);
+  }
+  // (4) invalid NTC: temp_sensor_fault only, never over_temp, even for hours.
+  {
+    Engine e; Inputs in; in.dspThermal = true; in.sysTempValid = false; in.sysTempFault = true; in.sysTemp = 0;
+    size_t ot = 0, tsf = 0;
+    for (uint32_t t = 0; t < 3600u * 1000u; t += 500) {
+      e.update(in, t, 0); n = e.drain(out, 24);
+      for (size_t i = 0; i < n; ++i) { ot += out[i].type == Type::OverTemp; tsf += out[i].type == Type::TempSensorFault; }
+    }
+    CHECK(ot == 0 && tsf == 1);
+  }
+  // (4) anti-flap: the ACE-000001 pattern (fault 12 s, valid 15 s, repeating) for one hour gives
+  // one raise and no clear; the old 4 s / 10 s rule gave a pair per cycle.
+  {
+    Engine e; Inputs in; in.dspThermal = true;
+    size_t on = 0, off = 0;
+    for (uint32_t t = 0; t < 3600u * 1000u; t += 500) {
+      bool fault = (t % 27000) < 12000;
+      in.sysTempFault = fault; in.sysTempValid = !fault; in.sysTemp = 30.f;
+      e.update(in, t, 0); n = e.drain(out, 24);
+      for (size_t i = 0; i < n; ++i) if (out[i].type == Type::TempSensorFault) (out[i].active ? on : off) += 1;
+    }
+    CHECK(on == 1 && off == 0);
+    // Re-arm: after a real clear, a new episode within 10 min needs 60 s of fault.
+    Engine r; Inputs ri; ri.dspThermal = true; ri.sysTempFault = true;
+    r.update(ri, 0, 0); r.update(ri, 10000, 0); CHECK(r.drain(out, 24) == 1);
+    ri.sysTempFault = false; ri.sysTempValid = true; ri.sysTemp = 30.f;
+    r.update(ri, 11000, 0); r.update(ri, 131000, 0); n = r.drain(out, 24); CHECK(n == 1 && !out[0].active);
+    ri.sysTempFault = true; ri.sysTempValid = false;
+    r.update(ri, 140000, 0); r.update(ri, 170000, 0); CHECK(r.drain(out, 24) == 0);   // 30 s: not yet
+    r.update(ri, 199999, 0); CHECK(r.drain(out, 24) == 0);
+    r.update(ri, 200000, 0); n = r.drain(out, 24); CHECK(n == 1 && out[0].active);   // 60 s
+    // Outside the 10 min window the normal 10 s rule applies again.
+    ri.sysTempFault = false; ri.sysTempValid = true;
+    r.update(ri, 201000, 0); r.update(ri, 321000, 0); n = r.drain(out, 24); CHECK(n == 1 && !out[0].active);
+    ri.sysTempFault = true; ri.sysTempValid = false;
+    r.update(ri, 1000000, 0); r.update(ri, 1010000, 0); n = r.drain(out, 24); CHECK(n == 1 && out[0].active);
+  }
+  // (5) latch held in active_events until the latch clears (user ON < 70 C), across a cool-down,
+  // an invalid NTC and an engine restart (boot from the NVS latch with the trip temperature).
+  {
+    Engine e; Inputs in; in.dspThermal = true; in.sysTempValid = true; in.sysTemp = 85.f; in.overTempLatched = true;
+    e.update(in, 0, 0); n = e.drain(out, 24); CHECK(n == 1 && out[0].active && out[0].hasValue && fabs(out[0].value - 85.0) < 0.01);
+    bool held = true; size_t extra = 0;
+    for (uint32_t t = 500; t < 600000; t += 500) {
+      in.sysTemp = 85.f - t / 10000.f; in.sysTempValid = (t / 30000) % 2 == 0; in.sysTempFault = !in.sysTempValid;
+      e.update(in, t, 0); n = e.drain(out, 24);
+      for (size_t i = 0; i < n; ++i) extra += out[i].type == Type::OverTemp;
+      bool found = false;
+      for (size_t i = 0; i < e.activeCount(); ++i) if (!strcmp(e.active(i)->id, "over_temperature")) found = true;
+      held = held && found;
+    }
+    CHECK(held && extra == 0);
+    // active_events value tracks the live temperature while valid.
+    in.sysTempValid = true; in.sysTempFault = false; in.sysTemp = 40.f; e.update(in, 600000, 0); e.drain(out, 24);
+    const Event *a = nullptr; for (size_t i = 0; i < e.activeCount(); ++i) if (!strcmp(e.active(i)->id, "over_temperature")) a = e.active(i);
+    CHECK(a && a->hasValue && fabs(a->value - 40.0) < 0.01);
+    in.overTempLatched = false; e.update(in, 600500, 0); n = e.drain(out, 24);
+    CHECK(n == 1 && out[0].type == Type::OverTemp && !out[0].active && out[0].hasValue && fabs(out[0].value - 40.0) < 0.01);
+    { bool any = false; for (size_t i = 0; i < e.activeCount(); ++i) any |= e.active(i)->type == Type::OverTemp; CHECK(!any); }
+    // Boot with the NVS latch, no valid reading yet: active at once, value = trip temperature.
+    Engine b; Inputs bi; bi.dspThermal = true; bi.overTempLatched = true; bi.sysTempValid = false; bi.overTempTripC = 81.3f;
+    b.update(bi, 0, 0); n = b.drain(out, 24);
+    CHECK(n == 1 && out[0].active && out[0].hasValue && fabs(out[0].value - 81.3) < 0.01 && b.activeCount() == 1);
+    // Unknown trip temperature and no reading: value null, still active.
+    Engine u; Inputs ui; ui.dspThermal = true; ui.overTempLatched = true;
+    u.update(ui, 0, 0); n = u.drain(out, 24); CHECK(n == 1 && out[0].active && !out[0].hasValue);
+  }
+  // (1) offline queue replay rules (offline_policy.h).
+  {
+    using namespace pc::offq;
+    struct Rec { char action[28]; char id[8]; };
+    pc::RingQueue<Rec, 32> q;
+    auto add = [&](const char *a, const char *id) { Rec r{}; snprintf(r.action, sizeof r.action, "%s", a); snprintf(r.id, sizeof r.id, "%s", id); q.push(r); };
+    add("ev_over_temp", "1"); add("gateway_state", "2"); add("ev_over_temp", "3"); add("socket_paired", "4");
+    add("ev_bms_over_temp", "5"); add("socket_state", "6"); add("ev_temp_sensor_fault", "7"); add("ev_battery_low", "8");
+    add("ev_over_temp", "9");  // 9th: outside the first batch of 8
+    CHECK(isEventRecord("ev_over_temp") && !isEventRecord("gateway_state") && !isEventRecord("socket_paired") && !isEventRecord(nullptr));
+    CHECK(dropOnRestore("ev_over_temp") && !dropOnRestore("socket_forgotten") && !dropOnRestore("socket_reset_lockout"));
+    ResendGuard g;
+    CHECK(!g.dropEvents());
+    g.sent(); CHECK(!g.dropEvents()); g.sent(); CHECK(!g.dropEvents()); g.sent(); CHECK(g.dropEvents());
+    size_t gone = dropUnackedEvents(q, 8);
+    CHECK(gone == 5 && q.size() == 4);
+    CHECK(!strcmp(q.peek(0)->id, "2") && !strcmp(q.peek(1)->id, "4") && !strcmp(q.peek(2)->id, "6") && !strcmp(q.peek(3)->id, "9"));
+    g.acked(); CHECK(!g.dropEvents() && g.unacked() == 0);
+    // Without the cap the old 60 s backoff would resend forever: simulate 71 minutes of no ack.
+    uint32_t backoff = 2000, t = 0, next = 0, sends = 0; ResendGuard h;
+    pc::RingQueue<Rec, 32> q2; { Rec r{}; snprintf(r.action, sizeof r.action, "ev_over_temp"); q2.push(r); }
+    for (t = 0; t < 71u * 60u * 1000u; t += 100) {
+      if (q2.empty() || (int32_t)(t - next) < 0) continue;
+      if (h.dropEvents()) { dropUnackedEvents(q2, 8); h.acked(); if (q2.empty()) continue; }
+      ++sends; h.sent(); next = t + backoff; backoff = backoff < 60000 ? backoff * 2 : 60000;
+    }
+    CHECK(sends == 3 && q2.empty());
+  }
+  // Source checks: the device glue uses the shared JSON writer, the restore filter and the stack bump.
+  {
+    static char src[65536];
+    CHECK(read_text_file("../../src/events.cpp", src, sizeof src) && strstr(src, "pc::ev::eventFieldsTo(o,") && strstr(src, "T::BmsOverTemp"));
+    CHECK(read_text_file("../../src/offline_queue.cpp", src, sizeof src) && strstr(src, "pc::offq::dropOnRestore") &&
+          strstr(src, "pc::offq::dropUnackedEvents(q, OFFLINE_BATCH_MAX)") && strstr(src, "if (removed) g_resend.acked();"));
+    CHECK(read_text_file("../../src/dsp_thermal.cpp", src, sizeof src) && strstr(src, "\"thermal\", powercell::thermal::kTaskStackBytes"));
+    CHECK(powercell::thermal::kTaskStackBytes == 4096);
+  }
 }
 
 static void test_dsp_bms_select() {
@@ -3100,6 +3266,7 @@ int main() {
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
+  test_false_alerts_2531();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

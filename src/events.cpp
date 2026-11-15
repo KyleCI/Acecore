@@ -6,6 +6,7 @@
 #include "bms.h"
 #include "config.h"
 #include "events_core.h"
+#include "events_json.h"
 #include "log.h"
 #include "offline_queue.h"
 #include "sockets/sockets.h"
@@ -64,6 +65,7 @@ const char *title(const Event &e) {
       if (!strcmp(e.id, "over_temperature")) return e.active ? "Powercell too hot: output off" : "Powercell cooled down";
       return e.active ? "Inverter too hot" : "Inverter temperature normal";
     case T::TempSensorFault: return e.active ? "Temperature sensor fault" : "Temperature sensor working";
+    case T::BmsOverTemp: return e.active ? "Battery protection: temperature too high" : "Battery temperature normal";
     case T::BatteryFull: return e.active ? "Battery full" : "Battery charging";
     case T::BatteryLow: return e.active ? "Battery low" : "Battery level recovered";
     case T::GridDown: return e.active ? "Grid power lost" : "Grid power restored";
@@ -143,6 +145,7 @@ void service() {
     in.sysTemp = t.temp_c;
     in.sysTempFault = powercell::thermal::sensorFaulted(t.sampled, t.fault, t.age_ms);
     in.overTempLatched = powerguard::overTempLatched();
+    in.overTempTripC = powerguard::overTempTripC();
   }
 #endif
 #if POWERCELL_DSP011
@@ -174,18 +177,7 @@ void service() {
 }
 
 void eventToJson(JsonObject o, const void *p) {
-  const Event &e = *static_cast<const Event *>(p);
-  o["type"] = pc::ev::typeName(e.type);
-  o["active"] = e.active;
-  o["severity"] = pc::ev::sevName(e.severity);
-  if (e.hasValue) o["value"] = e.value; else o["value"] = nullptr;
-  if (e.socket[0]) o["socket"] = e.socket; else o["socket"] = nullptr;
-  o["code"] = e.code;
-  if (e.type == pc::ev::Type::ModeFallback || e.type == pc::ev::Type::LoadShed) o["reason"] = e.code;
-  if (e.ts) o["ts"] = e.ts; else o["ts"] = nullptr;
-  o["source"] = e.source;
-  if (e.permanent) o["permanent"] = true;
-  if (e.releaseRequires && e.active) o["release_requires"] = e.releaseRequires;
+  pc::ev::eventFieldsTo(o, *static_cast<const Event *>(p));  // events_json.h (host tested)
 }
 
 size_t appendPending(JsonArray arr) {

@@ -37,6 +37,7 @@ constexpr float kOnAllowedBelowC = 70.0f;  // a latched unit accepts a user ON o
 constexpr uint32_t kPeriodMs = 2000;
 constexpr uint32_t kStaleMs = 10000;
 constexpr int kSamples = 16;
+constexpr uint32_t kTaskStackBytes = 4096;  // 2.5.31: was 3072 (868 B free on the unit)
 
 constexpr float kR25Ohm = 10000.0f;
 constexpr float kBeta = 3950.0f;

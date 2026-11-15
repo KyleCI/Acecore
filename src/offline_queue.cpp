@@ -8,6 +8,7 @@
 #include "config.h"
 #include "log.h"
 #include "ring_queue.h"
+#include "offline_policy.h"
 #include "settings.h"
 
 namespace offlineq {
@@ -27,6 +28,7 @@ bool dirty = false, urgent = false;
 uint32_t lastCheckpoint = 0, nextAttempt = 0, backoff = 2000, counter = 0;
 uint16_t bootCount = 0;
 uint32_t dropCount = 0;
+pc::offq::ResendGuard g_resend;  // 2.5.31: unacked offline_sync batches (ev_* records are dropped after 3)
 
 bool isLifecycle(const Event &e) { return !strncmp(e.action, "socket_", 7); }
 
@@ -62,7 +64,13 @@ void begin() {
     if (len && len % sizeof(Event) == 0 && len <= sizeof(Event) * OFFLINE_QUEUE_CAPACITY) {
       Event *tmp = g_stage;
       p.getBytes("events", tmp, len);
-      for (size_t i = 0; i < len / sizeof(Event); ++i) q.push(tmp[i]);
+      size_t stale = 0;
+      for (size_t i = 0; i < len / sizeof(Event); ++i) {
+        tmp[i].action[sizeof tmp[i].action - 1] = 0;
+        if (pc::offq::dropOnRestore(tmp[i].action)) { ++stale; continue; }  // 2.5.31: stale ev_* alerts from an earlier boot
+        q.push(tmp[i]);
+      }
+      if (stale) { dirty = urgent = true; LOGW("SYNC", "STALE_EVENTS", "dropped %u ev_* records from an earlier boot (live state goes in active_events)", (unsigned)stale); }
     }
     p.end();
   }
@@ -96,12 +104,23 @@ bool queue(const char *action, const char *socketId, const char *value) {
   return true;
 }
 
-void flushNow() { nextAttempt = 0; backoff = 2000; }
+void flushNow() { nextAttempt = 0; backoff = 2000; }  // the unacked count is kept: a reconnect is not an ack
 
 void service(bool connected) {
   uint32_t now = millis();
   if (dirty && (urgent || now - lastCheckpoint >= OFFLINE_CHECKPOINT_MS)) checkpoint();
   if (!connected || q.empty() || (int32_t)(now - nextAttempt) < 0) return;
+  if (g_resend.dropEvents()) {  // 2.5.31: an unacked ev_* notification is never re-sent forever
+    xSemaphoreTake(mx, portMAX_DELAY);
+    size_t gone = pc::offq::dropUnackedEvents(q, OFFLINE_BATCH_MAX);
+    size_t left = q.size();
+    if (gone) dirty = urgent = true;
+    xSemaphoreGive(mx);
+    uint8_t tries = g_resend.unacked();
+    g_resend.acked();  // the user actions left get a fresh count
+    if (gone) LOGW("SYNC", "EV_DROPPED", "%u ev_* records dropped after %u offline_sync sends with no ack; pending=%u", (unsigned)gone, (unsigned)tries, (unsigned)left);
+    if (!left) return;
+  }
   JsonDocument doc;
   doc["type"] = "offline_sync";
   backend::addIdentity(doc);
@@ -121,6 +140,8 @@ void service(bool connected) {
   }
   xSemaphoreGive(mx);
   backend::send(doc);
+  g_resend.sent();
+  if (g_resend.unacked() > 1) LOGI("SYNC", "RESEND", "offline_sync batch=%u unacked_sends=%u", (unsigned)events.size(), (unsigned)g_resend.unacked());
   nextAttempt = now + backoff;               // resend only if no ack arrives
   backoff = backoff < 60000 ? backoff * 2 : 60000;
 }
@@ -135,6 +156,7 @@ void acknowledge(JsonArrayConst ids) {
   size_t left = q.size();
   xSemaphoreGive(mx);
   nextAttempt = 0; backoff = 2000;  // next batch right away
+  if (removed) g_resend.acked();  // an ack that matched nothing does not count (no replay loop)
   LOGI("SYNC", "ACK", "removed=%u pending=%u", (unsigned)removed, (unsigned)left);
 }
 

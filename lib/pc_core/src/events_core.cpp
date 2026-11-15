@@ -19,6 +19,7 @@ const char *typeName(Type t) {
     case Type::ModeFallback: return "mode_fallback";
     case Type::LoadShed: return "load_shed";
     case Type::TempSensorFault: return "temp_sensor_fault";
+    case Type::BmsOverTemp: return "bms_over_temp";
   }
   return "unknown";
 }
@@ -89,7 +90,9 @@ const BitMap kStmBits[8] = {
 struct BmsMap { Type type; Sev sev; };
 BmsMap bmsMap(int bit) {
   switch (bit) {
-    case 1: case 8: case 15: case 21: return {Type::OverTemp, Sev::Critical};
+    // 2.5.31: BMS temperature protection is its own type (bms_over_temp), never the
+    // inverter/system over_temp the backend titles "Inverter too hot".
+    case 1: case 8: case 15: case 21: return {Type::BmsOverTemp, Sev::Critical};
     case 6: case 7: case 13: case 14: return {Type::Overcurrent, Sev::Critical};
     case 11: case 12: return {Type::BatteryLow, Sev::Critical};
     case 4: case 5: case 16: case 17: return {Type::BmsFault, Sev::Critical};
@@ -146,14 +149,23 @@ void Engine::update(const Inputs &in, uint32_t now, uint32_t ts) {
   // ---- DSP system temperature (NTC GPIO33) ----------------------------------------
   // over_temperature: the 80 C cutoff latch. Same type as the STM32 thermal alert
   // (over_temp) so the server's existing over_temp notification path carries it.
-  // Raised on the latch edge, cleared when the latch is cleared (user ON below 70 C).
-  // temp_sensor_fault: open, short, out of range or stale. Raised once after 4 s,
-  // cleared after 10 s valid. No cutoff on a fault alone.
+  // Raised on the latch edge (or at boot from the NVS latch), held active (and so in
+  // active_events) for as long as the latch is set, cleared only when the latch is
+  // cleared (user ON below 70 C). Its value is the live NTC temperature when valid,
+  // else the trip temperature. An invalid NTC never raises it (the latch needs a valid
+  // reading >= 80 C): an invalid NTC is temp_sensor_fault only.
+  // temp_sensor_fault: open, short, out of range or stale. Raised after 10 s, cleared after
+  // 120 s valid; a new episode within 10 min of a clear needs 60 s. No cutoff on a fault alone.
   if (in.dspThermal) {
-    cond({"over_temperature", Type::OverTemp, Sev::Critical, in.sysTempValid, in.sysTemp, "system_ntc_80c_cutoff", nullptr, "esp", false, 0, 0,
-          "cool_below_70c_then_on"}, in.overTempLatched, now, ts);
+    const bool live = in.sysTempValid && isfinite(in.sysTemp);
+    const bool trip = isfinite(in.overTempTripC);
+    cond({"over_temperature", Type::OverTemp, Sev::Critical, live || trip, live ? in.sysTemp : (trip ? in.overTempTripC : 0.f),
+          "system_ntc_80c_cutoff", nullptr, "esp", false, 0, 0, "cool_below_70c_then_on"}, in.overTempLatched, now, ts);
+    const bool wasActive = isActive("temp_sensor_fault");
+    const uint32_t onMs = (tsfCleared_ && now - tsfClearMs_ < kTempSensorFaultRearmWindowMs) ? kTempSensorFaultRearmMs : kTempSensorFaultOnMs;
     cond({"temp_sensor_fault", Type::TempSensorFault, Sev::Warning, false, 0, "ntc_open_short_range", nullptr, "esp", false,
-          kTempSensorFaultOnMs, kTempSensorFaultOffMs}, in.sysTempFault, now, ts);
+          onMs, kTempSensorFaultOffMs}, in.sysTempFault, now, ts);
+    if (wasActive && !isActive("temp_sensor_fault")) { tsfCleared_ = true; tsfClearMs_ = now; }
   }
   // ---- DSP Manual output power limit ----------------------------------------------
   // ac_output_limit (warning): load above the Manual ceiling or the usable rating for 3 s.
