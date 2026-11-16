@@ -12,16 +12,17 @@ namespace live {
 // ---- Powercell model (factory-set, NVS pc_cfg/model) ----
 // ASSUMPTION (Caleb 2026-11-04): usable continuous power = 90 % of rated kVA
 // (5 kVA -> 4.5 kW, 3.5 kVA -> 3.15 kW = 3150 W). Confirm the derating per model with hardware.
+// 2.5.33: 1.5 kVA -> 1.35 kW (1350 W) is PROVISIONAL, scaled from 3.5 kVA pending real specs.
 struct Model { const char *code; float ratedKva; float usableKw; };
-// Accepts "PC3K", "PC3_5K", "PC5K", "PC10K" (case-insensitive; "5K", "5KVA",
-// "PC5KVA", "3.5K", "PC3.5K", "35K", "PC35K" too). Returns nullptr when unknown or empty.
+// Accepts "PC3K", "PC3_5K", "PC5K", "PC10K", "PC1_5K" (case-insensitive; "5K", "5KVA",
+// "PC5KVA", "3.5K", "PC3.5K", "35K", "PC35K", "1.5K", "PC1.5K", "15K", "PC15K" too). Returns nullptr when unknown or empty.
 const Model *findModel(const char *code);
 const Model *models(size_t &count);
 // Customer product name for an OTA / factory hardware model. Display, factory
 // warnings and docs only: never used for OTA matching, provisioning keys, or
 // backend identity. "pc-dsp011-35kw" / "pc-stm01-35kw" -> "Prime Plus";
-// "pc-dsp011-5kw" / "pc-stm01-5kw" -> "Ultra". Otherwise nullptr.
-// There is no 1.5 kVA (Powercell Prime) model id.
+// "pc-dsp011-5kw" / "pc-stm01-5kw" -> "Ultra";
+// "pc-dsp011-15kw" / "pc-stm01-15kw" -> "Prime" (1.5 kVA, 2.5.33). Otherwise nullptr.
 const char *productNameForHardwareModel(const char *hardwareModel);
 
 enum class Source : uint8_t { None, Battery, Grid, Solar };

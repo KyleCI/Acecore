@@ -143,11 +143,13 @@ when the body repeats the value already in the image. There is no web,
 socket, or serial command that writes it.
 
 This is rated active watts, not kVA. No power factor is applied. The only
-armed images are 5000 W usable 4500 W (`pc-dsp011-5kw`) and 3500 W usable
-3150 W (`pc-dsp011-35kw`). `rated_kva` on setup info stays null. The 5 kW
+armed images are 5000 W usable 4500 W (`pc-dsp011-5kw`), 3500 W usable
+3150 W (`pc-dsp011-35kw`) and, from 2.5.33, 1500 W usable 1350 W
+(`pc-dsp011-15kw`, PROVISIONAL: scaled from 3.5 kVA pending real specs). `rated_kva` on setup info stays null. The 5 kW
 image sets `usable_kw` to 4.5 and `powercell_model` to `PC5K`. The 3.5 kW
-image sets `usable_kw` to 3.15 and leaves `powercell_model` null. An image without a rating, an image whose rating is not one of those
-two, or a leftover `system_cfg/rated` value that does not equal the image,
+image sets `usable_kw` to 3.15 and leaves `powercell_model` null. The 1.5 kW
+image sets `usable_kw` to 1.35 and leaves `powercell_model` null. An image without a rating, an image whose rating is not one of those
+three, or a leftover `system_cfg/rated` value that does not equal the image,
 leaves `overload_configured` false and `usable_active_w` null. The firmware
 does not fill in or overwrite that stored value.
 
@@ -156,7 +158,8 @@ does not fill in or overwrite that stored value.
 ```
 
 The 3.5 kW image is the same object with `factory_variant` `pc-dsp011-35kw`,
-`rated_active_w` 3500, and `usable_active_w` 3150. `GET /v2/status` repeats
+`rated_active_w` 3500, and `usable_active_w` 3150. The 1.5 kW image uses
+`pc-dsp011-15kw`, 1500 and 1350. `GET /v2/status` repeats
 `factory_variant`, `rated_active_w`, `usable_active_w`,
 `overload_configured`, and `rating_writable:false` for a session or a LAN
 token. `total_output_coverage_verified` stays false.

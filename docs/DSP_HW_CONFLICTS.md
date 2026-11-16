@@ -1,6 +1,6 @@
 # DSP hardware conflicts (Dubem pin map, 2026-11-10)
 
-These apply to `esp32dev_dsp011_5kw` and `esp32dev_dsp011_35kw` only. STM images keep the previous pin map and the JK-PB BMS.
+These apply to `esp32dev_dsp011_5kw`, `esp32dev_dsp011_35kw` and (2.5.33) `esp32dev_dsp011_15kw` only. STM images keep the previous pin map and the JK-PB BMS.
 
 1. GPIO15 power polarity. Resolved: HIGH = ON. Caleb confirmed on 2026-11-10 at 11:53 WAT that the v0.1.1 transistor needs HIGH on its base, matching Dubem's `pinDefines.h` comment. That supersedes the 05:20 LOW = ON choice. `DSP_PWR_ACTIVE_LEVEL` is 1. Off is GPIO15 LOW. The boot latch drives LOW and holds it before `setup()`, and again as the first line of `setup()`, and keeps that level until an allowed ON. GPIO15 is a strapping pin (MTDO) with a default pull-up, so a cold power-on still presents HIGH until the application runs. That window is a board concern, not something the ROM lets firmware close. Switching fix (2026-11-10): GPIO15 resets into its IO_MUX JTAG function (MTDO). The firmware through cbf48bd/a1e3bad only used `gpio_set_level`/`gpio_set_direction`, which never select the GPIO function, so the pad ignored every write and ON never reached the transistor. Every DSP write now runs `v011_dsp_pad_steps()`: hold release, level, `esp_rom_gpio_pad_select_gpio`, pulls off, output enable, level, and hold only at the off level. Dubem's firmware uses `pinMode(PWR_PIN, OUTPUT)` + `digitalWrite` (which select the GPIO function) and switches the same board.
 

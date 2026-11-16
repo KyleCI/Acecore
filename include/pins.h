@@ -143,6 +143,9 @@ static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "5 kW DSP uses JK-PB
 #if defined(POWERCELL_FACTORY_RATED_ACTIVE_W) && POWERCELL_FACTORY_RATED_ACTIVE_W == 3500
 static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "3.5 kW DSP uses JK-PB (Dubem working firmware)");
 #endif
+#if defined(POWERCELL_FACTORY_RATED_ACTIVE_W) && POWERCELL_FACTORY_RATED_ACTIVE_W == 1500
+static_assert(DSP_BMS_JKPB == 1 && POWERCELL_BMS_JKPB == 1, "1.5 kW DSP uses JK-PB (same board as 3.5 kW)");
+#endif
 static_assert(PIN_LED_RED == 13 && PIN_LED_ORANGE == 12 && PIN_LED_GREEN == 14, "DSP status lights: red 13, orange 12, green 14");
 static_assert(PIN_FRONT_LIGHT == 27 && PIN_LED_GREEN != PIN_FRONT_LIGHT, "front light is not the green LED");
 static_assert(PIN_GRID_SENSE == 39, "DSP grid sense is GPIO39");

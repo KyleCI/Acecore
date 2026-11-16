@@ -123,4 +123,44 @@ class R(unittest.TestCase):
         ok, msg = f.check_reprovision(c, "ACE-000005", "F42DC9C181A8", "unset")
         self.assertTrue(ok); self.assertIn("WARNING", msg)
 
+class Prime15(unittest.TestCase):
+    """2.5.33: Powercell Prime 1.5 kVA (pc-dsp011-15kw / pc-stm01-15kw, NVS PC1_5K). Provisional ratings."""
+    def test_ota_models(self):
+        self.assertEqual(len(f.OTA_MODELS), 6)
+        for m in ("pc-dsp011-15kw", "pc-stm01-15kw"):
+            self.assertIn(m, f.OTA_MODELS)
+            self.assertEqual(f.require_ota_model({"hardware_model": m}), m)
+            body = f.register_payload("F42DC9C090A8", "ab" * 32, "", "ACE-000001", "2.5.33", m)
+            self.assertEqual(body["model"], m)
+        for bad in ("pc-dsp011-1.5kw", "pc-dsp011-15kW", "pc-dsp011-1_5kw", "pc-stm01-15k", "PC1_5K"):
+            with self.assertRaises(ValueError):
+                f.require_ota_model({"hardware_model": bad})
+        sys.path.insert(0, os.path.dirname(__file__))
+        import ota_upload
+        self.assertEqual(set(ota_upload.MODELS), set(f.OTA_MODELS))
+
+    def test_nvs_model(self):
+        self.assertIn("PC1_5K", f.MODELS)
+        self.assertIn("PC3K", f.MODELS)  # legacy 3 kVA kept, not reused for 1.5 kVA
+        for v in ("PC1_5K", "pc1_5k", "1.5K", "1.5kva", "PC1.5K", "15K", "PC15K", " pc15k ", "PC1.5KVA"):
+            self.assertEqual(f.normalize_model(v), "PC1_5K")
+        self.assertEqual(f.normalize_model("PC3K"), "PC3K")
+        self.assertEqual(f.normalize_model("35K"), "PC3_5K")
+
+    def test_mismatch_warnings(self):
+        for hw in ("pc-dsp011-15kw", "pc-stm01-15kw"):
+            self.assertIsNone(f.model_hw_mismatch_warning("PC1_5K", hw))
+            for m in ("PC5K", "PC3_5K", "PC3K", "PC10K"):
+                w = f.model_hw_mismatch_warning(m, hw)
+                self.assertIsNotNone(w, (m, hw))
+                self.assertIn(m, w)
+            self.assertIn("Powercell Prime 1.5 kVA", f.model_hw_mismatch_warning("PC3_5K", hw))
+        for hw in ("pc-dsp011-35kw", "pc-stm01-35kw"):
+            self.assertIn("Powercell Prime Plus 3.5 kVA", f.model_hw_mismatch_warning("PC1_5K", hw))
+        for hw in ("pc-dsp011-5kw", "pc-stm01-5kw"):
+            self.assertIn("Powercell Ultra 5 kVA", f.model_hw_mismatch_warning("PC1_5K", hw))
+        # Existing pairs unchanged: a 15kw id is not mistaken for a 5kw id.
+        self.assertIsNone(f.model_hw_mismatch_warning("PC5K", "pc-dsp011-5kw"))
+        self.assertIsNone(f.model_hw_mismatch_warning("PC3_5K", "pc-stm01-35kw"))
+
 if __name__ == "__main__": unittest.main()

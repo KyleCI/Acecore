@@ -57,7 +57,7 @@ void info() {
                 settings::wifiSsid().c_str(), locked);
   { const pc::live::Model *m = unitmodel::get();
     Serial.printf("model=%s rated_kva=%.1f usable_kw=%.2f\n", m ? m->code : "unset", m ? m->ratedKva : 0.0f, m ? m->usableKw : 0.0f); }
-  // OTA identity. Separate from model= above, which is the NVS PC3K/PC3_5K/PC5K/PC10K setting.
+  // OTA identity. Separate from model= above, which is the NVS PC3K/PC3_5K/PC5K/PC10K/PC1_5K setting.
   Serial.printf("hardware_model=%s\n", POWERCELL_HARDWARE_MODEL);
 #if POWERCELL_DSP011
   Serial.printf("bms=%s baud=%lu rx=%d tx=%d\n", POWERCELL_BMS_JKPB ? "JK-PB" : "JBD",
@@ -95,7 +95,7 @@ void set(const String &key, const String &value) {
     ok = unitmodel::set(value);
     const pc::live::Model *m = unitmodel::get();
     if (ok && m) Serial.printf("OK model=%s rated_kva=%.1f usable_kw=%.2f\n", m->code, m->ratedKva, m->usableKw);
-    else Serial.println(ok ? "OK model unset" : "ERR model must be PC3K|PC3_5K|PC5K|PC10K|none");
+    else Serial.println(ok ? "OK model unset" : "ERR model must be PC3K|PC3_5K|PC5K|PC10K|PC1_5K|none");
     return;
   }
   if (key == "stm32_proto") {

@@ -1,5 +1,20 @@
 # Collector firmware changelog
 
+## 2.5.33 (new model: Powercell Prime 1.5 kVA / 3 kWh, Caleb 16 Nov 2026)
+
+On top of 2.5.32 (3c60b00). Six product images (four existing plus two new). Build only.
+
+**PROVISIONAL:** every 1.5 kVA rating below is scaled from the 3.5 kVA model (usable = rated x 3150 / 3500 = 90 %) until Caleb sends the real 1.5 kVA hardware specs. Revisit before shipping a 1.5 kVA unit.
+
+- New OTA hardware models `pc-dsp011-15kw` and `pc-stm01-15kw` (Caleb 16 Nov), envs `esp32dev_dsp011_15kw` and `esp32dev_stm01_15kw`. Each mirrors its board's 35kw env: same pins, same JK-PB BMS (115200, RX17/TX16 on DSP), same feature flags. Customer name "Prime" (`productNameForHardwareModel`).
+- DSP factory rating `POWERCELL_FACTORY_RATED_ACTIVE_W=1500`, `POWERCELL_FACTORY_VARIANT="pc-dsp011-15kw"`; `SystemRating::kRated15kW = 1500`, `kUsable15kW = 1350` (3.5 kVA: 3500 / 3150). `factory_rating.h` now accepts 0, 5000, 3500 or 1500. The AC ceiling maximum and the system overload bound follow the usable value (1350 W). `pins.h` asserts JK-PB on the 1500 W DSP image. The STM 15kw image carries no factory rating, like the other STM images.
+- New NVS model `PC1_5K` (1.5 kVA / 1.35 kW usable) in `pc::live` models, with aliases `1.5K`, `PC1.5K`, `1.5KVA`, `15K`, `PC15K`. The legacy `PC3K` (3 kVA) is unchanged and is not reused.
+- `tools/factory.py`: `OTA_MODELS` and NVS `MODELS` include the new ids; `normalize_model` aliases; mismatch warnings for PC1_5K vs 5kw/35kw images and for PC5K/PC3_5K/PC3K/PC10K on 15kw images. `tools/ota_upload.py` accepts the two new models.
+- Not scaled (not keyed by model today): the STM32 ESP-side overload rule (19 A raise / 17 A clear, `events_core.h`) and the STM energy limits (32 A, 280 V). Both are shared by the 5 kW and 3.5 kVA STM images. Battery capacity is not configured in firmware (it is read from the BMS), so 3 kWh appears only in docs.
+- Docs: `FACTORY_RATING.md`, `OTA_HARDWARE_MODEL.md`, README, `LOCAL_MANUAL_CONTRACT.md`, `POWER_UNITS.md`, `WIFI_AP_FALLBACK.md`, `DSP_HW_CONFLICTS.md`.
+- Backend and app must learn the two new ids before a 1.5 kVA unit can register or get OTA (see `docs/OTA_HARDWARE_MODEL.md`).
+- Host test `test_prime_15_2533`; `test_ota_hardware_model`, `test_factory_rating`, `test_dsp_bms_select` and `test_product_names_2532` extended; Makefile compile check `check_dsp_bms_15kw`; factory tests class `Prime15`.
+
 ## 2.5.32 (product rename for the 20 Nov launch, Caleb 16 Nov 2026)
 
 On top of 2.5.31 (b0d4cfd). All four product images. Display, factory-warning and documentation names only. Model IDs, env names, OTA identity strings and provisioning keys are unchanged.

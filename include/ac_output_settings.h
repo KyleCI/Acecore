@@ -69,6 +69,10 @@ class SystemRating {
   static constexpr int kRated35kW = 3500;
   static constexpr int kUsable5kW = 4500;
   static constexpr int kUsable35kW = 3150;
+  // 2.5.33 Powercell Prime 1.5 kVA. PROVISIONAL: 1500 * 3150 / 3500 = 1350, scaled
+  // from the 3.5 kVA image until the real 1.5 kVA specs are confirmed.
+  static constexpr int kRated15kW = 1500;
+  static constexpr int kUsable15kW = 1350;
   static int usableFor(int rated_active_w);
 
   SystemRating(int factory_rated_w, const char* variant);

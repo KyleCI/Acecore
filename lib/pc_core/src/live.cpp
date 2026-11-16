@@ -12,6 +12,7 @@ const Model kModels[] = {
   {"PC3_5K", 3.5f, 3.15f},  // Prime Plus 3.5 kVA / 3150 W usable (same as 35kw builds)
   {"PC5K", 5.0f, 4.5f},     // Ultra 5 kVA / 4500 W usable (same as 5kw builds)
   {"PC10K", 10.0f, 9.0f},
+  {"PC1_5K", 1.5f, 1.35f},  // Prime 1.5 kVA / 1350 W usable, PROVISIONAL (scaled from 3.5 kVA, 2.5.33)
 };
 bool charging(const Inputs &in) {
   if (in.chr == ChargeState::Bulk || in.chr == ChargeState::Absorb || in.chr == ChargeState::Float) return true;
@@ -34,6 +35,8 @@ const char *productNameForHardwareModel(const char *hardwareModel) {
     return "Prime Plus";
   if (!strcmp(hardwareModel, "pc-dsp011-5kw") || !strcmp(hardwareModel, "pc-stm01-5kw"))
     return "Ultra";
+  if (!strcmp(hardwareModel, "pc-dsp011-15kw") || !strcmp(hardwareModel, "pc-stm01-15kw"))
+    return "Prime";
   return nullptr;
 }
 
@@ -52,6 +55,8 @@ const Model *findModel(const char *code) {
   const char *b = !strncmp(n, "PC", 2) ? n + 2 : n;
   // Alias: 35K / PC35K -> 3_5K (Powercell Prime Plus 3.5 kVA)
   if (!strcmp(b, "35K")) b = "3_5K";
+  // Alias: 15K / PC15K -> 1_5K (Powercell Prime 1.5 kVA, 2.5.33)
+  if (!strcmp(b, "15K")) b = "1_5K";
   for (const Model &m : kModels) if (!strcmp(b, m.code + 2)) return &m;
   return nullptr;
 }

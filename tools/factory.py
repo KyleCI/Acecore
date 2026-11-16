@@ -14,7 +14,7 @@ What it does (real console commands from src/console.cpp):
   SET api_key from factory.env. SET ota_url only when OTA_URL is non-empty;
   a blank OTA_URL or API_URL uses https://api-dev.acecore.tech and is not sent empty.
   SERIAL ACE-NNNNNN from factory_state/serial_counter.json (counter bumps only after "OK serial set")
-  --register: INFO hardware_model must be one of the four pc-* OTA models
+  --register: INFO hardware_model must be one of the six pc-* OTA models
               SECRET (read once, never printed) -> POST {API}/api/devices/register (X-Admin-Key)
               body adds "model" from that INFO line, not from --model
               -> SET local_tok <token from the response>
@@ -44,8 +44,10 @@ DEFAULT_API = DEFAULT_OTA
 SERIAL_RE = re.compile(r"^ACE-\d{6}$")  # fid::validSerial
 CSV_FIELDS = ["serial", "device_id", "mac", "gw_name", "ap_ssid", "fw", "registered", "locked",
               "timestamp", "hardware_model"]
-# Compile-time OTA models. Not the NVS --model values PC3K/PC3_5K/PC5K/PC10K.
-OTA_MODELS = ("pc-dsp011-5kw", "pc-dsp011-35kw", "pc-stm01-5kw", "pc-stm01-35kw")
+# Compile-time OTA models. Not the NVS --model values PC3K/PC3_5K/PC5K/PC10K/PC1_5K.
+# 2.5.33: -15kw is Powercell Prime 1.5 kVA (ratings provisional, scaled from 3.5 kVA).
+OTA_MODELS = ("pc-dsp011-5kw", "pc-dsp011-35kw", "pc-dsp011-15kw",
+              "pc-stm01-5kw", "pc-stm01-35kw", "pc-stm01-15kw")
 
 
 # ---------- pure helpers (unit tested) ----------
@@ -163,7 +165,7 @@ def serial_in_log(csv_path, serial):
         return any(r.get("serial") == serial for r in csv.DictReader(f))
 
 
-MODELS = ("PC3K", "PC3_5K", "PC5K", "PC10K")  # firmware pc::live::findModel (2.5.4/2.5.13)
+MODELS = ("PC3K", "PC3_5K", "PC5K", "PC10K", "PC1_5K")  # firmware pc::live::findModel (2.5.4/2.5.13/2.5.33)
 
 
 def require_ota_model(info):
@@ -206,7 +208,8 @@ def label_file_text(label, extra_lines, hardware_model):
 
 
 def normalize_model(m):
-    """'pc5k', '5K', '5kva' -> 'PC5K'; '3.5K'/'PC35K'/'pc3_5k' -> 'PC3_5K'."""
+    """'pc5k', '5K', '5kva' -> 'PC5K'; '3.5K'/'PC35K'/'pc3_5k' -> 'PC3_5K';
+    '1.5K'/'PC15K'/'pc1_5k' -> 'PC1_5K'."""
     s = "".join(str(m).split()).upper()
     if s.endswith("KVA"):
         s = s[:-2]
@@ -215,6 +218,8 @@ def normalize_model(m):
     s = s.replace(".", "_")  # PC3.5K -> PC3_5K
     if s == "PC35K":
         s = "PC3_5K"
+    if s == "PC15K":
+        s = "PC1_5K"
     if s not in MODELS:
         raise ValueError(f"model must be one of {', '.join(MODELS)}")
     return s
@@ -238,7 +243,17 @@ def model_hw_mismatch_warning(nvs_model, hardware_model):
     if hw.endswith("-5kw") and m == "PC3K":
         return ("WARNING: --model PC3K (legacy 3 kVA) on a 5kw image (%s); "
                 "prefer PC5K" % hw)
-    if hw.endswith(("-5kw", "-35kw")) and m == "PC10K":
+    # 2.5.33 Powercell Prime 1.5 kVA (-15kw). Note "-15kw" does not end with "-5kw".
+    if hw.endswith("-15kw") and m in ("PC5K", "PC3_5K", "PC3K"):
+        return ("WARNING: --model %s on a 15kw image (%s); prefer PC1_5K for "
+                "Powercell Prime 1.5 kVA" % (m, hw))
+    if hw.endswith("-35kw") and m == "PC1_5K":
+        return ("WARNING: --model PC1_5K on a 35kw image (%s); prefer PC3_5K for "
+                "Powercell Prime Plus 3.5 kVA" % hw)
+    if hw.endswith("-5kw") and m == "PC1_5K":
+        return ("WARNING: --model PC1_5K on a 5kw image (%s); prefer PC5K for "
+                "Powercell Ultra 5 kVA" % hw)
+    if hw.endswith(("-5kw", "-35kw", "-15kw")) and m == "PC10K":
         return ("WARNING: --model PC10K on image %s; that NVS model is for a "
                 "10 kVA unit" % hw)
     return None
@@ -342,7 +357,7 @@ def main(argv=None):
     ap.add_argument("--reuse", action="store_true", help="unit already has a serial: keep it, redo the rest")
     ap.add_argument("--register", action="store_true", help="register on the backend (POST /api/devices/register)")
     ap.add_argument("--lock", action="store_true", help="LOCK after labelling (customer units only; needs --register)")
-    ap.add_argument("--model", help="Powercell model PC3K|PC3_5K|PC5K|PC10K (fw 2.5.4+, SET model; stored in NVS)")
+    ap.add_argument("--model", help="Powercell model PC3K|PC3_5K|PC5K|PC10K|PC1_5K (fw 2.5.4+, SET model; stored in NVS)")
     ap.add_argument("--serial", help="with --reprovision: restore this serial (ACE-NNNNNN) on an erased board")
     ap.add_argument("--reprovision", action="store_true",
                     help="erased board: write --serial again (no counter bump), new secret; with --register the "

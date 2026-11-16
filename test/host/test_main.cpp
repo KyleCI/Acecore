@@ -174,11 +174,13 @@ static void test_identity() {
 
 static void test_ota_hardware_model() {
   using namespace pc;
-  const char* models[] = {"pc-dsp011-5kw", "pc-dsp011-35kw", "pc-stm01-5kw", "pc-stm01-35kw"};
-  char ids[4][128];
+  const char* models[] = {"pc-dsp011-5kw", "pc-dsp011-35kw", "pc-stm01-5kw", "pc-stm01-35kw",
+                          "pc-dsp011-15kw", "pc-stm01-15kw"};  // 2.5.33: Powercell Prime 1.5 kVA
+  const int kN = sizeof models / sizeof models[0];
+  char ids[6][128];
   char legacy[96];
   CHECK(otaFormatIdentity(legacy, sizeof legacy, "collector", "esp32dev", "2.5.14"));
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < kN; ++i) {
     CHECK(otaFormatIdentity(ids[i], sizeof ids[i], "collector", models[i], "2.5.14"));
     CHECK(otaModelAccepts(ids[i], strlen(ids[i]), models[i], "2.5.13", "2.5.14", models[i]));
     CHECK(!otaModelAccepts(ids[i], strlen(ids[i]), models[i], "2.5.13", "2.5.14", nullptr));
@@ -186,7 +188,7 @@ static void test_ota_hardware_model() {
     CHECK(!otaModelAccepts(legacy, strlen(legacy), models[i], "2.5.13", "2.5.14", models[i]));
     CHECK(!otaModelAccepts(ids[i], strlen(ids[i]), models[i], "2.5.13", "2.5.13", models[i]));
   }
-  for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) if (i != j) {
+  for (int i = 0; i < kN; ++i) for (int j = 0; j < kN; ++j) if (i != j) {
     CHECK(!otaModelAccepts(ids[i], strlen(ids[i]), models[j], "2.5.13", "2.5.14", models[i]));
     CHECK(!otaModelAccepts(ids[i], strlen(ids[i]), models[j], "2.5.13", "2.5.14", models[j]));
   }
@@ -955,6 +957,14 @@ static void test_factory_rating() {
   CHECK(mid.armed() && mid.usableW() == 3150);
   mid.observeStore(false, 5000);
   CHECK(mid.armed());
+  // 2.5.33 Powercell Prime 1.5 kVA: PROVISIONAL 1500 W rated, 1350 W usable (scaled from 3.5 kVA).
+  SystemRating small(1500, "pc-dsp011-15kw");
+  CHECK(small.armed() && small.usableW() == 1350 && !strcmp(small.state().variant, "pc-dsp011-15kw"));
+  small.observeStore(true, 3500);
+  CHECK(!small.armed() && !strcmp(small.reason(), "rating_mismatch"));
+  SystemRating mid2(3500, "pc-dsp011-35kw");
+  mid2.observeStore(true, 1500);
+  CHECK(!mid2.armed() && !strcmp(mid2.reason(), "rating_mismatch"));  // 1500 is a known rating, not invalid
   SystemRating none(0, "unrated");
   CHECK(!none.armed() && none.usableW() == 0);
   none.observeStore(true, 5000);
@@ -2749,6 +2759,8 @@ static void test_dsp_bms_select() {
   CHECK(flag_in_env(buf, "esp32dev_dsp011_35kw", "DSP_BMS_JKPB=1"));  // Dubem working firmware: JK-PB on both
   CHECK(!flag_in_env(buf, "esp32dev_stm01_5kw", "DSP_BMS_JKPB"));
   CHECK(!flag_in_env(buf, "esp32dev_stm01_35kw", "DSP_BMS_JKPB"));
+  CHECK(flag_in_env(buf, "esp32dev_dsp011_15kw", "DSP_BMS_JKPB=1"));  // 2.5.33 Prime 1.5 kVA: same board as 35kw
+  CHECK(!flag_in_env(buf, "esp32dev_stm01_15kw", "DSP_BMS_JKPB"));
 }
 
 static void test_live_grid() {  // grid_available as an input to live source/status
@@ -3025,7 +3037,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.32" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.33" && !s35.found());
   }
 }
 
@@ -3266,15 +3278,8 @@ static void test_product_names_2532() {  // 2.5.32: display names Prime Plus / U
   CHECK(!productNameForHardwareModel("PC5K"));
   CHECK(!productNameForHardwareModel("PC3_5K"));
   CHECK(!productNameForHardwareModel("esp32dev"));
-  CHECK(!productNameForHardwareModel("pc-dsp011-15kw"));
   CHECK(!productNameForHardwareModel("pc-dsp011-5kW"));  // OTA ids are exact, case-sensitive
-  // No 1.5 kVA / Prime model id.
-  CHECK(!findModel("PC1_5K") && !findModel("1.5K") && !findModel("PC1.5K") && !findModel("15K"));
-  size_t n = 0; const Model *all = models(n);
-  CHECK(n == 4);
-  bool saw15 = false;
-  for (size_t i = 0; i < n; ++i) if (all[i].ratedKva == 1.5f) saw15 = true;
-  CHECK(!saw15);
+  // 2.5.33 added the 1.5 kVA Prime ids; see test_prime_15_2533.
   // NVS model codes and ratings are unchanged.
   const Model *m5 = findModel("PC5K"); const Model *m35 = findModel("PC3_5K");
   CHECK(m5 && !strcmp(m5->code, "PC5K") && m5->ratedKva == 5.0f && m5->usableKw == 4.5f);
@@ -3300,8 +3305,75 @@ static void test_product_names_2532() {  // 2.5.32: display names Prime Plus / U
   std::string ini = slurp("../../platformio.ini");
   CHECK(ini.find("POWERCELL_HARDWARE_MODEL=\\\"pc-dsp011-5kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_HARDWARE_MODEL=\\\"pc-dsp011-35kw\\\"") != std::string::npos);
-  CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") != std::string::npos);
-  CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.31\\\"") == std::string::npos);
+}
+
+static int count_of(const std::string &h, const std::string &n) {
+  int c = 0; for (size_t p = h.find(n); p != std::string::npos; p = h.find(n, p + 1)) ++c; return c;
+}
+
+static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIONAL ratings scaled from 3.5 kVA
+  using namespace pc::live;
+  CHECK(!strcmp(productNameForHardwareModel("pc-dsp011-15kw"), "Prime"));
+  CHECK(!strcmp(productNameForHardwareModel("pc-stm01-15kw"), "Prime"));
+  CHECK(!productNameForHardwareModel("pc-dsp011-1.5kw") && !productNameForHardwareModel("pc-dsp011-15kW"));
+  CHECK(!productNameForHardwareModel("PC1_5K"));
+  // NVS model PC1_5K, not the legacy PC3K.
+  const Model *m15 = findModel("PC1_5K");
+  CHECK(m15 && !strcmp(m15->code, "PC1_5K") && m15->ratedKva == 1.5f && m15->usableKw == 1.35f);
+  CHECK(findModel("1.5K") == m15 && findModel("PC1.5K") == m15 && findModel("1.5kva") == m15);
+  CHECK(findModel("15K") == m15 && findModel("PC15K") == m15 && findModel(" pc1_5k ") == m15 && findModel("PC1.5KVA") == m15);
+  const Model *m3 = findModel("PC3K");
+  CHECK(m3 && m3 != m15 && m3->ratedKva == 3.0f && m3->usableKw == 2.7f);  // legacy kept, not reused
+  CHECK(findModel("35K") == findModel("PC3_5K") && findModel("5K") == findModel("PC5K"));
+  size_t n = 0; const Model *all = models(n);
+  CHECK(n == 5);
+  int saw15 = 0; for (size_t i = 0; i < n; ++i) if (all[i].ratedKva == 1.5f) ++saw15;
+  CHECK(saw15 == 1);
+  // Same usable ratio as 3.5 kVA: 3150 / 3500 = 0.9.
+  NEAR(m15->usableKw / m15->ratedKva, 3.15f / 3.5f, 1e-5);
+  float pct = 0; CHECK(loadPct(675, m15, pct)); NEAR(pct, 50.0, 0.01);
+  // Factory rating and AC ceiling bound.
+  using namespace powercell;
+  CHECK(SystemRating::kRated15kW == 1500 && SystemRating::kUsable15kW == 1350);
+  CHECK(SystemRating::usableFor(1500) == 1350);
+  CHECK(SystemRating::kUsable15kW * SystemRating::kRated35kW == SystemRating::kUsable35kW * SystemRating::kRated15kW);
+  CHECK(SystemRating::usableFor(3500) == 3150 && SystemRating::usableFor(5000) == 4500);
+  CHECK(SystemRating::usableFor(3000) == 0 && SystemRating::usableFor(1350) == 0);
+  AcOutputSettings ceiling;
+  auto hi = ceiling.set(SettingsAuth::Ok, 1, true, 1351, true, 1, 1350, 0, true);
+  CHECK(!hi.applied && hi.reason == SettingsReason::CeilingAboveUsable);
+  auto ok = ceiling.set(SettingsAuth::Ok, 1, true, 1350, true, 1, 1350, 0, true);
+  CHECK(ok.applied && ok.readback.ceiling_w == 1350);
+  // Images: platformio.ini has the six envs, each with its own model and 2.5.33.
+  std::string ini = slurp("../../platformio.ini");
+  CHECK(ini.find("[env:esp32dev_dsp011_15kw]") != std::string::npos);
+  CHECK(ini.find("[env:esp32dev_stm01_15kw]") != std::string::npos);
+  CHECK(ini.find("POWERCELL_HARDWARE_MODEL=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
+  CHECK(ini.find("POWERCELL_HARDWARE_MODEL=\\\"pc-stm01-15kw\\\"") != std::string::npos);
+  CHECK(ini.find("POWERCELL_FACTORY_VARIANT=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
+  CHECK(ini.find("POWERCELL_FACTORY_RATED_ACTIVE_W=1500") != std::string::npos);
+  CHECK(count_of(ini, "[env:esp32dev_") == 6);
+  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.33\\\"") == 6);
+  CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") == std::string::npos);
+  // The STM 15kw image carries no factory rating, like the other STM images.
+  char buf[16384]; CHECK(ini.size() < sizeof buf);
+  memcpy(buf, ini.c_str(), ini.size() + 1);
+  CHECK(!flag_in_env(buf, "esp32dev_stm01_15kw", "POWERCELL_FACTORY_RATED_ACTIVE_W"));
+  CHECK(flag_in_env(buf, "esp32dev_dsp011_15kw", "POWERCELL_FACTORY_RATED_ACTIVE_W=1500"));
+  CHECK(!flag_in_env(buf, "esp32dev_dsp011_15kw", "PC3K"));
+  // Docs mark the 1.5 kVA ratings as provisional.
+  std::string fr = slurp("../../docs/FACTORY_RATING.md");
+  CHECK(fr.find("pc-dsp011-15kw") != std::string::npos && fr.find("PROVISIONAL") != std::string::npos);
+  std::string ota = slurp("../../docs/OTA_HARDWARE_MODEL.md");
+  CHECK(ota.find("`pc-dsp011-15kw`") != std::string::npos && ota.find("`pc-stm01-15kw`") != std::string::npos);
+  CHECK(ota.find("PROVISIONAL") != std::string::npos);
+  std::string cl = slurp("../../CHANGELOG.md");
+  CHECK(cl.find("2.5.33") != std::string::npos && cl.find("PROVISIONAL") != std::string::npos);
+  std::string fac = slurp("../../tools/factory.py");
+  CHECK(fac.find("\"pc-dsp011-15kw\"") != std::string::npos && fac.find("\"pc-stm01-15kw\"") != std::string::npos);
+  CHECK(fac.find("\"PC1_5K\"") != std::string::npos);
+  std::string up = slurp("../../tools/ota_upload.py");
+  CHECK(up.find("\"pc-dsp011-15kw\"") != std::string::npos && up.find("\"pc-stm01-15kw\"") != std::string::npos);
 }
 
 int main() {
@@ -3316,7 +3388,7 @@ int main() {
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
-  test_false_alerts_2531(); test_product_names_2532();
+  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

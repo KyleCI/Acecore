@@ -4,7 +4,7 @@
 Usage:  py ota_upload.py <firmware.bin> --model pc-dsp011-5kw [--host 192.168.4.1] [--force] [--bearer]
 
 --model is required and must be the unit's model (pc-dsp011-5kw, pc-dsp011-35kw,
-pc-stm01-5kw, pc-stm01-35kw). The file must carry that model's identity; the unit
+pc-dsp011-15kw, pc-stm01-5kw, pc-stm01-35kw, pc-stm01-15kw). The file must carry that model's identity; the unit
 checks it again and refuses another model's image.
 The version must differ from the running one. An older version needs --force.
 Asks for the local token (the unit's local password) with a hidden prompt.
@@ -13,7 +13,8 @@ Standard library only. Never prints the token.
 """
 import argparse, base64, getpass, hashlib, http.client, json, os, re, sys, time
 
-MODELS = ("pc-dsp011-5kw", "pc-dsp011-35kw", "pc-stm01-5kw", "pc-stm01-35kw")
+MODELS = ("pc-dsp011-5kw", "pc-dsp011-35kw", "pc-dsp011-15kw",
+          "pc-stm01-5kw", "pc-stm01-35kw", "pc-stm01-15kw")
 TAG = re.compile(rb"POWERCELL_FW\|collector\|([a-z0-9-]{1,32})\|([0-9.]{1,16})\|END")
 
 

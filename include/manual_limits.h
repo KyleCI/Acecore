@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 // Factory image rating and the Manual ceiling / battery saves.
-// Stock esp32dev is unrated. The hardware images carry 5000 or 3500.
+// Stock esp32dev is unrated. The hardware images carry 5000, 3500 or 1500 (1500 provisional).
 void manualLimitsBegin();
 void manualLimitsService(uint32_t now_ms);
 void manualSetupRating(JsonDocument& doc);

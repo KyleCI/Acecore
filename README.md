@@ -12,14 +12,16 @@ pio run -e esp32dev_stm01_5kw      # STM32, model pc-stm01-5kw
 pio run -e esp32dev_stm01_35kw     # STM32, model pc-stm01-35kw
 pio run -e esp32dev_dsp011_5kw     # DSP, model pc-dsp011-5kw
 pio run -e esp32dev_dsp011_35kw    # DSP, model pc-dsp011-35kw
+pio run -e esp32dev_stm01_15kw     # STM32, model pc-stm01-15kw (Prime 1.5 kVA, provisional ratings)
+pio run -e esp32dev_dsp011_15kw    # DSP, model pc-dsp011-15kw (Prime 1.5 kVA, provisional ratings)
 make -C test/host                  # host unit tests
 pio run -t upload && pio device monitor
 ```
 Toolchain: espressif32@7.0.1, Arduino-ESP32 2.0.17 (IDF 4.4), the same as 1.0.x.
 
-**Cloud:** the four product images use `wss://api-dev.acecore.tech` and OTA `https://api-dev.acecore.tech`. Each image's OTA model is its own `pc-stm01-*` or `pc-dsp011-*` string. See `docs/OTA_HARDWARE_MODEL.md`.
+**Cloud:** the six product images use `wss://api-dev.acecore.tech` and OTA `https://api-dev.acecore.tech`. Each image's OTA model is its own `pc-stm01-*` or `pc-dsp011-*` string. See `docs/OTA_HARDWARE_MODEL.md`.
 
-**DSP board (Caleb, 2026-11-10):** Both DSP ratings listen for JK-PB frames at 115200 on RX GPIO17 / TX GPIO16 (`DSP_BMS_JKPB=1`), as Dubem's working DSP firmware does. PZEM is UART1 RX GPIO35 / TX GPIO32 at 9600 8N1 and is the only output V/I source (Caleb, 13:16 WAT; Dubem's working firmware uses the same pins). GPIO33 is unused on DSP. GPIO35 is input only with no internal pull-up, so the board needs a pull-up to 3.3 V on the PZEM TX line. Grid voltage is ADC1 GPIO39 only; GPIO34 is not read. GPIO15 power is HIGH = ON (`DSP_PWR_ACTIVE_LEVEL` 1), confirmed 2026-11-10 11:53 WAT. That supersedes the earlier LOW = ON note. Off is LOW, including the boot latch. Status lights (Caleb, 2026-11-12): orange and red are swapped, so red is GPIO13, orange (mid-SOC, `PIN_LED_ORANGE`, schematic Y) is GPIO12, and green stays GPIO14. GPIO12 is still driven low at boot because it is the MTDI strap. The front light stays GPIO27. Details and the ADC headroom caveat are in `docs/DSP_HW_CONFLICTS.md`.
+**DSP board (Caleb, 2026-11-10):** All three DSP ratings listen for JK-PB frames at 115200 on RX GPIO17 / TX GPIO16 (`DSP_BMS_JKPB=1`), as Dubem's working DSP firmware does. PZEM is UART1 RX GPIO35 / TX GPIO32 at 9600 8N1 and is the only output V/I source (Caleb, 13:16 WAT; Dubem's working firmware uses the same pins). GPIO33 is unused on DSP. GPIO35 is input only with no internal pull-up, so the board needs a pull-up to 3.3 V on the PZEM TX line. Grid voltage is ADC1 GPIO39 only; GPIO34 is not read. GPIO15 power is HIGH = ON (`DSP_PWR_ACTIVE_LEVEL` 1), confirmed 2026-11-10 11:53 WAT. That supersedes the earlier LOW = ON note. Off is LOW, including the boot latch. Status lights (Caleb, 2026-11-12): orange and red are swapped, so red is GPIO13, orange (mid-SOC, `PIN_LED_ORANGE`, schematic Y) is GPIO12, and green stays GPIO14. GPIO12 is still driven low at boot because it is the MTDI strap. The front light stays GPIO27. Details and the ADC headroom caveat are in `docs/DSP_HW_CONFLICTS.md`.
 
 ## Provisioning
 - No secrets are compiled in. `tools/provision.py --port COMx --file <KEY=VALUE file>` sends `SET api_key`, `wifi_ssid`, `wifi_pass`, `gw_name`, `device_secret`, `ota_url`, `local_tok` over the USB console and prints only OK/ERR and the token fingerprint. Provisioning files are gitignored. (v17: one factory identity secret; `DEV_SECRET` / `SET dev_secret` removed.) See `docs/API_KEY_ROTATION.md`.
@@ -243,7 +245,7 @@ python tools\factory.py COM11 --dry-run           # read-only plan
 - The device secret and hotspot password are generated on the board (`ROTATE_SECRET` only if missing). Secrets are never printed.
 - `gw_name` is not set: with a serial the firmware uses the serial as gateway name and `Powercell-NNNNNN` as SSID.
 - `--register` reads `hardware_model=` from `INFO` (the image's `POWERCELL_HARDWARE_MODEL`). It refuses to register
-  if that line is missing or is not `pc-dsp011-5kw`, `pc-dsp011-35kw`, `pc-stm01-5kw`, or `pc-stm01-35kw`.
+  if that line is missing or is not `pc-dsp011-5kw`, `pc-dsp011-35kw`, `pc-dsp011-15kw`, `pc-stm01-5kw`, `pc-stm01-35kw`, or `pc-stm01-15kw`.
   It then reads `SECRET` once and POSTs this body to `POST /api/devices/register` (header `X-Admin-Key`):
   `{device_id, device_secret, mac, gateway_id, firmware_version, device_kind, model}`.
   `model` is that hardware model. `--model PC5K` / `--model PC3_5K` is a different setting: it only runs `SET model` for the NVS unit model.
@@ -278,7 +280,7 @@ REBOOT
 - **Gateway name:** it changes from `ACE4447` / `ACE9678` to `ACE-XXXXXX` unless you `SET gw_name ACE9678` on that unit. The backend should accept MAC-based gateway targets, which 2.0 accepts.
 - **Network:** the static IP from 1.0.x is replaced by DHCP. The setup AP SSID changes to `Powercell-XXXXXX`.
 - **Not migrated:** the old `energy_wh`, and the 2.0.0 ESP energy counter (`pc_energy` NVS) is no longer used; the old offline queue (JSON in `offline_sync/events`).
-- **Version:** the four product images report `2.5.32`. Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
+- **Version:** the six product images report `2.5.33`. Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
 - **STM32 link:** the STM32 still sends 9600 text, so the default `legacy_text` works with today's STM32 firmware. Switch both sides to framed together.
 
 ## Telemetry fields (WS `telemetry`, additive to 1.0.x)
@@ -310,10 +312,11 @@ Same flat keys in four places: `metrics.*` of GET /data and the SSE `state` even
 
 Models (ASSUMPTION: usable = 90 % of kVA, confirm with hardware): PC3K 3 kVA / 2.7 kW,
 PC3_5K 3.5 kVA / 3.15 kW (Powercell Prime Plus; same usable as the 35kw builds), PC5K 5 kVA /
-4.5 kW (Powercell Ultra), PC10K 10 kVA / 9.0 kW. Unset by default. Set with `SET model PC3_5K` or
+4.5 kW (Powercell Ultra), PC10K 10 kVA / 9.0 kW, PC1_5K 1.5 kVA / 1.35 kW (Powercell Prime;
+PROVISIONAL, scaled from 3.5 kVA pending real specs; same usable as the 15kw builds). Unset by default. Set with `SET model PC3_5K` or
 `SET model PC5K` (USB console, allowed after LOCK, applies at once, `SET model none`
 clears) or `tools/factory.py COMx --model PC3_5K`. Aliases `3.5K`, `PC3.5K`, `35K`,
-`PC35K` normalize to `PC3_5K`. Also in INFO, SELFTEST and GET /v2/setup/info
+`PC35K` normalize to `PC3_5K`; `1.5K`, `PC1.5K`, `15K`, `PC15K` normalize to `PC1_5K`. Also in INFO, SELFTEST and GET /v2/setup/info
 (`powercell_model`, `rated_kva`, `usable_kw`; the old `model` key is still the board id /
 OTA hardware model).
 
@@ -325,7 +328,7 @@ INFO; each transfer is bounded by a 20 ms Wire timeout and runs in its own task.
 ## Status
 | Area | Status |
 |---|---|
-| Builds (esp32dev_stm01_5kw, esp32dev_stm01_35kw, esp32dev_dsp011_5kw, esp32dev_dsp011_35kw) | Product images. Live host api-dev.acecore.tech |
+| Builds (esp32dev_stm01_5kw, esp32dev_stm01_35kw, esp32dev_stm01_15kw, esp32dev_dsp011_5kw, esp32dev_dsp011_35kw, esp32dev_dsp011_15kw) | Product images. Live host api-dev.acecore.tech |
 | Host tests | Done (154 checks) |
 | STM32 legacy parser, framed protocol and commands | Done. Bench test against real STM32 output is pending |
 | Backend WS, OTA with rollback, offline queue, local API, provisioning | Done. On-device testing is pending |
