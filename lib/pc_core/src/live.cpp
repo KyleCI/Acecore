@@ -9,8 +9,8 @@ namespace live {
 namespace {
 const Model kModels[] = {
   {"PC3K", 3.0f, 2.7f},
-  {"PC3_5K", 3.5f, 3.15f},  // Prime 3.5 kVA / 3150 W usable (same as 35kw builds)
-  {"PC5K", 5.0f, 4.5f},
+  {"PC3_5K", 3.5f, 3.15f},  // Prime Plus 3.5 kVA / 3150 W usable (same as 35kw builds)
+  {"PC5K", 5.0f, 4.5f},     // Ultra 5 kVA / 4500 W usable (same as 5kw builds)
   {"PC10K", 10.0f, 9.0f},
 };
 bool charging(const Inputs &in) {
@@ -28,6 +28,15 @@ bool gridOverride(const Inputs &in) {
 
 const Model *models(size_t &count) { count = sizeof kModels / sizeof kModels[0]; return kModels; }
 
+const char *productNameForHardwareModel(const char *hardwareModel) {
+  if (!hardwareModel) return nullptr;
+  if (!strcmp(hardwareModel, "pc-dsp011-35kw") || !strcmp(hardwareModel, "pc-stm01-35kw"))
+    return "Prime Plus";
+  if (!strcmp(hardwareModel, "pc-dsp011-5kw") || !strcmp(hardwareModel, "pc-stm01-5kw"))
+    return "Ultra";
+  return nullptr;
+}
+
 const Model *findModel(const char *code) {
   if (!code) return nullptr;
   // Buffer fits PC3_5KVA and aliases (PC3.5K / PC35K / 3.5KVA).
@@ -41,7 +50,7 @@ const Model *findModel(const char *code) {
   if (!k) return nullptr;
   if (k >= 3 && !strcmp(n + k - 3, "KVA")) { n[k - 2] = 0; k -= 2; }   // 5KVA -> 5K
   const char *b = !strncmp(n, "PC", 2) ? n + 2 : n;
-  // Alias: 35K / PC35K -> 3_5K (Powercell Prime 3.5 kVA)
+  // Alias: 35K / PC35K -> 3_5K (Powercell Prime Plus 3.5 kVA)
   if (!strcmp(b, "35K")) b = "3_5K";
   for (const Model &m : kModels) if (!strcmp(b, m.code + 2)) return &m;
   return nullptr;

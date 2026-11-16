@@ -3025,7 +3025,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.30" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.32" && !s35.found());
   }
 }
 
@@ -3254,6 +3254,56 @@ static void test_wifi_scan_ctl() {  // 2.5.28 ACE-000003: scan retry, no fresh e
   CHECK(n.find("g_scan.finished(") != std::string::npos);
 }
 
+
+static void test_product_names_2532() {  // 2.5.32: display names Prime Plus / Ultra, model IDs unchanged
+  using namespace pc::live;
+  CHECK(!strcmp(productNameForHardwareModel("pc-dsp011-35kw"), "Prime Plus"));
+  CHECK(!strcmp(productNameForHardwareModel("pc-stm01-35kw"), "Prime Plus"));
+  CHECK(!strcmp(productNameForHardwareModel("pc-dsp011-5kw"), "Ultra"));
+  CHECK(!strcmp(productNameForHardwareModel("pc-stm01-5kw"), "Ultra"));
+  CHECK(!productNameForHardwareModel(nullptr));
+  CHECK(!productNameForHardwareModel(""));
+  CHECK(!productNameForHardwareModel("PC5K"));
+  CHECK(!productNameForHardwareModel("PC3_5K"));
+  CHECK(!productNameForHardwareModel("esp32dev"));
+  CHECK(!productNameForHardwareModel("pc-dsp011-15kw"));
+  CHECK(!productNameForHardwareModel("pc-dsp011-5kW"));  // OTA ids are exact, case-sensitive
+  // No 1.5 kVA / Prime model id.
+  CHECK(!findModel("PC1_5K") && !findModel("1.5K") && !findModel("PC1.5K") && !findModel("15K"));
+  size_t n = 0; const Model *all = models(n);
+  CHECK(n == 4);
+  bool saw15 = false;
+  for (size_t i = 0; i < n; ++i) if (all[i].ratedKva == 1.5f) saw15 = true;
+  CHECK(!saw15);
+  // NVS model codes and ratings are unchanged.
+  const Model *m5 = findModel("PC5K"); const Model *m35 = findModel("PC3_5K");
+  CHECK(m5 && !strcmp(m5->code, "PC5K") && m5->ratedKva == 5.0f && m5->usableKw == 4.5f);
+  CHECK(m35 && !strcmp(m35->code, "PC3_5K") && m35->ratedKva == 3.5f && m35->usableKw == 3.15f);
+  // Source: factory warnings, comments and docs. Replace Prime Plus first so Prime is not double-renamed.
+  std::string fac = slurp("../../tools/factory.py");
+  CHECK(fac.find("Powercell Prime Plus 3.5 kVA") != std::string::npos);
+  CHECK(fac.find("Powercell Ultra 5 kVA") != std::string::npos);
+  CHECK(fac.find("Powercell Prime 3.5 kVA") == std::string::npos);
+  CHECK(fac.find("Powercell Prime Plus 5 kVA") == std::string::npos);
+  std::string live = slurp("../../lib/pc_core/src/live.cpp");
+  CHECK(live.find("Prime Plus 3.5 kVA") != std::string::npos);
+  CHECK(live.find("Ultra 5 kVA") != std::string::npos);
+  std::string readme = slurp("../../README.md");
+  CHECK(readme.find("Powercell Prime Plus; same usable as the 35kw builds") != std::string::npos);
+  CHECK(readme.find("4.5 kW (Powercell Ultra)") != std::string::npos);
+  std::string ota = slurp("../../docs/OTA_HARDWARE_MODEL.md");
+  CHECK(ota.find("Powercell Prime Plus") != std::string::npos && ota.find("Powercell Ultra") != std::string::npos);
+  // Model IDs and OTA identity format are untouched.
+  CHECK(ota.find("`pc-dsp011-5kw`") != std::string::npos && ota.find("`pc-dsp011-35kw`") != std::string::npos);
+  CHECK(ota.find("`pc-stm01-5kw`") != std::string::npos && ota.find("`pc-stm01-35kw`") != std::string::npos);
+  CHECK(ota.find("POWERCELL_FW|collector|<model>|<offered version>|END") != std::string::npos);
+  std::string ini = slurp("../../platformio.ini");
+  CHECK(ini.find("POWERCELL_HARDWARE_MODEL=\\\"pc-dsp011-5kw\\\"") != std::string::npos);
+  CHECK(ini.find("POWERCELL_HARDWARE_MODEL=\\\"pc-dsp011-35kw\\\"") != std::string::npos);
+  CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") != std::string::npos);
+  CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.31\\\"") == std::string::npos);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -3266,7 +3316,7 @@ int main() {
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
-  test_false_alerts_2531();
+  test_false_alerts_2531(); test_product_names_2532();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

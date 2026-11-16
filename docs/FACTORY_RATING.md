@@ -10,12 +10,12 @@ login store, or the boot path.
 
 ## Images
 
-| Environment | `firmware.bin` directory | Embedded `factory_variant` | Rated active W | Usable W | Overload |
-| --- | --- | --- | --- | --- | --- |
-| `esp32dev_stm01_5kw` | `.pio/build/esp32dev_stm01_5kw/` | `unrated` | none | none | off |
-| `esp32dev_stm01_35kw` | `.pio/build/esp32dev_stm01_35kw/` | `unrated` | none | none | off |
-| `esp32dev_dsp011_5kw` | `.pio/build/esp32dev_dsp011_5kw/` | `pc-dsp011-5kw` | 5000 | 4500 | armed |
-| `esp32dev_dsp011_35kw` | `.pio/build/esp32dev_dsp011_35kw/` | `pc-dsp011-35kw` | 3500 | 3150 | armed |
+| Environment | `firmware.bin` directory | Product name (display only) | Embedded `factory_variant` | Rated active W | Usable W | Overload |
+| --- | --- | --- | --- | --- | --- | --- |
+| `esp32dev_stm01_5kw` | `.pio/build/esp32dev_stm01_5kw/` | Powercell Ultra | `unrated` | none | none | off |
+| `esp32dev_stm01_35kw` | `.pio/build/esp32dev_stm01_35kw/` | Powercell Prime Plus | `unrated` | none | none | off |
+| `esp32dev_dsp011_5kw` | `.pio/build/esp32dev_dsp011_5kw/` | Powercell Ultra | `pc-dsp011-5kw` | 5000 | 4500 | armed |
+| `esp32dev_dsp011_35kw` | `.pio/build/esp32dev_dsp011_35kw/` | Powercell Prime Plus | `pc-dsp011-35kw` | 3500 | 3150 | armed |
 
 Usable watts are 90 percent of those two rated values only. A 5 kW unit gets
 the `esp32dev_dsp011_5kw` image. A 3.5 kW unit gets the `esp32dev_dsp011_35kw`

@@ -17,6 +17,12 @@ struct Model { const char *code; float ratedKva; float usableKw; };
 // "PC5KVA", "3.5K", "PC3.5K", "35K", "PC35K" too). Returns nullptr when unknown or empty.
 const Model *findModel(const char *code);
 const Model *models(size_t &count);
+// Customer product name for an OTA / factory hardware model. Display, factory
+// warnings and docs only: never used for OTA matching, provisioning keys, or
+// backend identity. "pc-dsp011-35kw" / "pc-stm01-35kw" -> "Prime Plus";
+// "pc-dsp011-5kw" / "pc-stm01-5kw" -> "Ultra". Otherwise nullptr.
+// There is no 1.5 kVA (Powercell Prime) model id.
+const char *productNameForHardwareModel(const char *hardwareModel);
 
 enum class Source : uint8_t { None, Battery, Grid, Solar };
 enum class Status : uint8_t { Unknown, Standby, Idle, Inverting, Charging, Fault };

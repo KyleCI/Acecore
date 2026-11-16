@@ -228,10 +228,10 @@ def model_hw_mismatch_warning(nvs_model, hardware_model):
         return None
     if hw.endswith("-35kw") and m == "PC5K":
         return ("WARNING: --model PC5K on a 35kw image (%s); prefer PC3_5K for "
-                "Powercell Prime 3.5 kVA" % hw)
+                "Powercell Prime Plus 3.5 kVA" % hw)
     if hw.endswith("-5kw") and m == "PC3_5K":
         return ("WARNING: --model PC3_5K on a 5kw image (%s); prefer PC5K for "
-                "Powercell Prime Plus 5 kVA" % hw)
+                "Powercell Ultra 5 kVA" % hw)
     if hw.endswith("-35kw") and m == "PC3K":
         return ("WARNING: --model PC3K (legacy 3 kVA) on a 35kw image (%s); "
                 "prefer PC3_5K" % hw)

@@ -1,5 +1,17 @@
 # Collector firmware changelog
 
+## 2.5.32 (product rename for the 20 Nov launch, Caleb 16 Nov 2026)
+
+On top of 2.5.31 (b0d4cfd). All four product images. Display, factory-warning and documentation names only. Model IDs, env names, OTA identity strings and provisioning keys are unchanged.
+
+- 3.5 kVA units (`pc-dsp011-35kw`, `pc-stm01-35kw`, NVS `PC3_5K`) are Powercell Prime Plus (was Prime).
+- 5 kVA units (`pc-dsp011-5kw`, `pc-stm01-5kw`, NVS `PC5K`) are Powercell Ultra (was Prime Plus).
+- No 1.5 kVA / 3 kWh (Powercell Prime) model id is added. Legacy `PC3K` (3 kVA) is unchanged and is not Prime.
+- Usable-power figures are unchanged (3.15 kW / 4.5 kW). Battery sizes were not stated in these strings.
+- There is still no `product_name` JSON field, and the new helper is not sent on the wire or used for OTA matching.
+- Factory mismatch warnings, comments, README, `docs/OTA_HARDWARE_MODEL.md` and `docs/FACTORY_RATING.md` updated. Host test `test_product_names_2532`.
+
+
 ## 2.5.31 (false repeating over_temp / temp_sensor_fault alerts, ACE-000003 / ACE-000001, Caleb 15 Nov 2026)
 
 On top of 2.5.30 (07a6810). All four product images. Prompted by ACE-000003 (DSP 5 kW) on 2.5.29/2.5.30: an over_temp critical alert every 60 s (at second :43) with the NTC valid at ~31 C, `over_temp_cutoff` false and nothing in `active_events`; the backend made 71 "Inverter too hot" + "Alert cleared" pairs since 23:03 WAT. ACE-000001 logged 102 temp_sensor_fault raises and 89 clears.
