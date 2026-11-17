@@ -62,6 +62,36 @@ inline size_t v011_dsp_pad_steps(bool logical_on, PadStep out[kDspPadSteps]) {
   return n;
 }
 
+// 2.5.34 (ACE-000003, Caleb 17 Nov 2026): the inverter enable behind GPIO15 is
+// a momentary power key, not a level enable. On the unit, app ON, OFF, ON gave
+// GPIO15 HIGH, LOW, HIGH (gateway.cpp drive/padWrite) and the inverter went
+// on, stayed on, then went off: it toggles on every LOW->HIGH edge and ignores
+// HIGH->LOW. So GPIO15 now rests LOW (off level, held) and a state change is
+// one press: HIGH for DSP_PWR_PRESS_MS, then LOW again. A command that matches
+// the tracked state sends no press (a second press would toggle it back).
+// DSP_PWR_MOMENTARY=0 restores the level drive (HIGH while on).
+#ifndef DSP_PWR_MOMENTARY
+#define DSP_PWR_MOMENTARY 1
+#endif
+#ifndef DSP_PWR_PRESS_MS
+#define DSP_PWR_PRESS_MS 1000
+#endif
+static_assert(DSP_PWR_MOMENTARY == 0 || DSP_PWR_MOMENTARY == 1, "DSP_PWR_MOMENTARY is 0 or 1");
+static_assert(DSP_PWR_PRESS_MS >= 100 && DSP_PWR_PRESS_MS <= 5000, "DSP_PWR_PRESS_MS 100..5000");
+constexpr bool kDspPwrMomentary = DSP_PWR_MOMENTARY == 1;
+constexpr uint32_t kDspPwrPressMs = DSP_PWR_PRESS_MS;
+
+// What one logical command does to GPIO15. press: send one press (active level
+// for kDspPwrPressMs, then rest). rest_level: the level the pad is left at.
+struct DspPwrPlan {
+  bool press;
+  int rest_level;
+};
+inline DspPwrPlan v011_dsp_plan(bool momentary, bool current_on, bool want_on) {
+  if (!momentary) return {false, v011_dsp_level(want_on)};
+  return {current_on != want_on, v011_dsp_level(false)};
+}
+
 // DSP front light on GPIO27 (NPN driver, HIGH = ON). It follows the inverter
 // exactly as Dubem's firmware does (provisioning.cpp applyDeviceState:
 // digitalWrite(FRONT_LIGHT_PIN, deviceState ? HIGH : LOW)). Caleb approved

@@ -10,6 +10,9 @@
 #if POWERCELL_DSP011
 #include "driver/gpio.h"
 #include "esp_rom_gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #endif
 
 static_assert(PIN_PWR_KEY == powercell::kDspEnableV011, "GPIO15 is the shared AC-enable pin");
@@ -54,7 +57,40 @@ void frontLight(bool on) {
   digitalWrite(PIN_FRONT_LIGHT, level);
 }
 
+// One press of the inverter's momentary power key (2.5.34): active level for
+// kDspPwrPressMs, then back to the held rest (off) level. Only called with the
+// scheduler running (g_on can only be true after setup()).
+void pressPwrKey() {
+  padWrite(true);
+  vTaskDelay(pdMS_TO_TICKS(powercell::kDspPwrPressMs));
+  padWrite(false);
+}
+
+// ws task and loop task both switch the output; one press at a time, and the
+// tracked state is read and updated under the same lock. Created in earlyInit()
+// (setup), before either task runs. Null before that (boot constructor).
+SemaphoreHandle_t g_mtx = nullptr;
+struct Lock {
+  Lock() { if (g_mtx) xSemaphoreTake(g_mtx, portMAX_DELAY); }
+  ~Lock() { if (g_mtx) xSemaphoreGive(g_mtx); }
+};
+
+// Move the inverter from the tracked state to `on`. Level mode writes the level.
+// Momentary mode presses only when the state changes, so a repeated command
+// (or a repeated system off) never toggles the inverter back.
+void applyDsp(bool on) {
+  const powercell::DspPwrPlan plan = powercell::v011_dsp_plan(powercell::kDspPwrMomentary, g_on, on);
+  if (plan.press) pressPwrKey();
+  else if (!powercell::kDspPwrMomentary) padWrite(on);
+  else padWrite(false);  // rest level, re-held (idempotent)
+  frontLight(on);
+  g_on = on;
+}
+
 void latchDspEnableOff() {
+  // Before a reboot (factory reset, wipe): a momentary key needs a press to turn
+  // a running inverter off; the off level alone leaves it on.
+  if (powercell::kDspPwrMomentary && g_on) pressPwrKey();
   padWrite(false);
   frontLight(false);
   g_on = false;
@@ -63,8 +99,7 @@ void latchDspEnableOff() {
 
 void drive(bool on) {
 #if POWERCELL_DSP011
-  padWrite(on);
-  frontLight(on);
+  applyDsp(on);  // caller holds Lock; g_on is still the previous state
 #else
   digitalWrite(PIN_PWR_KEY, on ? HIGH : LOW);
   digitalWrite(PIN_PWR_LIGHT, on ? HIGH : LOW);
@@ -74,6 +109,7 @@ void drive(bool on) {
 
 void earlyInit() {
 #if POWERCELL_DSP011
+  if (!g_mtx) g_mtx = xSemaphoreCreateMutex();
   latchDspEnableOff();
 #else
   digitalWrite(PIN_PWR_KEY, LOW);
@@ -83,6 +119,7 @@ void earlyInit() {
 
 void latchOutputOff() {
 #if POWERCELL_DSP011
+  Lock lock;
   latchDspEnableOff();
 #endif
 }
@@ -149,9 +186,14 @@ Result set(bool on, const char *origin) {
     LOGW("GATEWAY", "REFUSED", "on during firmware update (origin=%s)", origin);
     return Result::Refused;
   }
-  g_on = on;
-  drive(on);
-  LOGI("GATEWAY", "STATE", "%s via dsp_gpio15 origin=%s", on ? "ON" : "OFF", origin ? origin : "?");
+  bool pressed;
+  {
+    Lock lock;
+    pressed = powercell::kDspPwrMomentary && g_on != on;
+    drive(on);
+  }
+  LOGI("GATEWAY", "STATE", "%s via dsp_gpio15 %s origin=%s", on ? "ON" : "OFF",
+       !powercell::kDspPwrMomentary ? "level" : pressed ? "press" : "no_change", origin ? origin : "?");
   return Result::Ok;
 #else
   using pc::PowerAction;

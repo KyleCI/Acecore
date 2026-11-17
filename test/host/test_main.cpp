@@ -1443,9 +1443,15 @@ static void test_front_light_follows() {
   const char *latchEnd = strstr(latch, "\n}");
   const char *drvEnd = strstr(drv, "\n}");
   const char *a = strstr(latch, "frontLight(false);");
-  const char *b = strstr(drv, "frontLight(on);");
+  const char *app = strstr(src, "void applyDsp(bool on)");  // 2.5.34: drive() -> applyDsp() on DSP
+  CHECK(app != nullptr);
+  if (!app) return;
+  const char *appEnd = strstr(app, "\n}");
+  const char *b = strstr(app, "frontLight(on);");
+  const char *d = strstr(drv, "applyDsp(on);");
   CHECK(a && a < latchEnd);
-  CHECK(b && b < drvEnd);
+  CHECK(b && b < appEnd);
+  CHECK(d && d < drvEnd);
   char leds[8192];
   const char *lpaths[] = {"../../src/leds.cpp", "../src/leds.cpp", "src/leds.cpp"};
   got = false;
@@ -3037,7 +3043,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.33" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.34" && !s35.found());
   }
 }
 
@@ -3353,7 +3359,7 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(ini.find("POWERCELL_FACTORY_VARIANT=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_RATED_ACTIVE_W=1500") != std::string::npos);
   CHECK(count_of(ini, "[env:esp32dev_") == 6);
-  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.33\\\"") == 6);
+  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.34\\\"") == 6);  // bumped by 2.5.34
   CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") == std::string::npos);
   // The STM 15kw image carries no factory rating, like the other STM images.
   char buf[16384]; CHECK(ini.size() < sizeof buf);
@@ -3376,6 +3382,105 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(up.find("\"pc-dsp011-15kw\"") != std::string::npos && up.find("\"pc-stm01-15kw\"") != std::string::npos);
 }
 
+// 2.5.34 ACE-000003: the inverter behind GPIO15 toggles on each LOW->HIGH edge
+// (momentary power key). Model it on top of PadSim and replay Caleb's presses.
+struct InverterKeySim {
+  bool on = false;
+  int last = 0;
+  int edges = 0;
+  void sense(int pad) {
+    const int lvl = pad == 1 ? 1 : 0;
+    if (lvl == 1 && last == 0) { on = !on; ++edges; }
+    last = lvl;
+  }
+};
+struct DspGatewaySim {  // gateway.cpp applyDsp() with the pad and the inverter
+  bool momentary;
+  bool g_on = false;  // reported state (gateway::state())
+  PadSim pad;
+  InverterKeySim inv;
+  int presses = 0;
+  explicit DspGatewaySim(bool m) : momentary(m) { pad.run(false); inv.sense(pad.pad); }  // boot latch
+  void set(bool want) {
+    const powercell::DspPwrPlan plan = powercell::v011_dsp_plan(momentary, g_on, want);
+    if (plan.press) {
+      ++presses;
+      pad.run(true); inv.sense(pad.pad);
+      pad.run(false); inv.sense(pad.pad);
+    } else {
+      pad.run(momentary ? false : want); inv.sense(pad.pad);
+    }
+    CHECK(momentary ? pad.pad == plan.rest_level : true);
+    g_on = want;
+  }
+};
+
+static void test_dsp_pwr_momentary_2534() {
+  using namespace powercell;
+  CHECK(kDspPwrMomentary);           // product default
+  CHECK(kDspPwrPressMs == 1000);
+  // The 2.5.33 level drive against a momentary key reproduces Caleb's report.
+  {
+    DspGatewaySim g(false);
+    int levels[4];
+    const bool seq[4] = {true, false, true, false};
+    bool phys[4];
+    for (int i = 0; i < 4; ++i) { g.set(seq[i]); levels[i] = g.pad.pad; phys[i] = g.inv.on; }
+    CHECK(levels[0] == 1 && levels[1] == 0 && levels[2] == 1 && levels[3] == 0);  // firmware wrote H, L, H, L
+    CHECK(phys[0] == true);    // 1st ON: relay clicks, output on
+    CHECK(phys[1] == true);    // OFF: app grey, no click, output stays on
+    CHECK(phys[2] == false);   // 2nd ON: app green, relay clicks, output OFF
+    CHECK(phys[1] && !seq[1]);  // reported off, physically on
+  }
+  // 2.5.34 press drive: on, off, on, off -> inverter on, off, on, off, reported == physical.
+  {
+    DspGatewaySim g(true);
+    const bool seq[4] = {true, false, true, false};
+    for (int i = 0; i < 4; ++i) {
+      g.set(seq[i]);
+      CHECK(g.inv.on == seq[i]);
+      CHECK(g.g_on == g.inv.on);
+      CHECK(g.pad.pad == 0 && g.pad.held);  // rests at the held off level
+    }
+    CHECK(g.presses == 4 && g.inv.edges == 4);
+    // Idempotent: repeated ON or OFF sends no press.
+    g.set(true); g.set(true); g.set(true);
+    CHECK(g.inv.on && g.g_on && g.presses == 5);
+    g.set(false); g.set(false);
+    CHECK(!g.inv.on && !g.g_on && g.presses == 6);
+    // System off paths repeat set(false) every few seconds: never toggles it back on.
+    for (int i = 0; i < 20; ++i) g.set(false);
+    CHECK(!g.inv.on && g.presses == 6);
+  }
+  // Plan table.
+  CHECK(v011_dsp_plan(true, false, true).press && v011_dsp_plan(true, false, true).rest_level == 0);
+  CHECK(v011_dsp_plan(true, true, false).press && v011_dsp_plan(true, true, false).rest_level == 0);
+  CHECK(!v011_dsp_plan(true, true, true).press && !v011_dsp_plan(true, false, false).press);
+  CHECK(!v011_dsp_plan(false, false, true).press && v011_dsp_plan(false, false, true).rest_level == 1);
+  CHECK(v011_dsp_plan(false, true, false).rest_level == 0);
+  // Level mode (DSP_PWR_MOMENTARY=0) still writes H, L, H, L.
+  {
+    DspGatewaySim g(false);
+    const bool seq[4] = {true, false, true, false};
+    const int want[4] = {1, 0, 1, 0};
+    for (int i = 0; i < 4; ++i) { g.set(seq[i]); CHECK(g.pad.pad == want[i] && g.g_on == seq[i]); }
+    g.set(false); CHECK(g.pad.pad == 0);
+  }
+  // Source: set() decides under the lock with the old state, latch-off presses a running inverter.
+  char src[16384];
+  CHECK(read_text_file("../../src/gateway.cpp", src, sizeof src));
+  const char *app = strstr(src, "void applyDsp(bool on)");
+  CHECK(app && strstr(app, "v011_dsp_plan(powercell::kDspPwrMomentary, g_on, on)"));
+  const char *latch = strstr(src, "void latchDspEnableOff()");
+  CHECK(latch && strstr(latch, "if (powercell::kDspPwrMomentary && g_on) pressPwrKey();"));
+  const char *setp = strstr(src, "Result set(bool on, const char *origin)");
+  CHECK(setp && strstr(setp, "Lock lock;") && strstr(setp, "drive(on);"));
+  CHECK(strstr(src, "g_mtx = xSemaphoreCreateMutex()") != nullptr);
+  char ini[16384];
+  CHECK(read_text_file("../../platformio.ini", ini, sizeof ini));
+  CHECK(strstr(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.34\\\"") != nullptr);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -3388,7 +3493,7 @@ int main() {
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
-  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533();
+  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_dsp_pwr_momentary_2534();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

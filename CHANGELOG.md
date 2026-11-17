@@ -1,5 +1,17 @@
 # Collector firmware changelog
 
+## 2.5.34 (app power button out of step with the inverter, ACE-000003, Caleb 17 Nov 2026)
+
+On top of 2.5.33 (25223cf). Six product images. The change is DSP-only (GPIO15 path); STM images only get the version.
+
+Report (ACE-000003, DSP v0.1.1 5 kW): app ON, relay clicks, output on. App OFF, app grey, server "output off", no click, output stays on. App ON, app green, server "output on", relay clicks and the output goes OFF.
+
+- **Cause:** the firmware already drove GPIO15 as a level, HIGH for ON and LOW for OFF (`gateway.cpp` `set()` -> `drive()` -> `padWrite()` -> `v011_dsp_pad_steps()`; cloud `backend_ws.cpp` `handleSetState()` -> `gateway::set(desired, "cloud")`, local `/state` -> `gateway::request()`). No toggle, dedupe or state cache drops the OFF, and nothing else writes GPIO15. The command path and the reported state (`g_on`) were right: the inverter input behind the GPIO15 transistor is a momentary power key that toggles on each LOW->HIGH edge and ignores HIGH->LOW. H, L, H therefore gave on, on, off, exactly as reported. Dubem's firmware (`applyDeviceState`, `digitalWrite(PWR_PIN, state)`) is level-driven as well and would do the same; `kPhysicalShutdownVerified` was still false (OFF had never been verified on the unit).
+- **Fix:** with `DSP_PWR_MOMENTARY=1` (default) GPIO15 rests at the held off level (LOW). A state change is one press: HIGH for `DSP_PWR_PRESS_MS` (default 1000 ms), then LOW and held. A command that matches the tracked state sends no press, so repeated app commands and the periodic system off retries (battery cutoff, over-temperature, AC overload, OTA) never toggle the inverter back on. The tracked state is read and updated under a FreeRTOS mutex (ws task and loop task both switch the output). `latchOutputOff()` (factory reset, wipe) presses first when the inverter is on. The front light (GPIO27) follows the tracked state. Log: `[GATEWAY][STATE] ON via dsp_gpio15 press|no_change|level origin=...`.
+- `DSP_PWR_MOMENTARY=0` restores the 2.5.33 level drive if a board turns out to have a level enable.
+- **Limits:** the firmware has no inverter-state feedback on GPIO15. If the inverter is switched by its own button, or the ESP restarts (crash, watchdog, brownout, power cycle) while the inverter is on, the tracked state says off and the next app ON press turns it off. Pressing ON again resyncs. A press of 1000 ms is a choice, not a measured spec: confirm on the unit that one press toggles exactly once.
+- Host test `test_dsp_pwr_momentary_2534` (the 2.5.33 level drive reproduces the report; on/off/on/off gives one press each and inverter on/off/on/off with reported == physical; repeated ON/OFF and 20 system offs send no press; level mode still H, L, H, L; source checks). `test_front_light_follows` follows `drive()` -> `applyDsp()`.
+
 ## 2.5.33 (new model: Powercell Prime 1.5 kVA / 3 kWh, Caleb 16 Nov 2026)
 
 On top of 2.5.32 (3c60b00). Six product images (four existing plus two new). Build only.
