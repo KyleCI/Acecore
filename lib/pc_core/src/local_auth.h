@@ -33,21 +33,47 @@ bool sameDeviceId(const char *a, const char *b);
 bool otaDownloadPath(const char *base, const char *url, char *path, size_t cap);
 bool isSha256Hex(const char *s);
 
-// Offline battery alert policy for the local /events notifications.
+// Offline battery alert policy for the local /events notifications and the cloud
+// battery_soc event (events_core). Caleb 8 Nov 2026 (include/battery_alert_policy.h):
+//   low       <= 25 %  battery_low
+//   critical  <= 15 %  battery_critical, the one-time shutdown warning
+//   shutdown  <= 10 %  output off (power_guard latch, battery_critical event); restart blocked until 15 %
+// The low and critical percents follow the saved Manual battery settings
+// (/v1/battery-settings: low_percent, warning_percent) when valid, else 25/15.
+// 2.5.13: the 5 % shutdown_imminent level is gone. BatteryLevel::ShutdownRisk is
+// kept for the enum layout but this policy never returns it.
+// Worsening applies at once. Low clears above low + 3. Critical is one notification
+// per episode: it stays while the output latch holds and clears only after the
+// SoC stays above critical + 3 for 60 s, so a 15/16 % wobble does not repeat it.
 enum class BatteryLevel : uint8_t { None, Low, Critical, ShutdownRisk };
 class BatteryAlertPolicy {
  public:
   enum : uint8_t { BatteryChanged = 1, AvailabilityChanged = 2 };
-  static constexpr float kLow = 20, kCritical = 10, kShutdown = 5, kHysteresis = 3;
+  static constexpr float kLow = 25, kCritical = 15, kShutdown = 10, kRestart = 15, kHysteresis = 3;
   static constexpr uint32_t kUnavailableAfterMs = 15000;
-  uint8_t update(bool valid, float pct, uint32_t nowMs);
+  static constexpr uint32_t kCriticalClearHoldMs = 60000;
+  // Same bounds as BatterySettings (include/battery_settings.h): warning 11..80, low 12..95, low > warning.
+  static bool validThresholds(float low, float critical) {
+    return low == low && critical == critical && critical >= 11 && critical <= 80 && low >= 12 && low <= 95 && low > critical;
+  }
+  // Returns false and keeps 25/15 when the pair is not valid.
+  bool setThresholds(float low, float critical);
+  float lowPercent() const { return low_; }
+  float criticalPercent() const { return crit_; }
+  // latched: the output is held off by the battery latch (power_guard). Keeps Critical.
+  uint8_t update(bool valid, float pct, uint32_t nowMs, bool latched = false);
   BatteryLevel level() const { return level_; }
   bool available() const { return available_; }
  private:
+  BatteryLevel levelAt(float p) const;
   BatteryLevel level_ = BatteryLevel::None;
   bool available_ = true;
   uint32_t invalidSince_ = 0;
   bool invalidTiming_ = false;
+  bool clearHold_ = false;
+  uint32_t clearSince_ = 0;
+  float low_ = kLow, crit_ = kCritical;
 };
-const char *batteryLevelType(BatteryLevel l);  // battery_low | battery_critical | shutdown_imminent
+// battery_low | battery_critical (| shutdown_imminent, no longer produced)
+const char *batteryLevelType(BatteryLevel l);
 }  // namespace pc

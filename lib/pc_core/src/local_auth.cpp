@@ -152,21 +152,44 @@ bool otaDownloadPath(const char *base, const char *url, char *path, size_t cap) 
   return true;
 }
 
-static BatteryLevel levelAt(float p) {
-  return p <= BatteryAlertPolicy::kShutdown ? BatteryLevel::ShutdownRisk : p <= BatteryAlertPolicy::kCritical ? BatteryLevel::Critical
-       : p <= BatteryAlertPolicy::kLow ? BatteryLevel::Low : BatteryLevel::None;
+BatteryLevel BatteryAlertPolicy::levelAt(float p) const {
+  return p <= crit_ ? BatteryLevel::Critical : p <= low_ ? BatteryLevel::Low : BatteryLevel::None;
 }
 
-uint8_t BatteryAlertPolicy::update(bool valid, float pct, uint32_t now) {
+bool BatteryAlertPolicy::setThresholds(float low, float critical) {
+  if (!validThresholds(low, critical)) { low_ = kLow; crit_ = kCritical; return false; }
+  low_ = low; crit_ = critical;
+  return true;
+}
+
+uint8_t BatteryAlertPolicy::update(bool valid, float pct, uint32_t now, bool latched) {
   uint8_t changes = 0;
   if (valid) {
     invalidTiming_ = false;
     if (!available_) { available_ = true; changes |= AvailabilityChanged; }
-    BatteryLevel raw = levelAt(pct);
-    // Worsening applies at once; recovering needs kHysteresis percent of margin.
-    BatteryLevel next = raw >= level_ ? raw : (levelAt(pct - kHysteresis) > raw ? levelAt(pct - kHysteresis) : raw);
+    BatteryLevel raw = latched ? BatteryLevel::Critical : levelAt(pct);
+    BatteryLevel next = level_;
+    if (level_ == BatteryLevel::ShutdownRisk) level_ = next = BatteryLevel::Critical;  // not produced any more
+    if (raw > level_) {
+      next = raw;  // worsening applies at once
+      clearHold_ = false;
+    } else if (level_ == BatteryLevel::Critical) {
+      // One shutdown warning per episode: leave only after critical + 3 held 60 s, latch released.
+      if (!latched && pct > crit_ + kHysteresis) {
+        if (!clearHold_) { clearHold_ = true; clearSince_ = now; }
+        else if (now - clearSince_ >= kCriticalClearHoldMs) {
+          clearHold_ = false;
+          next = levelAt(pct - kHysteresis) == BatteryLevel::None ? BatteryLevel::None : BatteryLevel::Low;
+        }
+      } else {
+        clearHold_ = false;
+      }
+    } else if (level_ == BatteryLevel::Low && pct > low_ + kHysteresis) {
+      next = BatteryLevel::None;
+    }
     if (next != level_) { level_ = next; changes |= BatteryChanged; }
   } else {
+    clearHold_ = false;
     if (!invalidTiming_) { invalidTiming_ = true; invalidSince_ = now; }
     if (available_ && now - invalidSince_ >= kUnavailableAfterMs) {
       available_ = false;

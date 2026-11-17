@@ -26,9 +26,10 @@ void begin() {
   // Deselect every SPI device on the shared bus before either library begins:
   // LoRa CS (IO4) and SD CS (IO14) driven HIGH as outputs (MPPT CS too).
 #if POWERCELL_DSP011
-  // GPIO33 is the SD chip select. GPIO14 stays the original profile's CS.
+  // SD CS is GPIO5 (also the old unused MPPT CS). Idle high: GPIO5 is a
+  // strapping pin and must not be low at reset. GPIO32 is PZEM TX and GPIO35 is PZEM RX, not CS pins.
   // GPIO4 (LoRa CS) is not driven: that radio is not fitted.
-  for (int cs : {33, PIN_SPI_CS_MPPT}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
+  for (int cs : {PIN_DSP_SD_CS}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
 #else
   for (int cs : {PIN_LORA_CS, PIN_SD_CS, PIN_SPI_CS_MPPT}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
 #endif

@@ -58,7 +58,9 @@ StmEstimateView StmEnergyEstimate::makeView() const {
   v.persist = dirty_;
   if (dirty_ && ever_saved_) {
     const uint32_t elapsed = last_mono_ - last_save_mono_;
-    const bool due = elapsed >= kStmSaveMinMs;
+    const double unsaved = lifetime_wh_ - committed_lifetime_wh_;
+    const bool due = (unsaved >= kStmSaveWh && elapsed >= kStmSaveMinMs) ||
+                     (unsaved > kStmSaveIdleWh && elapsed >= kStmSaveMaxMs);
     const bool day_changed = day_id_ != committed_day_;
     if (!due && !day_changed) v.persist = false;
   }

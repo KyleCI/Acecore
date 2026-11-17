@@ -52,11 +52,14 @@ inline bool controlBlocked(bool locked) { return locked; }
 // Cloud, local, and console ON. Payment lock wins over every latch.
 // Battery critical is next. The AC-overload shutdown latch is its own code.
 // Both latches refuse ON only. nullptr = not blocked.
-inline const char* setStateBlock(bool payment_locked, bool desired_on, bool battery_latched, bool overload_latched) {
+// over_temp_blocked: DSP system NTC >= 80 C, or the cutoff latch with no valid reading below 70 C.
+inline const char* setStateBlock(bool payment_locked, bool desired_on, bool battery_latched, bool overload_latched,
+                                 bool over_temp_blocked = false) {
   if (payment_locked) return "payment_locked";
   if (!desired_on) return nullptr;
   if (battery_latched) return "battery_critical_latched";
   if (overload_latched) return "output_overload_latched";
+  if (over_temp_blocked) return "over_temperature_latched";
   return nullptr;
 }
 

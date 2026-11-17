@@ -16,6 +16,7 @@ void service();
 bool staConnected();
 bool backendAllowed();  // saved network, no Wi-Fi test running or unsaved
 bool apActive();
+bool mdnsRunning();  // 2.5.30: for the MEM TASKS line
 const char *stateName();
 void forceAp();                 // console "AP ON"
 void restartAp(uint32_t delayMs);  // hotspot password changed
@@ -24,6 +25,7 @@ bool startTest(const String &ssid, const String &pass, bool phoneSees5Ghz, Strin
 void testStatus(JsonDocument &doc);
 // Saves the last successful test. False if none. ip = station IP.
 bool saveTested(String &ip);
-// Cached scan results; starts an async scan when stale. Returns true if results are fresh.
+// Cached scan results; starts an async scan when stale. Returns true if results are current
+// (a non-empty scan < 30 s old, or 3 failed/empty attempts just ended); false = scanning.
 bool scan(JsonArray out);
 }  // namespace net

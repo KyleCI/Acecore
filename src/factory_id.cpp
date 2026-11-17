@@ -167,6 +167,7 @@ void markReset(const char *source, const String &cmdId, uint32_t resetAt, uint32
   p.putString("rst_src", source);
   if (cmdId.length()) p.putString("rst_cmd", cmdId); else if (p.isKey("rst_cmd")) p.remove("rst_cmd");
   p.putUInt("rst_at", resetAt);
+  p.putUInt("rst_seq", p.getUInt("rst_seq", 0) + 1);  // tells two resets apart when the clock is unset
   if (lastAt > p.getUInt("rst_last", 0)) p.putUInt("rst_last", lastAt);
   if (cmdId.length() && cmdId.length() <= 64) {
     CmdRing r{};
@@ -181,7 +182,7 @@ ResetInfo resetInfo() {
   ResetInfo r; Preferences p;
   if (prefsOpenRO(p, NS)) {
     r.pending = p.getBool("rst_pend", false);
-    r.source = prefsStr(p, "rst_src", "button"); r.cmdId = prefsStr(p, "rst_cmd", ""); r.at = p.getUInt("rst_at", 0);
+    r.source = prefsStr(p, "rst_src", "button"); r.cmdId = prefsStr(p, "rst_cmd", ""); r.at = p.getUInt("rst_at", 0); r.seq = p.getUInt("rst_seq", 0);
     p.end();
   }
   return r;

@@ -14,8 +14,21 @@
 // PENDING_VERIFY and is marked valid only after OTA_HEALTHY_MS of continuous
 // health (backend WebSocket connected). If it is not healthy within
 // OTA_VERIFY_DEADLINE_MS, or it reboots/crashes first, it rolls back.
+// hotspot_only (no cloud, so no WebSocket health): OTA_LAN_HEALTHY_MS of healthy local run
+// (free heap > 30 KB) confirms instead, within the same OTA_VERIFY_DEADLINE_MS.
 namespace ota {
 void begin(bool (*prepareUpdate)(), bool (*acquireNetwork)());
+// 2.5.22 two-phase OTA (lib/pc_core/src/ota_boot.h). Call from setup() right after
+// net::begin(), before the web server, ESP-NOW and the backend WS. If a staged job is in
+// NVS it waits for the station IP and NTP, downloads and verifies the image (same TLS,
+// CA, sha256, identity and version checks) and reboots into it; on failure it records
+// last_status/last_error/last_error_detail and returns so the boot continues.
+// 2.5.26: a stale job is dropped (BOOT_JOB_DROPPED, status dropped, boot_ota_stale_job):
+// staged by another firmware or for the running version (before Wi-Fi), no longer the
+// server's offer (boot-time POST /api/ota/check), or refused / of another size at the download.
+// Returns true if a job was attempted. Blocks for at most about 9 minutes.
+bool bootJob(bool (*prepareUpdate)());
+void clearBootJob();  // console OTA_RETRY: forget the staged job and the abandoned sha256
 void service(bool healthy);
 bool busy();         // an image is being downloaded/installed
 bool networkBusy();  // an install owns the network: the WebSocket is paused
@@ -29,5 +42,15 @@ bool tlsBusy();
 void wsSupport(bool otaWs);
 void wsConnected();  // each WS (re)connect (fallback cycle count)
 void wsDown();       // WS dropped: an outstanding check is deferred
-void wsReply(JsonDocument &doc);  // an OTA check/download holds a TLS session
+void wsReply(JsonDocument &doc);
+// Local hotspot OTA (POST /ota, from collector 2.5.12). Streamed via the Update lib.
+// lanBegin/lanWrite/lanEnd return nullptr on success or a short error code; the HTTP status
+// is in *httpCode. The image must match X-Firmware-SHA256 and carry
+// POWERCELL_FW|collector|<this model>|<version>|END with a different version (older only with force).
+// The boot partition is set only after both checks. Same rollback bookkeeping as the cloud path.
+const char *lanBegin(const char *sha256Hex, bool force, int *httpCode);
+const char *lanWrite(const uint8_t *data, size_t len, int *httpCode);
+const char *lanEnd(int *httpCode, String *version);
+void lanAbort(const char *why);
+bool lanActive();
 }  // namespace ota

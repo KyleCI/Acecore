@@ -15,4 +15,6 @@ void decorate(JsonArray sockets);           // adds the config/state fields to e
 void stateJson(const String &id, JsonObject o);
 void setPriority(const String &id, bool essential);  // console PRIO fallback
 void shedList(JsonArray a);                 // sockets currently off by an automatic rule
+// /unregister: clear the saved name (re-pairing shows the default name again). True if NVS is clean.
+bool clearName(const String &id);
 }  // namespace socketcfg

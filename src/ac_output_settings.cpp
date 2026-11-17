@@ -74,6 +74,7 @@ AcDecision AcOutputSettings::set(SettingsAuth auth, int schema, bool ceiling_is_
 int SystemRating::usableFor(int rated_active_w) {
   if (rated_active_w == kRated5kW) return kUsable5kW;
   if (rated_active_w == kRated35kW) return kUsable35kW;
+  if (rated_active_w == kRated15kW) return kUsable15kW;
   return 0;
 }
 

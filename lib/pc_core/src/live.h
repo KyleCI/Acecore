@@ -12,11 +12,18 @@ namespace live {
 // ---- Powercell model (factory-set, NVS pc_cfg/model) ----
 // ASSUMPTION (Caleb 2026-11-04): usable continuous power = 90 % of rated kVA
 // (5 kVA -> 4.5 kW, 3.5 kVA -> 3.15 kW = 3150 W). Confirm the derating per model with hardware.
+// 2.5.33: 1.5 kVA -> 1.35 kW (1350 W) is PROVISIONAL, scaled from 3.5 kVA pending real specs.
 struct Model { const char *code; float ratedKva; float usableKw; };
-// Accepts "PC3K", "PC3_5K", "PC5K", "PC10K" (case-insensitive; "5K", "5KVA",
-// "PC5KVA", "3.5K", "PC3.5K", "35K", "PC35K" too). Returns nullptr when unknown or empty.
+// Accepts "PC3K", "PC3_5K", "PC5K", "PC10K", "PC1_5K" (case-insensitive; "5K", "5KVA",
+// "PC5KVA", "3.5K", "PC3.5K", "35K", "PC35K", "1.5K", "PC1.5K", "15K", "PC15K" too). Returns nullptr when unknown or empty.
 const Model *findModel(const char *code);
 const Model *models(size_t &count);
+// Customer product name for an OTA / factory hardware model. Display, factory
+// warnings and docs only: never used for OTA matching, provisioning keys, or
+// backend identity. "pc-dsp011-35kw" / "pc-stm01-35kw" -> "Prime Plus";
+// "pc-dsp011-5kw" / "pc-stm01-5kw" -> "Ultra";
+// "pc-dsp011-15kw" / "pc-stm01-15kw" -> "Prime" (1.5 kVA, 2.5.33). Otherwise nullptr.
+const char *productNameForHardwareModel(const char *hardwareModel);
 
 enum class Source : uint8_t { None, Battery, Grid, Solar };
 enum class Status : uint8_t { Unknown, Standby, Idle, Inverting, Charging, Fault };
@@ -36,11 +43,27 @@ struct Inputs {
   float bmsPowerW = 0;     // signed like the current
   bool solarOk = false;
   float solarW = 0;
+  // Grid presence, tri-state: gridKnown=false means unknown (grid_available null).
+  // DSP: debounced GPIO39 presence (dspGridRead().present, 170 V on / 160 V off, 2 s),
+  // never raw volts. STM: has_grid && grid_v >= 160 V (same rule as grid_available).
+  bool gridKnown = false;
+  bool gridPresent = false;
+  // True when `sys` is a placeholder, not a controller report. DSP images set
+  // sys = Inverter whenever the PZEM has a sample; that is not proof the
+  // transfer switch is on the inverter.
+  bool sysAssumed = false;
 };
 constexpr float kSolarActiveW = 20.0f;      // PV counts as a source above this
 constexpr float kChargeA = 0.5f;            // BMS current that counts as charging
 constexpr float kInverterEff = 0.90f;       // ASSUMPTION for the BMS-based output estimate
 
+// Grid override (2.5.13+): applies when grid is known present, the BMS is online
+// and the pack is not discharging (current > -kChargeA), and `sys` is either a
+// placeholder (DSP) or Unknown. Then source = grid and status = charging (BMS
+// current > kChargeA or charger CHR state) or idle (grid pass-through). A fault
+// still wins. Grid present but pack discharging keeps battery + inverting.
+// Grid unknown/absent, BMS offline, or a real STM32 SYS report: unchanged.
+bool gridOverride(const Inputs &in);
 Source source(const Inputs &in);
 Status status(const Inputs &in);
 

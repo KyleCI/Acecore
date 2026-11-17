@@ -28,6 +28,7 @@ SemaphoreHandle_t socketsMutex;  // = periph::spiMutex(): one lock for LoRa and 
 TaskHandle_t socketsTaskHandle;
 
 static volatile bool g_socketsChanged = false;  // 2.5.9
+static volatile bool g_paused = false;          // local OTA upload (POST /ota)
 namespace {
 constexpr uint32_t kCommandMs = 60000;   // 2.5.11: a plug heard in the last 60 s still takes a command
 constexpr uint32_t kRxStallMs = 15000;   // 2.5.11: no packet from any plug this long -> re-init the radio
@@ -194,6 +195,7 @@ bool radioSleep(bool sleep) {
 void socketsTask(void *) {
   char buf[200];
   for (;;) {
+    if (g_paused) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }  // local OTA upload
     if (g_lowPower) {
       unsigned long t = millis() - g_lowSince;
       bool listen = t < 20000 || (t % 60000) < 5000 || anyPending();
@@ -392,6 +394,10 @@ bool sendRelayCommand(String id, bool turnOn) { return queueCommand(id, turnOn, 
 // The socket keeps the relay off after a reset; the user switches it on afterwards.
 bool sendResetLockout(String id) { return queueCommand(id, false, true); }
 bool sendSetLimit(String id, uint8_t da) { return da && queueCommand(id, false, false, da); }
+void socketsSetPaused(bool on) {
+  if (g_paused != on) LOGI("LORA", on ? "PAUSED" : "RESUMED", "local OTA %s", on ? "upload" : "done");
+  g_paused = on;
+}
 void socketsSetLowPower(bool on) {
   if (on && !g_lowPower) g_lowSince = millis();
   g_lowPower = on;

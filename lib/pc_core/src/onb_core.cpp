@@ -157,6 +157,24 @@ bool parseNetMode(const char *s, NetMode &out) {
 }
 NetMode netModeFromStored(const char *s) { NetMode m = NetMode::Unset; return parseNetMode(s, m) ? m : NetMode::Unset; }
 
+bool ScanCtl::poll(uint32_t now) {
+  if (haveResult && now - resultAt < kScanFreshMs && !requested) return true;
+  if (gaveUp && !requested && now - gaveUpAt < kScanEmptyHoldMs) return true;
+  if (!requested) { requested = true; attempts = 0; gaveUp = false; nextAt = now; }
+  return false;
+}
+ScanCtl::Done ScanCtl::finished(int n, uint32_t now) {
+  running = false;
+  quiet = true; quietUntil = now + kScanQuietMs;
+  if (n > 0) { requested = false; haveResult = true; resultAt = now; gaveUp = false; return Done::Store; }
+  if (attempts < kScanMaxAttempts) { nextAt = now + kScanRetryGapMs; return Done::Retry; }
+  requested = false; haveResult = false; gaveUp = true; gaveUpAt = now;
+  return Done::Empty;
+}
+bool stationRetryAllowed(bool hasSsid, bool staUp, bool testing, bool testOk, bool scanPause, uint32_t sinceLastRetryMs) {
+  return hasSsid && !staUp && !testing && !testOk && !scanPause && sinceLastRetryMs >= kWifiRetryMs;
+}
+
 bool ApPolicy::update(bool hasSsid, bool staUp, bool testing, uint32_t now, bool hotspotOnly) {
   if (staUp && !wasUp) upSince = now;
   if (!staUp && wasUp) downSince = now;
@@ -164,7 +182,11 @@ bool ApPolicy::update(bool hasSsid, bool staUp, bool testing, uint32_t now, bool
   if (forced && (int32_t)(now - forcedUntil) >= 0) forced = false;
   if (hotspotOnly || !hasSsid || testing || forced) ap = true;
   else if (!staUp) ap = ap || now - downSince >= fallbackMs;
-  else ap = ap && now - upSince < graceMs;
+  else {
+    const uint32_t g = (saveGrace || apClients || !quickGraceMs) ? graceMs : quickGraceMs;
+    ap = ap && now - upSince < g;
+  }
+  if (!ap) saveGrace = false;
   return ap;
 }
 const char *ApPolicy::stateName(bool hasSsid, bool staUp, bool testing, bool ap, bool hotspotOnly) {
@@ -187,6 +209,25 @@ const char *setPasscodeError(const char *rid, bool tls, uint64_t now, uint64_t e
 }
 bool validUnclaimReason(const char *r) { return r && (!strcmp(r, "owner_request") || !strcmp(r, "transfer") || !strcmp(r, "support")); }
 bool unclaimClearsPairs(const char *r) { return r && (!strcmp(r, "transfer") || !strcmp(r, "support")); }
+// Never listed: pc_ident (serial, secret, label hotspot password, reset/payment state),
+// pc_cfg (model, calibration, protocol), system_cfg (factory rating), pc_ota, pwr_guard
+// (battery protection latch), battery_alerts (sequence), solar and clock (tz key only).
+const char *const kFactoryResetNamespaces[] = {"pc_onb", "pc_offline", "registry", "forgotten",
+                                              "sock_cfg", "sock_prio", "ac_out", "bat_set"};
+const size_t kFactoryResetNamespaceCount = sizeof kFactoryResetNamespaces / sizeof kFactoryResetNamespaces[0];
+// Kept in pc_secure: api_key, ota_url, admin_tok, espnow_keys, locked, migrated.
+const char *const kFactoryResetUserKeys[] = {"wifi_ssid", "wifi_pass", "local_tok", "net_mode", "label_pc", "gw_name", "ap_pass"};
+const size_t kFactoryResetUserKeyCount = sizeof kFactoryResetUserKeys / sizeof kFactoryResetUserKeys[0];
+bool factoryResetErasesNamespace(const char *ns) {
+  if (!ns) return false;
+  for (size_t i = 0; i < kFactoryResetNamespaceCount; ++i) if (!strcmp(ns, kFactoryResetNamespaces[i])) return true;
+  return false;
+}
+bool factoryResetRemovesKey(const char *key) {
+  if (!key) return false;
+  for (size_t i = 0; i < kFactoryResetUserKeyCount; ++i) if (!strcmp(key, kFactoryResetUserKeys[i])) return true;
+  return false;
+}
 bool validOwnerId(const char *o) {
   size_t n = o ? strlen(o) : 0;
   if (!n || n > 64) return false;

@@ -185,10 +185,12 @@ bool setEspnowKeys(const String &h) {
 void wipeUser() {
   // v15/v17 factory reset: everything the customer set. Kept: api_key, ota_url, admin_tok,
   // espnow_keys, locked, migrated (factory/backend provisioning). Identity secret is in pc_ident.
-  const char *keys[] = {"wifi_ssid", "wifi_pass", "local_tok", "net_mode", "label_pc", "gw_name", "ap_pass"};
   Preferences p;
   if (!p.begin(NS, false)) return;
-  for (auto k : keys) if (p.isKey(k)) p.remove(k);
+  for (size_t i = 0; i < pc::onb::kFactoryResetUserKeyCount; ++i) {
+    const char *k = pc::onb::kFactoryResetUserKeys[i];
+    if (p.isKey(k)) p.remove(k);
+  }
   p.end();
 }
 bool lock() {

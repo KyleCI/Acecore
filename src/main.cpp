@@ -26,6 +26,8 @@
 #include "dsp011_pzem.h"
 #include "stm32_link.h"
 #include "stm_energy.h"
+#include "grid_sense.h"
+#include "dsp_thermal.h"
 #include "stm32_updater.h"
 #include "web_local.h"
 
@@ -38,7 +40,7 @@ bool prepareForUpdate() {
 }  // namespace
 
 void setup() {
-  gateway::earlyInit();  // GPIO15 latch before pinMode. Stock holds LOW. v0.1.1 holds HIGH (AC off).
+  gateway::earlyInit();  // GPIO15 off latch. STM drives LOW. DSP drives LOW (HIGH = ON) and holds it.
   Serial.begin(115200);
   delay(50);
   esp_reset_reason_t why = esp_reset_reason();
@@ -57,10 +59,12 @@ void setup() {
 #endif
 #if POWERCELL_DSP011
   hwPzemBegin();
+  dspGridBegin();
+  dspThermalBegin();  // NTC GPIO36 + fan GPIO25 task (Dubem dspic collector_2)
 #endif
   battery::begin();
   bms::begin();
-  unitmodel::begin();  // 2.5.4/2.5.13 PC3K/PC3_5K/PC5K/PC10K from NVS
+  unitmodel::begin();  // 2.5.4/2.5.13 PC3K/PC3_5K/PC5K/PC10K/PC1_5K from NVS
   periph::begin();     // SPI bus, ADS1115 solar, LoRa, optional SD
 #if POWERCELL_DSP011
   hwLogStart();
@@ -72,10 +76,32 @@ void setup() {
   powerguard::begin();  // after gateway/sockets: a latched shutdown is re-applied from NVS
   stmEnergyBegin();
   net::begin();
+  // 2.5.22: a staged cloud OTA runs here, on the early heap: before ESP-NOW, the web server,
+  // the WS and mDNS allocate. Output stays off (prepareForUpdate); no-op without a job.
+  ota::bootJob(prepareForUpdate);
   socketsStart();     // ESP-NOW follows the STA/AP channel; retries until the radio is up
   web::begin();
   backend::begin();
   ota::begin(prepareForUpdate, backend::pauseForOta);
+}
+
+// 2.5.30: heap / stack breakdown every 5 min (first at 60 s): never-used stack bytes per task
+// (uxTaskGetStackHighWaterMark is in bytes on the ESP32) and what holds DRAM now, so task
+// stacks can be trimmed on evidence. A missing task prints -1.
+void logMemTasks() {
+  static const char *const kTasks[] = {"loopTask", "async_tcp", "ws", "hwlog", "pzem", "bms", "grid", "thermal", "solar", "mdns", "ota", "ota_boot", "tiT", "wifi"};
+  char line[200]; size_t n = 0;
+  for (const char *t : kTasks) {
+    TaskHandle_t h = xTaskGetHandle(t);
+    long hw = h ? (long)uxTaskGetStackHighWaterMark(h) : -1L;
+    int k = snprintf(line + n, sizeof line - n, "%s%s=%ld", n ? " " : "", t, hw);
+    if (k < 0 || (size_t)k >= sizeof line - n) break;
+    n += (size_t)k;
+  }
+  LOGI("MEM", "TASKS", "stack_free %s", line);  // log lines are capped at 224 chars: state on the next line
+  LOGI("MEM", "HOLD", "tasks=%u ws_up=%d ap=%d mdns=%d sd=%d free=%lu largest=%lu min=%lu", (unsigned)uxTaskGetNumberOfTasks(),
+       (int)backend::connected(), (int)net::apActive(), (int)net::mdnsRunning(), (int)periph::sdPresent(), (unsigned long)heapguard::freeNow(),
+       (unsigned long)heapguard::largestNow(), (unsigned long)heapguard::heapMin());
 }
 
 void loop() {
@@ -102,6 +128,8 @@ void loop() {
   uint32_t dt = millis() - t0;
   if (dt > worst) worst = dt;
   if (dt > LOOP_SLOW_MS) LOGW("LOOP", "SLOW", "pass took %lu ms", (unsigned long)dt);
-  if (millis() - lastReport > 60000) { lastReport = millis(); LOGI("LOOP", "STATS", "worst pass %lu ms in the last minute heap_free=%lu heap_min=%lu heap_largest=%lu largest_min=%lu", (unsigned long)worst, (unsigned long)ESP.getFreeHeap(), (unsigned long)heapguard::heapMin(), (unsigned long)heapguard::heapLargest(), (unsigned long)heapguard::heapLargestMin()); worst = 0; }
+  if (millis() - lastReport > 60000) { lastReport = millis(); LOGI("LOOP", "STATS", "worst pass %lu ms in the last minute heap_free=%lu heap_min=%lu heap_largest=%lu largest_min=%lu iram_free=%lu", (unsigned long)worst, (unsigned long)heapguard::freeNow(), (unsigned long)heapguard::heapMin(), (unsigned long)heapguard::heapLargest(), (unsigned long)heapguard::heapLargestMin(), (unsigned long)heapguard::iramFree()); worst = 0; }
+  static uint32_t lastTasks = 0;
+  if (millis() > 60000 && (!lastTasks || millis() - lastTasks >= 300000)) { lastTasks = millis() | 1; logMemTasks(); }
   delay(2);
 }

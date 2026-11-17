@@ -71,7 +71,7 @@ No authentication. `passcode_set` is the boolean the app should trust.
 from the image rating.
 
 ```json
-{"device_id":"ACE-DDEEFF","model":"pc-dsp011-5kw","fw":"2.5.13","state":"unconfigured","claimed":false,"passcode_default":false,"passcode_set":false,"hotspot":false,"onboarding_version":2,"powercell_model":"PC5K","rated_kva":null,"usable_kw":4.5,"units":{"power":"W","energy":"Wh"},"data_format_version":1}
+{"device_id":"ACE-DDEEFF","model":"pc-dsp011-5kw","fw":"2.5.32","state":"unconfigured","claimed":false,"passcode_default":false,"passcode_set":false,"hotspot":false,"onboarding_version":2,"powercell_model":"PC5K","rated_kva":null,"usable_kw":4.5,"units":{"power":"W","energy":"Wh"},"data_format_version":1}
 ```
 
 `units` and integer `data_format_version` are fixed for the build. They match
@@ -143,11 +143,13 @@ when the body repeats the value already in the image. There is no web,
 socket, or serial command that writes it.
 
 This is rated active watts, not kVA. No power factor is applied. The only
-armed images are 5000 W usable 4500 W (`pc-dsp011-5kw`) and 3500 W usable
-3150 W (`pc-dsp011-35kw`). `rated_kva` on setup info stays null. The 5 kW
+armed images are 5000 W usable 4500 W (`pc-dsp011-5kw`), 3500 W usable
+3150 W (`pc-dsp011-35kw`) and, from 2.5.33, 1500 W usable 1350 W
+(`pc-dsp011-15kw`, PROVISIONAL: scaled from 3.5 kVA pending real specs). `rated_kva` on setup info stays null. The 5 kW
 image sets `usable_kw` to 4.5 and `powercell_model` to `PC5K`. The 3.5 kW
-image sets `usable_kw` to 3.15 and leaves `powercell_model` null. An image without a rating, an image whose rating is not one of those
-two, or a leftover `system_cfg/rated` value that does not equal the image,
+image sets `usable_kw` to 3.15 and leaves `powercell_model` null. The 1.5 kW
+image sets `usable_kw` to 1.35 and leaves `powercell_model` null. An image without a rating, an image whose rating is not one of those
+three, or a leftover `system_cfg/rated` value that does not equal the image,
 leaves `overload_configured` false and `usable_active_w` null. The firmware
 does not fill in or overwrite that stored value.
 
@@ -156,7 +158,8 @@ does not fill in or overwrite that stored value.
 ```
 
 The 3.5 kW image is the same object with `factory_variant` `pc-dsp011-35kw`,
-`rated_active_w` 3500, and `usable_active_w` 3150. `GET /v2/status` repeats
+`rated_active_w` 3500, and `usable_active_w` 3150. The 1.5 kW image uses
+`pc-dsp011-15kw`, 1500 and 1350. `GET /v2/status` repeats
 `factory_variant`, `rated_active_w`, `usable_active_w`,
 `overload_configured`, and `rating_writable:false` for a session or a LAN
 token. `total_output_coverage_verified` stays false.
@@ -189,7 +192,7 @@ A response is a successful Save only when HTTP is 200 and the body has `result` 
 
 ## POST /state and POST /relay
 
-`/state` is the collector output. Authorization may be the login session or the saved LAN token. `{"state":"off"}` on v0.1.1 drives GPIO15 high (DSP off) and does not address an AcePlug. `{"state":"on"}` drives GPIO15 low unless a lock refuses it. Payment lock is HTTP 403 `payment_locked` and wins over the latches. A battery-critical latch is HTTP 409 `battery_critical_latched`. An AC-overload shutdown latch is HTTP 409 `output_overload_latched`. The same three strings are the cloud `set_state` error and the console `rejected` line. OFF is still allowed while either latch is set. The original profile uses its existing active-high collector relay, not GPIO15-as-DSP. The overload code is reported only on the v0.1.1 images, which are the images that latch AC output off from PZEM watts.
+`/state` is the collector output. Authorization may be the login session or the saved LAN token. `{"state":"off"}` on v0.1.1 drives GPIO15 low (DSP off, HIGH = ON) and does not address an AcePlug. `{"state":"on"}` drives GPIO15 high unless a lock refuses it. Payment lock is HTTP 403 `payment_locked` and wins over the latches. A battery-critical latch is HTTP 409 `battery_critical_latched`. An AC-overload shutdown latch is HTTP 409 `output_overload_latched`. The same three strings are the cloud `set_state` error and the console `rejected` line. OFF is still allowed while either latch is set. The original profile uses its existing active-high collector relay, not GPIO15-as-DSP. The overload code is reported only on the v0.1.1 images, which are the images that latch AC output off from PZEM watts.
 
 ```json
 {"ok":true,"state":"off","applied_via":"dsp_gpio15","aceplug":false,"gpio_level":1}

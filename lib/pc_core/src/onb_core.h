@@ -96,20 +96,63 @@ NetMode netModeFromStored(const char *s);     // anything unknown/empty -> Unset
 constexpr uint32_t kApFallbackMs = 30000;   // saved network lost -> hotspot
 constexpr uint32_t kApGraceMs = 120000;     // hotspot stays after the station returns
 constexpr uint32_t kWifiRetryMs = 5000;     // WiFi.reconnect interval after the first begin
+// 2.5.30: after a FALLBACK the router came back and nobody is on the hotspot: close it
+// after this instead of the 120 s grace (AP+STA during the WS TLS reconnect cost heap on
+// ACE-000003). The 120 s grace stays after /v2/wifi/save, a network-mode change, and
+// whenever a phone is associated to the hotspot.
+constexpr uint32_t kApQuickGraceMs = 10000;
 
 struct ApPolicy {
   uint32_t fallbackMs = 300000;  // engine default; product images set kApFallbackMs
   uint32_t graceMs = 120000;     // hotspot stays 120 s after STA is up / after wifi save
   uint32_t forceMs = 600000;     // console "AP ON" keeps it at least 10 min
+  uint32_t quickGraceMs = 0;     // 0 = off (engine default); product images set kApQuickGraceMs
   bool ap = false, wasUp = false, forced = false;
+  bool saveGrace = false;        // 2.5.30: grace from /v2/wifi/save or a mode change (full graceMs)
+  uint8_t apClients = 0;         // 2.5.30: stations on the hotspot (set before update)
   uint32_t downSince = 0, upSince = 0, forcedUntil = 0;
   void begin(uint32_t now) { downSince = now; }
   // Returns whether the hotspot should be on now.
   bool update(bool hasSsid, bool staUp, bool testing, uint32_t now, bool hotspotOnly = false);
   void force(uint32_t now) { forced = true; forcedUntil = now + forceMs; }
-  void restartGrace(uint32_t now) { upSince = now; wasUp = true; }
+  void restartGrace(uint32_t now) { upSince = now; wasUp = true; saveGrace = true; }
   static const char *stateName(bool hasSsid, bool staUp, bool testing, bool ap, bool hotspotOnly = false);  // hotspot_only|unconfigured|testing|online|grace|fallback|connecting
 };
+
+// ---- Wi-Fi scan control (2.5.28, ACE-000003) ---------------------------------------
+// In AP+STA fallback the 5 s WiFi.reconnect() and the SDK auto-reconnect aborted or
+// refused the async scan (ESP_ERR_WIFI_STATE, or SCAN_DONE with 0 records), and 0 was
+// cached as fresh for 30 s, so /v2/wifi/scan said scanning:false with an empty list.
+// ScanCtl: a request pauses station reconnects until kScanQuietMs after the last scan
+// attempt ends; a failed or empty attempt is retried up to kScanMaxAttempts in total; only
+// a non-empty result is cached as fresh. When every attempt failed the empty list is
+// reported (scanning:false) for kScanEmptyHoldMs, then the next poll starts a new scan.
+constexpr uint32_t kScanFreshMs = 30000;     // a non-empty result is served this long
+constexpr uint8_t kScanMaxAttempts = 3;      // first try + 2 retries
+constexpr uint32_t kScanRetryGapMs = 1500;   // lets a pending connect attempt end first
+constexpr uint32_t kScanQuietMs = 4000;      // reconnects stay paused after the last attempt
+constexpr uint32_t kScanEmptyHoldMs = 5000;  // "no networks" is reported this long
+
+struct ScanCtl {
+  enum class Done : uint8_t { Store, Retry, Empty };
+  bool requested = false, running = false, haveResult = false, gaveUp = false, quiet = false;
+  uint8_t attempts = 0;
+  uint32_t nextAt = 0, resultAt = 0, gaveUpAt = 0, quietUntil = 0;
+  // From /v2/wifi/scan. True = results are current (scanning:false); false = a scan is
+  // requested or running (scanning:true), the caller serves the previous list meanwhile.
+  bool poll(uint32_t now);
+  bool shouldStart(uint32_t now) const { return requested && !running && (int32_t)(now - nextAt) >= 0; }
+  void started() { running = true; ++attempts; }
+  // n = scan record count, or < 0 when the scan failed to start, timed out or was aborted.
+  Done finished(int n, uint32_t now);
+  // Station reconnects (WiFi.reconnect loop and SDK auto-reconnect) must wait.
+  bool pauseReconnect(uint32_t now) const { return requested || running || (quiet && (int32_t)(quietUntil - now) > 0); }
+  void reset() { *this = ScanCtl(); }
+};
+// The 5 s WiFi.reconnect loop for the saved network may run now. Never during a Wi-Fi
+// test (pending/running) or while its success awaits /v2/wifi/save, never while a scan
+// pauses reconnects, and only with a saved network that is down.
+bool stationRetryAllowed(bool hasSsid, bool staUp, bool testing, bool testOk, bool scanPause, uint32_t sinceLastRetryMs);
 
 // ---- WebSocket message rules (section 13) -----------------------------------------
 // Error for set_passcode, or nullptr to apply. tls=false -> insecure_transport.
@@ -117,5 +160,17 @@ const char *setPasscodeError(const char *requestId, bool tls, uint64_t nowUnix, 
 bool validUnclaimReason(const char *r);
 bool unclaimClearsPairs(const char *r);  // transfer | support clear /v2/pair tokens; owner_request keeps them
 bool validOwnerId(const char *o);        // 1..64 printable, no quotes/backslash
+
+// ---- Factory reset (as purchased) -------------------------------------------------
+// NVS namespaces a factory reset erases whole: owner, passcode, phones, sessions, claim,
+// offline queue, AcePlug registry, socket config and the Manual output/battery limits.
+extern const char *const kFactoryResetNamespaces[];
+extern const size_t kFactoryResetNamespaceCount;
+// Customer keys removed from pc_secure: home Wi-Fi, network mode, local token, the
+// customer hotspot password (the label password in pc_ident applies again), names.
+extern const char *const kFactoryResetUserKeys[];
+extern const size_t kFactoryResetUserKeyCount;
+bool factoryResetErasesNamespace(const char *ns);
+bool factoryResetRemovesKey(const char *key);
 }  // namespace onb
 }  // namespace pc

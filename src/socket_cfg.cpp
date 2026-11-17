@@ -284,6 +284,15 @@ void setPriority(const String &id, bool essential) {
   save(k, s);
 }
 
+bool clearName(const String &id) {
+  String k = key(id);
+  Lock l;
+  Sock &s = get(k);
+  if (!s.cfg.name[0]) return true;
+  s.cfg.name[0] = 0;
+  return !s.stored || save(k, s);
+}
+
 void shedList(JsonArray a) {
   Lock l;
   for (auto &e : g) if (e.second.last.want == 0 && isShedReason(e.second.last.reason)) a.add(e.first);

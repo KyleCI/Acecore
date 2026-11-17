@@ -9,18 +9,24 @@
 #include "sd_log.h"
 #include "serial_spool.h"
 #include <SD.h>
+#include <heap_guard.h>  // pc::kSdMaxFiles, FatFs context size (2.5.29)
+#include "heapguard.h"
+#include "ff.h"
 #include <SPI.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 namespace {
-constexpr int kSdCs = 33;
+constexpr int kSdCs = PIN_DSP_SD_CS;
 constexpr uint32_t kSdBlocks = 1024;
 constexpr uint32_t kEnergyBytes = 65536;
 constexpr uint32_t kSector = 4096;
-static_assert(kSdCs == 33 && PIN_STM32_RX == 33, "GPIO33 is SD CS only when the STM32 UART is not started");
-static_assert(kSdCs != 25 && kSdCs != 26, "SD chip select is not a PZEM pin");
+constexpr uint32_t kHwLogStack = 8192;
+static_assert(kSdCs == 5, "DSP SD chip select is GPIO5");
+// 2.5.29: the mount context holds max_files FIL objects (4136 B each) for the uptime.
+static_assert(sizeof(FIL) == pc::kFatFsFilBytes, "FatFs FIL size (per-file 4096 B cache) as documented in heap_guard.h");
+static_assert(kSdCs != PIN_PZEM_RX && kSdCs != PIN_PZEM_TX, "SD chip select is not a PZEM pin");
 static_assert(PIN_SPI_SCK == 18 && PIN_SPI_MISO == 19 && PIN_SPI_MOSI == 23, "SD SPI pins");
 static_assert(PIN_SD_CS == 14, "original profile SD CS stays GPIO14");
 
@@ -162,7 +168,12 @@ void observeEnergy() {
 void task(void*) {
   bool mounted = false;
   if (periph::spiMutex()) xSemaphoreTake(periph::spiMutex(), portMAX_DELAY);
-  if (SD.begin(kSdCs, SPI, 1000000)) {
+  const uint32_t t0 = millis();
+  // 2.5.29: two files (blackbox.bin + acenergy.bin) instead of the Arduino default 5:
+  // the FatFs mount context drops from 26928 to 14520 B of DRAM (ACE-000003: no WS TLS).
+  const bool begun = SD.begin(kSdCs, SPI, 1000000, "/sd", pc::kSdMaxFiles);
+  const uint32_t mountMs = millis() - t0;
+  if (begun) {
     card = new FileCard();
     energyStore = new FileNor();
     if (card->begin()) {
@@ -180,14 +191,34 @@ void task(void*) {
       energy = new powercell::EnergyLog(*slots, *meta, powercell::EnergyConfig());
       energy->load();
     }
-    uint32_t mb = uint32_t(SD.cardSize() / (1024 * 1024));
-    periph::noteSd(mounted, mb);
-    LOGI("SD", "CARD", "cs=%d present=%d", kSdCs, (int)mounted);
+    const uint32_t mb = uint32_t(SD.cardSize() / (1024 * 1024));
+    // 2.5.30: no usable file -> close both and unmount, so the 14520 B FatFs context is
+    // returned (ACE-000003 2.5.29 without a card: mount "succeeded", present=0, held anyway).
+    const bool keep = pc::sdKeepMount(mounted, energy != nullptr);
+    if (!keep) {
+      delete card; card = nullptr;
+      delete energyStore; energyStore = nullptr;
+      SD.end();
+    }
+    periph::noteSd(mounted, keep ? mb : 0);
+    // 2.5.30: the 2.5.29 "DRAM used" field compared free DRAM at task start with free DRAM after the
+    // (up to 60 s) mount, so it counted every other allocation of the boot. The context size
+    // is fixed: report it and whether it is still held.
+    LOGI("SD", "CARD", "cs=%d mount=1 blackbox=%d energy=%d size_mb=%lu mount_ms=%lu ctx=%lu held=%d free=%lu", kSdCs, (int)mounted,
+         (int)(energy != nullptr), (unsigned long)mb, (unsigned long)mountMs, (unsigned long)pc::fatVfsCtxBytes(pc::kSdMaxFiles), (int)keep,
+         (unsigned long)heapguard::freeNow());
   } else {
     periph::noteSd(false, 0);
-    LOGW("SD", "CARD", "no card on GPIO%d", kSdCs);
+    LOGW("SD", "CARD", "no card on GPIO%d mount=0 mount_ms=%lu held=0 free=%lu", kSdCs, (unsigned long)mountMs, (unsigned long)heapguard::freeNow());
   }
   if (periph::spiMutex()) xSemaphoreGive(periph::spiMutex());
+  if (!sd && !energy) {
+    // 2.5.30: nothing to drain or observe without a card: end the task and return its
+    // 8192 B stack. hwLogExport() still answers from RAM (it checks sd).
+    LOGI("SD", "TASK_END", "hwlog stops (no SD log); %lu B stack returned", (unsigned long)kHwLogStack);
+    vTaskDelete(nullptr);
+    return;
+  }
 
   uint32_t last = 0;
   for (;;) {
@@ -204,7 +235,7 @@ void task(void*) {
 
 void hwLogStart() {
   io = xSemaphoreCreateMutex();
-  xTaskCreatePinnedToCore(task, "hwlog", 8192, nullptr, 1, nullptr, 1);
+  xTaskCreatePinnedToCore(task, "hwlog", kHwLogStack, nullptr, 1, nullptr, 1);
 }
 
 void hwLogExport(bool full) {

@@ -26,7 +26,8 @@ void publishState();
 bool pauseForOta();
 void requestTelemetry();  // send telemetry at the next service() (new event)
 bool sendOtaStatus(const char *status, const char *version);
-bool sendOtaCheck(bool healthy, const char *lastStatus, const char *lastError);  // {type:ota_check, fw, kind, board}
-uint32_t reconnects();
+bool sendOtaCheck(bool healthy, const char *lastStatus, const char *lastError, const char *lastErrorDetail = "", const char *lastVersion = "");  // {type:ota_check, fw, kind, board}
+uint32_t reconnects();  // WS connections made this boot
+bool enabled();         // begin() found an API key: the WS will try to connect
 uint32_t connectedForMs();  // 0 when not connected
 }  // namespace backend

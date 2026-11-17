@@ -13,6 +13,13 @@
 #define POWERCELL_HARDWARE_MODEL "esp32dev"  // unset default. Product images override this with -D.
 #endif
 
+// ---- Local HTTP API ---------------------------------------------------------
+// AsyncWebServer port for /, /data, /login and the /v2/* setup API (GET /v2/setup/info).
+// mDNS advertises _http._tcp on this port once the station is on the home network.
+#ifndef LOCAL_HTTP_PORT
+#define LOCAL_HTTP_PORT 80
+#endif
+
 // ---- Backend ---------------------------------------------------------------
 // Defaults = live cloud api-dev (Caleb 2026-10-26). Override via platformio.ini:
 //   the four product images → api-dev.acecore.tech
@@ -69,6 +76,21 @@
 #endif
 #if POWERCELL_DSP011 && FEATURE_LORA
 #error "hardware v0.1.1 is not fitted with LoRa"
+#endif
+// DSP BMS driver. STM images always use JK-PB and ignore this flag.
+// 1 = JK-PB stream at 115200, RX17/TX16 (both DSP images, as Dubem's working firmware).
+// 0 = optional JBD poller at 9600, RX16/TX17. No product image uses it.
+#ifndef DSP_BMS_JKPB
+#define DSP_BMS_JKPB 0
+#endif
+#if DSP_BMS_JKPB && !POWERCELL_DSP011
+#error "DSP_BMS_JKPB is only valid on POWERCELL_DSP011 builds"
+#endif
+// Unified selector: 1 = JK-PB 115200 listener (STM, or DSP 5 kW); 0 = JBD 9600 poll (DSP 3.5 kW).
+#if POWERCELL_DSP011 && !DSP_BMS_JKPB
+#define POWERCELL_BMS_JKPB 0
+#else
+#define POWERCELL_BMS_JKPB 1
 #endif
 #ifndef FEATURE_ESPNOW_SOCKETS    // legacy smart-socket path over ESP-NOW; disabled in 2.2 (sockets use LoRa)
 #define FEATURE_ESPNOW_SOCKETS 0
@@ -142,6 +164,10 @@ static_assert(TELEMETRY_PERIOD_MS < BACKEND_ONLINE_WINDOW_S * 1000 / 3, "telemet
 #define WIFI_TEST_TIMEOUT_MS 20000    // /v2/wifi/test
 #define NTP_LOG_PERIOD_MS 10000
 #define OTA_HEALTHY_MS 30000          // continuous healthy time before an OTA image is marked valid
+#define OTA_LAN_HEALTHY_MS 180000     // hotspot_only (no cloud): 3 min healthy local run confirms an image (lan_ota.h)
+#ifndef OTA_LAN_IDLE_MS
+#define OTA_LAN_IDLE_MS 30000         // a POST /ota upload with no data this long is aborted
+#endif
 #define OTA_VERIFY_DEADLINE_MS 300000 // roll back if never healthy within 5 min of first boot
 #define OTA_CHECK_PERIOD_MS 300000
 

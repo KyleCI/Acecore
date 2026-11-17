@@ -3,7 +3,7 @@
 namespace powercell {
 
 void AcEnergyToday::restore(bool have_record, int32_t day_id, uint32_t baseline_wh, bool day_unknown) {
-  have_ = have_record && day_id > 0;
+  have_ = have_record && (isCalendarDay(day_id) || isSessionDay(day_id));
   day_ = have_ ? day_id : 0;
   baseline_ = have_ ? baseline_wh : 0;
   unknown_ = have_ && day_unknown;
@@ -21,11 +21,27 @@ bool AcEnergyToday::implausible(uint32_t step_wh, bool time_known, uint32_t elap
   return static_cast<uint64_t>(step_wh) > cap;
 }
 
+static bool clockUsable(const TodayInput& in) {
+  if (in.clock == TodayClock::Session) return isSessionDay(in.day_id);
+  return in.clock != TodayClock::Untrusted && isCalendarDay(in.day_id);
+}
+
 TodayOutput AcEnergyToday::observe(const TodayInput& in) {
   TodayOutput out;
-  const bool clock_ok = in.clock != TodayClock::Untrusted && in.day_id > 0;
-  if (!in.valid || !clock_ok) {
+  if (!in.valid) {
     known_ = false;
+    return out;
+  }
+  if (!clockUsable(in)) {
+    // No clock on this sample. Keep a baseline we already have, but do not
+    // start a new one from an Untrusted input (Session is used for that).
+    if (have_ && !unknown_) {
+      known_ = true;
+      out.known = true;
+      out.kwh = kwh_;
+    } else {
+      known_ = false;
+    }
     return out;
   }
   if (last_mono_ok_ && in.mono_continuous && static_cast<int32_t>(in.mono_ms - last_mono_) < 0) {
@@ -33,7 +49,14 @@ TodayOutput AcEnergyToday::observe(const TodayInput& in) {
     return out;
   }
 
-  if (!have_ || day_ != in.day_id) {
+  const bool keep_calendar_during_session = have_ && isCalendarDay(day_) && isSessionDay(in.day_id);
+  const bool adopt_session_to_calendar = have_ && isSessionDay(day_) && isCalendarDay(in.day_id);
+  if (keep_calendar_during_session) {
+    // Clock dropped after a real day was established. Keep that day.
+  } else if (adopt_session_to_calendar) {
+    day_ = in.day_id;
+    out.persist = true;
+  } else if (!have_ || day_ != in.day_id) {
     have_ = true;
     unknown_ = false;
     day_ = in.day_id;
@@ -88,7 +111,6 @@ TodayOutput AcEnergyToday::observe(const TodayInput& in) {
   kwh_ = static_cast<double>(in.lifetime_wh - baseline_) / 1000.0;
   out.known = true;
   out.kwh = kwh_;
-  out.persist = false;
   return out;
 }
 

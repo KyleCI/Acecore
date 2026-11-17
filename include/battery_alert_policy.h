@@ -42,7 +42,7 @@ class BatteryAlertPolicy {
   static constexpr float WarningPercent = 15.0f;
   static constexpr float InhibitPercent = 10.0f;
   static constexpr float RestartPercent = 15.0f;
-  // The policy does not choose a pin. v0.1.1 maps a hold to GPIO15 high.
+  // The policy does not choose a pin. v0.1.1 maps a hold to GPIO15 low.
   // The original profile does not.
   static constexpr bool kPhysicalAutoOffEnabled = false;
   enum Change : uint8_t { BatteryChanged = 1, AvailabilityChanged = 2 };

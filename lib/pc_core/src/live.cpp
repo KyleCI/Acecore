@@ -9,9 +9,10 @@ namespace live {
 namespace {
 const Model kModels[] = {
   {"PC3K", 3.0f, 2.7f},
-  {"PC3_5K", 3.5f, 3.15f},  // Prime 3.5 kVA / 3150 W usable (same as 35kw builds)
-  {"PC5K", 5.0f, 4.5f},
+  {"PC3_5K", 3.5f, 3.15f},  // Prime Plus 3.5 kVA / 3150 W usable (same as 35kw builds)
+  {"PC5K", 5.0f, 4.5f},     // Ultra 5 kVA / 4500 W usable (same as 5kw builds)
   {"PC10K", 10.0f, 9.0f},
+  {"PC1_5K", 1.5f, 1.35f},  // Prime 1.5 kVA / 1350 W usable, PROVISIONAL (scaled from 3.5 kVA, 2.5.33)
 };
 bool charging(const Inputs &in) {
   if (in.chr == ChargeState::Bulk || in.chr == ChargeState::Absorb || in.chr == ChargeState::Float) return true;
@@ -19,7 +20,25 @@ bool charging(const Inputs &in) {
 }
 }  // namespace
 
+bool gridOverride(const Inputs &in) {
+  if (!in.stmFresh || !in.gridKnown || !in.gridPresent) return false;
+  if (!in.sysAssumed && in.sys != SysState::Unknown) return false;  // real STM32 SYS report wins
+  if (!in.bmsOn) return false;                                       // cannot tell if the pack is discharging
+  return in.bmsCurrentA > -kChargeA;                                 // not discharging
+}
+
 const Model *models(size_t &count) { count = sizeof kModels / sizeof kModels[0]; return kModels; }
+
+const char *productNameForHardwareModel(const char *hardwareModel) {
+  if (!hardwareModel) return nullptr;
+  if (!strcmp(hardwareModel, "pc-dsp011-35kw") || !strcmp(hardwareModel, "pc-stm01-35kw"))
+    return "Prime Plus";
+  if (!strcmp(hardwareModel, "pc-dsp011-5kw") || !strcmp(hardwareModel, "pc-stm01-5kw"))
+    return "Ultra";
+  if (!strcmp(hardwareModel, "pc-dsp011-15kw") || !strcmp(hardwareModel, "pc-stm01-15kw"))
+    return "Prime";
+  return nullptr;
+}
 
 const Model *findModel(const char *code) {
   if (!code) return nullptr;
@@ -34,8 +53,10 @@ const Model *findModel(const char *code) {
   if (!k) return nullptr;
   if (k >= 3 && !strcmp(n + k - 3, "KVA")) { n[k - 2] = 0; k -= 2; }   // 5KVA -> 5K
   const char *b = !strncmp(n, "PC", 2) ? n + 2 : n;
-  // Alias: 35K / PC35K -> 3_5K (Powercell Prime 3.5 kVA)
+  // Alias: 35K / PC35K -> 3_5K (Powercell Prime Plus 3.5 kVA)
   if (!strcmp(b, "35K")) b = "3_5K";
+  // Alias: 15K / PC15K -> 1_5K (Powercell Prime 1.5 kVA, 2.5.33)
+  if (!strcmp(b, "15K")) b = "1_5K";
   for (const Model &m : kModels) if (!strcmp(b, m.code + 2)) return &m;
   return nullptr;
 }
@@ -54,6 +75,7 @@ const char *powerSrcName(PowerSrc p) {
 Source source(const Inputs &in) {
   bool pv = in.solarOk && in.solarW >= kSolarActiveW;
   if (!in.stmFresh) return pv ? Source::Solar : Source::None;
+  if (gridOverride(in)) return Source::Grid;
   if (in.sys == SysState::Inverter) {
     // PV covering the load (battery not discharging) -> solar, else battery.
     if (pv && in.bmsOn && in.bmsCurrentA >= 0) return Source::Solar;
@@ -66,6 +88,7 @@ Source source(const Inputs &in) {
 Status status(const Inputs &in) {
   if (!in.stmFresh) return Status::Unknown;
   if (in.sys == SysState::Fault || in.faultActive) return Status::Fault;
+  if (gridOverride(in)) return charging(in) ? Status::Charging : Status::Idle;  // idle = grid pass-through
   if (in.sys == SysState::Inverter) return Status::Inverting;
   if (charging(in)) return Status::Charging;
   if (in.sys == SysState::Grid) return Status::Idle;   // grid pass-through, not charging

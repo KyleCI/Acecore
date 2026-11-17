@@ -25,6 +25,8 @@ void socketsStart();      // after Wi-Fi is up (ESP-NOW follows the STA/AP chann
 bool socketsRadioReady();
 // Battery critical low-power mode: LoRa sleeps between short listen windows (no-op on other transports).
 void socketsSetLowPower(bool on);
+// Local OTA upload (POST /ota) in progress: the LoRa task idles (no RX/TX). No-op elsewhere.
+void socketsSetPaused(bool on);
 const char *socketTransport();  // "lora", "espnow" or "none"
 void socketsDiag(const char *tag);
 bool sendRelayCommand(String deviceId, bool turnOn);

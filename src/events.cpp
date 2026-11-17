@@ -6,10 +6,15 @@
 #include "bms.h"
 #include "config.h"
 #include "events_core.h"
+#include "events_json.h"
 #include "log.h"
 #include "offline_queue.h"
 #include "sockets/sockets.h"
 #include "stm32_link.h"
+#include "grid_sense.h"
+#include "dsp_thermal.h"
+#include "ac_output_policy.h"
+#include "dsp011_pzem.h"
 
 namespace events {
 namespace {
@@ -48,12 +53,19 @@ void gatherSockets(pc::ev::Inputs &in) {
 const char *title(const Event &e) {
   using T = pc::ev::Type;
   switch (e.type) {
-    case T::Overload: return e.active ? "Inverter overload" : "Inverter load back to normal";
+    case T::Overload:
+      if (!strcmp(e.id, "ac_output_limit")) return e.active ? "Output power limit exceeded" : "Output power back under the limit";
+      if (!strcmp(e.id, "ac_output_shutdown")) return e.active ? "Output off: power limit exceeded" : "Output power limit cleared";
+      return e.active ? "Inverter overload" : "Inverter load back to normal";
     case T::Overcurrent: return e.socket[0] ? (e.active ? "Socket current too high" : "Socket current normal") : (e.active ? "Overcurrent fault" : "Overcurrent cleared");
     case T::InverterFault: return e.active ? "Inverter fault" : "Inverter fault cleared";
     case T::BmsFault: return e.active ? "Battery protection alarm" : "Battery alarm cleared";
     case T::RelayFailed: return e.active ? "Socket did not switch" : "Socket switching restored";
-    case T::OverTemp: return e.active ? "Inverter too hot" : "Inverter temperature normal";
+    case T::OverTemp:
+      if (!strcmp(e.id, "over_temperature")) return e.active ? "Powercell too hot: output off" : "Powercell cooled down";
+      return e.active ? "Inverter too hot" : "Inverter temperature normal";
+    case T::TempSensorFault: return e.active ? "Temperature sensor fault" : "Temperature sensor working";
+    case T::BmsOverTemp: return e.active ? "Battery protection: temperature too high" : "Battery temperature normal";
     case T::BatteryFull: return e.active ? "Battery full" : "Battery charging";
     case T::BatteryLow: return e.active ? "Battery low" : "Battery level recovered";
     case T::GridDown: return e.active ? "Grid power lost" : "Grid power restored";
@@ -114,11 +126,39 @@ void service() {
     in.hasIout = s.has_iout; in.iout = s.iout; in.hasTemp = s.has_temp; in.temp = s.temp_c;
     in.hasGrid = s.has_grid; in.gridV = s.grid_v;
   }
+#if POWERCELL_DSP011
+  DspGridReading grid;
+  if (dspGridRead(&grid) && grid.valid) { in.hasGrid = true; in.gridV = grid.raw_vrms; }
+#endif
   pc::jk::Data d;
   if ((in.bmsOnline = bms::read(d))) { in.bmsAlarms = d.alarms; in.bmsCurrentA = d.currentMa / 1000.0f; }
   battery::Reading b = battery::read();
   in.socValid = b.valid; in.soc = b.soc; in.socSource = b.source;
   in.critLatched = powerguard::espLatched();
+  in.batLowPct = powerguard::alertLowPercent();
+  in.batCritPct = powerguard::alertWarningPercent();
+#if POWERCELL_DSP011
+  {
+    DspThermalReading t;
+    in.dspThermal = true;
+    in.sysTempValid = dspThermalRead(&t);
+    in.sysTemp = t.temp_c;
+    in.sysTempFault = powercell::thermal::sensorFaulted(t.sampled, t.fault, t.age_ms);
+    in.overTempLatched = powerguard::overTempLatched();
+    in.overTempTripC = powerguard::overTempTripC();
+  }
+#endif
+#if POWERCELL_DSP011
+  {  // Manual output power limit (DSP only: STM has no PZEM-based enforcement)
+    const powercell::AcOutputPolicy &pol = powercell::acOutputPolicy();
+    in.acLimit = true;
+    in.acWarn = pol.warning();
+    in.acShutdown = pol.shutdownLatched();
+    in.acRatedShutdown = pol.systemOverloadLatched();
+    float v = 0, a = 0, w = 0; uint32_t wh = 0, age = 0;
+    if (hwPzemSample(&v, &a, &w, &wh, &age) && age <= powercell::AcOutputPolicy::FreshnessMs) { in.acWattsValid = true; in.acWatts = w; }
+  }
+#endif
   in.stmReserve = in.stmOnline && s.has_rsv && s.rsv_latched;
   gatherSockets(in);
   g_engine.update(in, now, unixNow());
@@ -137,18 +177,7 @@ void service() {
 }
 
 void eventToJson(JsonObject o, const void *p) {
-  const Event &e = *static_cast<const Event *>(p);
-  o["type"] = pc::ev::typeName(e.type);
-  o["active"] = e.active;
-  o["severity"] = pc::ev::sevName(e.severity);
-  if (e.hasValue) o["value"] = e.value; else o["value"] = nullptr;
-  if (e.socket[0]) o["socket"] = e.socket; else o["socket"] = nullptr;
-  o["code"] = e.code;
-  if (e.type == pc::ev::Type::ModeFallback || e.type == pc::ev::Type::LoadShed) o["reason"] = e.code;
-  if (e.ts) o["ts"] = e.ts; else o["ts"] = nullptr;
-  o["source"] = e.source;
-  if (e.permanent) o["permanent"] = true;
-  if (e.releaseRequires && e.active) o["release_requires"] = e.releaseRequires;
+  pc::ev::eventFieldsTo(o, *static_cast<const Event *>(p));  // events_json.h (host tested)
 }
 
 size_t appendPending(JsonArray arr) {

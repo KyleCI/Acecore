@@ -79,8 +79,14 @@ struct OnGateIn {
   bool espLatched = false, stmReserve = false;
 };
 enum class OnGate : uint8_t { Allow, RefuseSoc, RefuseVoltage, RefuseLatched };
+// 2.5.13 (Caleb 8 Nov 2026, "restart blocked until back to 15 %"): while the ESP latch
+// holds, an ON needs BMS SoC >= 15 % (kRestoreSoc), the same rule as the DSP images.
+// Not latched: > 10 % as before. The STM32 reserve latch alone keeps the 2.5.5 rule.
 inline OnGate onGate(const OnGateIn &in) {
-  if (in.bmsSocValid) return in.bmsSoc > kOnMinSoc ? OnGate::Allow : OnGate::RefuseSoc;
+  if (in.bmsSocValid) {
+    if (in.espLatched) return in.bmsSoc >= kRestoreSoc ? OnGate::Allow : OnGate::RefuseSoc;
+    return in.bmsSoc > kOnMinSoc ? OnGate::Allow : OnGate::RefuseSoc;
+  }
   if (in.vbatValid) return in.vbat >= kOnFallbackV ? OnGate::Allow : OnGate::RefuseVoltage;
   return (in.espLatched || in.stmReserve) ? OnGate::RefuseLatched : OnGate::Allow;
 }
