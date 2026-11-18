@@ -25,13 +25,32 @@ Run `--dry-run` first. It only reads the board's MAC and prints the serial it wo
    run `py -m pip install esptool`.
 2. Copy `tools\factory_state\factory.env.example` to `tools\factory_state\factory.env` and fill in
    `API_KEY` (and `ADMIN_KEY` for `--register`). Never share or commit that file.
-3. **Seeding (important):** copy `serial_counter.json` and `units.csv` from the `factory_state`
-   folder of the laptop that provisioned the earlier units (ACE-000001, ACE-000003, ...)
-   into `tools\factory_state\`. Without them the script refuses to start. Use
-   `--start-at N` only if those files are truly lost, with N above every serial ever issued.
-   Run the tool from one laptop only. The counter is local and nothing on the backend
-   reserves serials, so two laptops could issue the same number.
+3. **Serials already issued:** ACE-000001, ACE-000002 and ACE-000003 were issued before this
+   tool (Caleb, 18 Nov 2026). The tool never issues them again. If `serial_counter.json` /
+   `units.csv` from the laptop that made those units exist, copy them into `tools\factory_state\`
+   and they are honoured (still never 1 to 3). `--start-at N` overrides the first number and is
+   refused below 4.
 4. Close the PlatformIO Serial Monitor. Find the COM port in Device Manager under Ports.
+
+## First run
+```
+py tools\factory_flash.py --model pc-dsp011-5kw --port COM5 --register
+```
+With an empty `tools\factory_state` (no `serial_counter.json`) this issues **ACE-000004** first.
+It records ACE-000001 to ACE-000003 in `factory_state\reservations.jsonl` as `pre_issued`
+(no board MAC, never issued again), then reserves ACE-000004 for the board on the cable.
+Run `--dry-run` first if you want to see the serial without writing anything.
+
+**One laptop only, and back up `tools\factory_state`.** The serial counter lives only in that
+folder. There is no backend endpoint that reserves serials yet, so a second laptop, or a lost
+folder, would issue the same numbers again. Copy the whole `tools\factory_state` folder
+(`serial_counter.json`, `reservations.jsonl`, `units.csv`, `labels\`) to a backup after every
+session. Never put `factory.env` anywhere shared.
+
+**Reflashing ACE-000001 to ACE-000003:** if the board's MAC is in `units.csv` the tool gives it
+the same serial back. If it is not, do not use `factory_flash.py` for that board (it would get a
+new serial). Flash the image, then provision with the serial given explicitly:
+`py tools\factory.py COM5 --serial ACE-000002 --reprovision --model PC5K`.
 
 ## What it does
 1. Checks `factory.env` (values never printed), the image SHA256 against `bins\SHA256SUMS`,

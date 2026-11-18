@@ -103,6 +103,12 @@ def parse_info(text):
     return st
 
 
+# Caleb 18 Nov 2026 17:03 WAT: ACE-000001..ACE-000003 were issued before this journal existed.
+# They are never issued again by any tool; a new serial is always ACE-000004 or later.
+PRE_ISSUED_SERIALS = ("ACE-000001", "ACE-000002", "ACE-000003")
+MIN_NEW_SERIAL = 4
+
+
 def format_serial(prefix, n):
     s = f"{prefix}{n:06d}"
     if not SERIAL_RE.match(s):
@@ -115,10 +121,21 @@ def load_counter(path, prefix="ACE-"):
         with open(path, encoding="utf-8") as f:
             c = json.load(f)
     else:
-        c = {"prefix": prefix, "next": 1}
+        c = {"prefix": prefix, "next": MIN_NEW_SERIAL}
     c.setdefault("prefix", prefix)
-    c.setdefault("next", 1)
+    c.setdefault("next", MIN_NEW_SERIAL)
     return c
+
+
+def next_new_serial(c, csv_path):
+    """Next serial to hand out from counter c (bumps c["next"] in place past used numbers).
+    Never below MIN_NEW_SERIAL, never a pre-issued serial, never one already in units.csv."""
+    c["next"] = max(int(c["next"]), MIN_NEW_SERIAL)
+    serial = format_serial(c["prefix"], int(c["next"]))
+    while serial in PRE_ISSUED_SERIALS or serial_in_log(csv_path, serial):  # never double-assign
+        c["next"] += 1
+        serial = format_serial(c["prefix"], int(c["next"]))
+    return serial
 
 
 def save_counter(path, c):
@@ -423,10 +440,7 @@ def main(argv=None):
         serial, new_serial = cur, False
     else:
         c = load_counter(counter_path)
-        serial = format_serial(c["prefix"], int(c["next"]))
-        while serial_in_log(csv_path, serial):  # never double-assign
-            c["next"] += 1
-            serial = format_serial(c["prefix"], int(c["next"]))
+        serial = next_new_serial(c, csv_path)
         new_serial = True
     print(f"serial: {serial}{' (new)' if new_serial else ' (kept)'}")
 

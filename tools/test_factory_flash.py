@@ -60,11 +60,55 @@ class Models(unittest.TestCase):
 
 
 class Plan(unittest.TestCase):
-    def test_fresh_counter_refused_without_start_at(self):
-        with self.assertRaises(ff.FlashError):
-            ff.plan_serial(MAC, [], [], None)
-        p = ff.plan_serial(MAC, [], [], None, start_at=4)
+    def test_fresh_state_issues_ace_000004_first(self):
+        # Caleb 18 Nov 2026 17:03 WAT: highest issued ID is ACE-000003.
+        p = ff.plan_serial(MAC, [], [], None)
         self.assertEqual((p["serial"], p["mode"], p["next_counter"]["next"]), ("ACE-000004", "new", 5))
+        p = ff.plan_serial(MAC, [], [], None, start_at=4)
+        self.assertEqual((p["serial"], p["next_counter"]["next"]), ("ACE-000004", 5))
+        p = ff.plan_serial(MAC, [], [], None, start_at=20)
+        self.assertEqual(p["serial"], "ACE-000020")
+
+    def test_start_at_below_4_refused(self):
+        for n in (0, 1, 2, 3):
+            with self.assertRaises(ff.FlashError):
+                ff.plan_serial(MAC, [], [], None, start_at=n)
+            with self.assertRaises(ff.FlashError):
+                ff.plan_serial(MAC, [], [], {"prefix": "ACE-", "next": 1}, start_at=n)
+        import contextlib, io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = ff.main(["--model", "pc-dsp011-5kw", "--port", "COM5", "--start-at", "3",
+                          "--state", tempfile.mkdtemp(), "--bins", tempfile.mkdtemp()])
+        self.assertEqual(rc, 1)
+        self.assertIn("--start-at 3 refused", out.getvalue())
+
+    def test_serials_1_to_3_never_issued(self):
+        # A real but low counter, units.csv without them, a journal without them: still ACE-000004.
+        for c in ({"prefix": "ACE-", "next": 1}, {"prefix": "ACE-", "next": 2}, {"prefix": "ACE-", "next": 3}, None):
+            self.assertEqual(ff.plan_serial(MAC, [], [], c)["serial"], "ACE-000004")
+        units = [{"serial": "ACE-000004", "device_id": "111111111111"}]
+        self.assertEqual(ff.plan_serial(MAC, units, [], {"prefix": "ACE-", "next": 1})["serial"], "ACE-000005")
+        # A real counter above 4 is honoured.
+        self.assertEqual(ff.plan_serial(MAC, [], [], {"prefix": "ACE-", "next": 12})["serial"], "ACE-000012")
+        # factory.py's own counter path skips them too.
+        d = tempfile.mkdtemp(); cp = os.path.join(d, "serial_counter.json"); csvp = os.path.join(d, "units.csv")
+        self.assertEqual(f.load_counter(cp)["next"], 4)
+        for n in (1, 2, 3):
+            c = {"prefix": "ACE-", "next": n}
+            self.assertEqual(f.next_new_serial(c, csvp), "ACE-000004"); self.assertEqual(c["next"], 4)
+        # Pre-issued journal rows have no MAC, so no board reuses them through the journal.
+        j = ff.pre_issued_events([])
+        self.assertEqual([r["serial"] for r in j], list(f.PRE_ISSUED_SERIALS))
+        self.assertTrue(all(r["state"] == "pre_issued" and r["mac"] is None for r in j))
+        self.assertEqual(ff.pre_issued_events(j), [])
+        p = ff.plan_serial(MAC, [], j, None)
+        self.assertEqual((p["serial"], p["mode"]), ("ACE-000004", "new"))
+
+    def test_pre_issued_board_reprovisions_from_units_csv(self):
+        units = [{"serial": "ACE-000002", "device_id": "f4:2d:c9:c0:90:a8"}]
+        p = ff.plan_serial(MAC, units, ff.pre_issued_events([]), None)
+        self.assertEqual((p["serial"], p["mode"], p["next_counter"]), ("ACE-000002", "reuse", None))
 
     def test_start_at_cannot_go_backwards(self):
         with self.assertRaises(ff.FlashError):
@@ -202,6 +246,33 @@ class Glue(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertFalse(os.path.exists(jp))
         self.assertEqual(f.load_counter(cp)["next"], 4)
+
+    def test_fresh_state_journals_pre_issued_then_ace_000004(self):
+        d, jp, up, cp = tmpstate()
+        with open(os.path.join(d, "factory.env"), "w") as fh:
+            fh.write("API_KEY=k\n")
+        bins = tempfile.mkdtemp(); img = os.path.join(bins, "pc-dsp011-5kw_v2.5.37_merged.bin")
+        with open(img, "wb") as fh:
+            fh.write(b"\x00POWERCELL_FW|collector|pc-dsp011-5kw|2.5.37|END\x00")
+        with open(os.path.join(bins, "SHA256SUMS"), "w") as fh:
+            fh.write("%s  %s\n" % (ff.sha256_file(img), os.path.basename(img)))
+        fake = os.path.join(d, "fake_esptool.py")
+        with open(fake, "w") as fh:  # read_mac works, erase_flash fails: nothing reaches a board
+            fh.write("import sys\nif 'read_mac' in sys.argv:\n    print('MAC: f4:2d:c9:c0:90:a8')\nelse:\n    sys.exit(2)\n")
+        argv = ["--model", "pc-dsp011-5kw", "--port", "COM5", "--state", d, "--bins", bins,
+                "--esptool", "%s %s" % (sys.executable, fake)]
+        self.assertEqual(ff.main(argv), 1)
+        view = ff.journal_view(ff.read_journal(jp))
+        for s in f.PRE_ISSUED_SERIALS:
+            self.assertEqual((view[s]["state"], view[s]["mac"]), ("pre_issued", None))
+        self.assertEqual((view["ACE-000004"]["mac"], view["ACE-000004"]["history"]), (MAC, ["reserved", "failed"]))
+        self.assertEqual(f.load_counter(cp)["next"], 5)
+        # Rerun: same board keeps ACE-000004, pre_issued rows are not duplicated.
+        self.assertEqual(ff.main(argv), 1)
+        rows = ff.read_journal(jp)
+        self.assertEqual(sum(1 for r in rows if r["state"] == "pre_issued"), 3)
+        self.assertEqual(f.load_counter(cp)["next"], 5)
+        self.assertEqual(ff.journal_view(rows)["ACE-000004"]["history"], ["reserved", "failed", "reserved", "failed"])
 
     def test_sha_mismatch_refuses_before_board(self):
         d, jp, _, _ = tmpstate()

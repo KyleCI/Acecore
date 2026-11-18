@@ -15,8 +15,10 @@ Steps (each one is written to factory_state/reservations.jsonl before the next s
   3. esptool read_mac (the only thing read from the board before the plan).
   4. Serial choice. A MAC already in units.csv or in the journal gets the SAME serial back
      (factory.py --reprovision). Otherwise the next free number from serial_counter.json is
-     reserved (journal "reserved", then the counter is bumped). A fresh counter is refused
-     unless --start-at N is given. Burned and already-issued serials are never reused.
+     reserved (journal "reserved", then the counter is bumped). With no serial_counter.json the
+     first serial is ACE-000004 (Caleb 18 Nov 2026: ACE-000001..3 already issued); those three
+     are journalled "pre_issued" and never issued again. --start-at N (N >= 4) overrides.
+     Burned and already-issued serials are never reused.
   5. esptool erase_flash, then write_flash 0x0 <merged bin>, then verify_flash.   -> "flashed"
   6. tools/factory.py <port> --serial S --reprovision --model <PC5K|PC3_5K|PC1_5K> [--register] [--lock]
                                                                                     -> "provisioned"/"registered"
@@ -45,7 +47,8 @@ DEFAULT_STATE = os.path.join(HERE, "factory_state")
 DEFAULT_BINS = os.path.join(os.path.dirname(HERE), "bins")
 JOURNAL = "reservations.jsonl"
 LOCKFILE = ".factory_flash.lock"
-STATES = ("reserved", "flashed", "provisioned", "registered", "verified", "failed", "burned")
+# "pre_issued": ACE-000001..3, issued before the journal; no MAC, never reissued (factory.PRE_ISSUED_SERIALS).
+STATES = ("reserved", "flashed", "provisioned", "registered", "verified", "failed", "burned", "pre_issued")
 # A serial whose board got this far has the serial written to it (or the backend knows it).
 ISSUED_STATES = ("provisioned", "registered", "verified")
 
@@ -198,19 +201,16 @@ def plan_serial(mac, units, journal_rows, counter, start_at=None):
         if v["mac"] == mac and v["state"] != "burned":
             return {"serial": s, "mode": "reuse", "next_counter": None,
                     "reason": "this board (%s) holds %s in the journal (last state %s)" % (mac, s, v["state"])}
+    if start_at is not None and int(start_at) < factory.MIN_NEW_SERIAL:
+        raise FlashError("--start-at %d refused: %s were already issued, new serials start at %d"
+                         % (int(start_at), ", ".join(factory.PRE_ISSUED_SERIALS), factory.MIN_NEW_SERIAL))
     if counter is None:
-        if start_at is None:
-            raise FlashError("factory_state/serial_counter.json not found. Copy the real factory_state folder "
-                             "(serial_counter.json + units.csv) from the laptop that provisioned earlier units, "
-                             "or pass --start-at N with N above every serial ever issued.")
-        counter = {"prefix": "ACE-", "next": int(start_at)}
+        counter = {"prefix": "ACE-", "next": int(start_at or factory.MIN_NEW_SERIAL)}
     elif start_at is not None and int(start_at) < int(counter["next"]):
         raise FlashError("--start-at %d is below the counter's next (%s); refusing to go backwards"
                          % (int(start_at), counter["next"]))
-    n = max(int(counter["next"]), int(start_at or 0))
-    if n < 1:
-        raise FlashError("serial numbers start at 1")
-    used = {r.get("serial") for r in units} | set(view)
+    n = max(int(counter["next"]), int(start_at or 0), factory.MIN_NEW_SERIAL)
+    used = {r.get("serial") for r in units} | set(view) | set(factory.PRE_ISSUED_SERIALS)
     serial = factory.format_serial(counter.get("prefix", "ACE-"), n)
     while serial in used:
         n += 1
@@ -218,6 +218,14 @@ def plan_serial(mac, units, journal_rows, counter, start_at=None):
     nc = dict(counter)
     nc["next"] = n + 1
     return {"serial": serial, "mode": "new", "next_counter": nc, "reason": "next free serial"}
+
+
+def pre_issued_events(journal_rows):
+    """Journal events still needed to record ACE-000001..3 as pre_issued (none once recorded)."""
+    view = journal_view(journal_rows)
+    return [{"serial": s, "mac": None, "model": None, "state": "pre_issued",
+             "note": "issued before the factory_flash journal (Caleb 18 Nov 2026); never reissued"}
+            for s in factory.PRE_ISSUED_SERIALS if s not in view]
 
 
 def abandon(journal_path, units, serial, reason):
@@ -334,7 +342,7 @@ def main(argv=None):
     ap.add_argument("--register", action="store_true", help="register on the backend (needs ADMIN_KEY)")
     ap.add_argument("--lock", action="store_true", help="LOCK after labelling (customer units; needs --register)")
     ap.add_argument("--dry-run", action="store_true", help="read the MAC and print the plan; write nothing")
-    ap.add_argument("--start-at", type=int, help="first serial number when there is no serial_counter.json")
+    ap.add_argument("--start-at", type=int, help="first serial number (>= 4; default 4 when there is no serial_counter.json)")
     ap.add_argument("--abandon", metavar="ACE-NNNNNN", help="mark a journal serial burned (never reissued)")
     ap.add_argument("--reason", default="", help="note for --abandon")
     ap.add_argument("--status", action="store_true", help="print the journal summary")
@@ -362,6 +370,9 @@ def main(argv=None):
             ap.error("--model and --port are required")
         if a.lock and not a.register:
             raise FlashError("--lock needs --register")
+        if a.start_at is not None and a.start_at < factory.MIN_NEW_SERIAL:
+            raise FlashError("--start-at %d refused: %s were already issued, new serials start at %d"
+                             % (a.start_at, ", ".join(factory.PRE_ISSUED_SERIALS), factory.MIN_NEW_SERIAL))
         nvs_model = nvs_model_for(a.model)
         env_path = a.env or os.path.join(a.state, "factory.env")
         check_env(env_path, a.register)
@@ -393,6 +404,8 @@ def main(argv=None):
                 print("\nDRY RUN. Would: erase_flash, write_flash 0x0 %s, verify_flash,\n  factory.py %s\n"
                       "Nothing was written to the board, counter or journal." % (os.path.basename(image), " ".join(fargs)))
                 return 0
+            for pe in pre_issued_events(read_journal(jpath)):
+                append_journal(jpath, pe)
             ev = {"serial": serial, "mac": mac, "model": a.model, "version": version}
             if plan["mode"] == "new":
                 append_journal(jpath, dict(ev, state="reserved"))   # journal first, then the counter

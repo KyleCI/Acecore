@@ -14,7 +14,7 @@ class T(unittest.TestCase):
         self.assertEqual(f.pick_label(st["labels"]), "PWC2;S=Powercell-000001;P=abc;D=ACE-000001")
     def test_counter_csv(self):
         d = tempfile.mkdtemp(); p = os.path.join(d, "c.json"); c = os.path.join(d, "u.csv")
-        cnt = f.load_counter(p); self.assertEqual(cnt["next"], 1); cnt["next"] = 5; f.save_counter(p, cnt)
+        cnt = f.load_counter(p); self.assertEqual(cnt["next"], 4); cnt["next"] = 5; f.save_counter(p, cnt)
         self.assertEqual(f.load_counter(p)["next"], 5)
         f.append_csv(c, {"serial": "ACE-000005"}); self.assertTrue(f.serial_in_log(c, "ACE-000005"))
         with open(c, newline="", encoding="utf-8") as fh:
