@@ -5,9 +5,10 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
-// Smart-socket transport. 2.2: LoRa (FEATURE_LORA_SOCKETS, sockets_lora.cpp,
-// Dubem protocol). ESP-NOW (sockets_espnow.cpp) is kept but disabled
-// (FEATURE_ESPNOW_SOCKETS=0). API kept from the 1.0.4 collector.
+// Smart-socket transport. 2.5.36 (Caleb 18 Nov 2026): ESP-NOW (FEATURE_ESPNOW_SOCKETS=1,
+// sockets_espnow.cpp) on all six images. LoRa (FEATURE_LORA_SOCKETS, sockets_lora.cpp, Dubem
+// protocol, 2.2 to 2.5.35 on STM) is kept in the source but compiled out of the socket path;
+// the STM SX1278 is parked in sleep. API kept from the 1.0.4 collector.
 struct SocketReading {
   String deviceId;
   float current = 0;
@@ -49,3 +50,10 @@ bool takeSocketsChanged();
 bool socketCommandInfo(String deviceId, bool &desired, bool &pending, String &cmdId);
 bool populateDeviceArray(JsonArray &arr);
 void populateDiscoveredSockets(JsonArray &array);
+
+// 2.5.36: socket power = collector AC output voltage x socket current (APPARENT power, VA).
+// See pc_core/socket_power.h. Read the voltage once, outside dataMutex, then add the power keys
+// (voltage, voltage_source, apparent_power_va, power_quantity, current_usage_watts) per socket.
+struct SocketVoltage { bool fresh = false; float volts = 0; };
+SocketVoltage socketsCollectorVoltage();
+void socketPowerToJson(JsonObject o, bool socketFresh, float socketAmps, const SocketVoltage &v);
