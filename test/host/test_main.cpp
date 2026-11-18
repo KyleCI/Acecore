@@ -21,6 +21,7 @@
 #include "events_json.h"
 #include "offline_policy.h"
 #include "lora_socket_proto.h"
+#include "socket_power.h"
 #include "../../smart-socket-firmware/src/trip_lockout.h"
 #include "payment_lock.h"
 #include "hw_output.h"
@@ -2875,17 +2876,34 @@ static void test_dsp_bms_select() {
   }
   CHECK(got);
   if (!got) return;
-  // 2.5.35 (Caleb 18 Nov): all six images poll a JBD BMS. DSP envs state DSP_BMS_JKPB=0 explicitly.
+  // 2.5.36 (Caleb 18 Nov 16:51 WAT): all six images are back on JK-PB, exactly as 2.5.33.
+  // The JBD poller stays selectable through ${common.bms_jbd} but no env uses it.
   CHECK(strstr(buf, "bms_jbd =\n    -D POWERCELL_BMS_JBD=1") != nullptr);
   for (const char *env : {"esp32dev_dsp011_5kw", "esp32dev_dsp011_35kw", "esp32dev_dsp011_15kw"}) {
-    CHECK(flag_in_env(buf, env, "DSP_BMS_JKPB=0"));
-    CHECK(!flag_in_env(buf, env, "DSP_BMS_JKPB=1"));
-    CHECK(flag_in_env(buf, env, "${common.bms_jbd}"));
+    CHECK(flag_in_env(buf, env, "DSP_BMS_JKPB=1"));
+    CHECK(!flag_in_env(buf, env, "DSP_BMS_JKPB=0"));
+    CHECK(!flag_in_env(buf, env, "${common.bms_jbd}"));
+    CHECK(!flag_in_env(buf, env, "POWERCELL_BMS_JBD"));
   }
   for (const char *env : {"esp32dev_stm01_5kw", "esp32dev_stm01_35kw", "esp32dev_stm01_15kw"}) {
     CHECK(!flag_in_env(buf, env, "DSP_BMS_JKPB"));
-    CHECK(flag_in_env(buf, env, "${common.bms_jbd}"));
+    CHECK(!flag_in_env(buf, env, "${common.bms_jbd}"));
+    CHECK(!flag_in_env(buf, env, "POWERCELL_BMS_JBD"));
   }
+  // JK-PB images (this test binary is built like them, without POWERCELL_BMS_JBD): JK behaviour
+  // as 2.5.33. Fields default present (2 NTCs, MOS temperature, SOH), bits 24..26 unnamed,
+  // and the alarm map of the JK bits is unchanged.
+  CHECK(POWERCELL_BMS_JKPB == 1 && JK_BMS_BAUD == 115200);
+  {
+    pc::jk::Data jd;
+    CHECK(jd.tempCount == 2 && jd.hasMosTemp && jd.hasSoh);
+    CHECK(pc::jk::alarmName(24) == nullptr && pc::jk::alarmName(25) == nullptr && pc::jk::alarmName(26) == nullptr);
+    CHECK(!strcmp(pc::jk::alarmName(1), "mos_overtemp") && !strcmp(pc::jk::alarmName(8), "charge_overtemp"));
+    CHECK(!strcmp(pc::jk::alarmName(15), "discharge_overtemp") && !strcmp(pc::jk::alarmName(21), "battery_overtemp"));
+  }
+  std::string con = slurp("../../src/console.cpp"), tel = slurp("../../src/telemetry.cpp");
+  CHECK(con.find("POWERCELL_BMS_JKPB ? \"JK-PB\" : \"JBD\"") != std::string::npos);  // INFO: bms=JK-PB baud=115200 rx=17 tx=16
+  CHECK(tel.find("if (d.hasSoh) b[\"soh\"] = d.soh;") != std::string::npos && tel.find("if (d.hasMosTemp) b[\"mos_temperature\"] = d.mosTempC;") != std::string::npos);
 }
 
 static void test_live_grid() {  // grid_available as an input to live source/status
@@ -3162,7 +3180,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.35" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.36" && !s35.found());
   }
 }
 
@@ -3478,7 +3496,7 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(ini.find("POWERCELL_FACTORY_VARIANT=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_RATED_ACTIVE_W=1500") != std::string::npos);
   CHECK(count_of(ini, "[env:esp32dev_") == 6);
-  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.35\\\"") == 6);  // 2.5.35 JBD build; 2.5.34 reserved
+  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.36\\\"") == 6);  // 2.5.36 LoRa socket VA; 2.5.34 reserved
   CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") == std::string::npos);
   // The STM 15kw image carries no factory rating, like the other STM images.
   char buf[16384]; CHECK(ini.size() < sizeof buf);
@@ -3501,6 +3519,71 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(up.find("\"pc-dsp011-15kw\"") != std::string::npos && up.find("\"pc-stm01-15kw\"") != std::string::npos);
 }
 
+
+// 2.5.36 (Caleb 18 Nov 2026): LoRa socket power = collector output voltage x socket current (VA).
+static void test_socket_power_2536() {
+  using namespace pc::sockpower;
+  // Math: 230 V x 2 A = 460 VA, 0.1 VA resolution.
+  Result r = compute(true, 2.0f, true, 230.0f);
+  CHECK(r.hasVoltage && r.hasPower);
+  NEAR(r.voltage, 230.0f, 1e-4); NEAR(r.apparentVa, 460.0f, 1e-3);
+  r = compute(true, 0.437f, true, 228.4f); NEAR(r.apparentVa, 99.8f, 1e-3);
+  r = compute(true, 10.0f, true, 240.0f); NEAR(r.apparentVa, 2400.0f, 1e-3);
+  // Noise floor: below 0.1 A is 0 VA (current itself is sent as measured by the caller).
+  r = compute(true, 0.099f, true, 230.0f); CHECK(r.hasPower); NEAR(r.apparentVa, 0.0f, 1e-6);
+  r = compute(true, 0.15f, true, 230.0f); NEAR(r.apparentVa, 34.5f, 1e-3);
+  r = compute(true, 0.10f, true, 230.0f); NEAR(r.apparentVa, 23.0f, 1e-3);
+  NEAR(effectiveCurrent(0.05f), 0.0f, 1e-6); NEAR(effectiveCurrent(3.5f), 3.5f, 1e-6);
+  CHECK(effectiveCurrent(-0.2f) < 0 && effectiveCurrent(NAN) < 0);
+  // Stale / missing voltage -> voltage and power null.
+  CHECK(voltageFresh(true, 0) && voltageFresh(true, kVoltageFreshMs) && !voltageFresh(true, kVoltageFreshMs + 1));
+  CHECK(!voltageFresh(false, 0) && kVoltageFreshMs == 10000);
+  r = compute(true, 2.0f, false, 230.0f); CHECK(!r.hasVoltage && !r.hasPower);
+  r = compute(true, 2.0f, voltageFresh(true, 12000), 230.0f); CHECK(!r.hasVoltage && !r.hasPower);
+  // Implausible voltage -> null. 0 V (inverter output off) is a real reading: 0 VA.
+  CHECK(!compute(true, 2.0f, true, NAN).hasVoltage && !compute(true, 2.0f, true, 400.0f).hasVoltage);
+  CHECK(!compute(true, 2.0f, true, -1.0f).hasPower);
+  r = compute(true, 2.0f, true, 0.0f); CHECK(r.hasVoltage && r.hasPower); NEAR(r.apparentVa, 0.0f, 1e-6);
+  // Offline socket or bad current: voltage still shown, power null.
+  r = compute(false, 2.0f, true, 230.0f); CHECK(r.hasVoltage && !r.hasPower);
+  r = compute(true, -1.0f, true, 230.0f); CHECK(r.hasVoltage && !r.hasPower);
+  // JSON keys (sockets[] in WS telemetry, /metrics, /data, /sockets all come from populateDeviceArray).
+  {
+    std::vector<std::pair<std::string, std::string>> kv; kv.reserve(16); FakeJson j{&kv};
+    powerFieldsTo(j, compute(true, 2.0f, true, 230.0f));
+    CHECK(j.get("voltage") == "f:230.0" && j.get("voltage_source") == "s:collector_output");
+    CHECK(j.get("apparent_power_va") == "f:460.0" && j.get("current_usage_watts") == "f:460.0");
+    CHECK(j.get("power_quantity") == "s:apparent_va" && kv.size() == 5);
+    std::vector<std::pair<std::string, std::string>> kv2; kv2.reserve(16); FakeJson j2{&kv2};
+    powerFieldsTo(j2, compute(true, 2.0f, false, 0.0f));
+    CHECK(j2.get("voltage") == "null" && j2.get("apparent_power_va") == "null" && j2.get("current_usage_watts") == "null");
+    CHECK(j2.get("voltage_source") == "s:collector_output" && j2.get("power_quantity") == "s:apparent_va");
+  }
+  // Compact /data snapshot keeps the power keys next to the old ones.
+  auto inCompact = [](const char *k) { for (size_t i = 0; i < kCompactSnapshotKeyCount; ++i) if (!strcmp(kCompactSnapshotKeys[i], k)) return true; return false; };
+  for (const char *k : {"deviceId", "online", "relayState", "desired", "pending", "cmd_id", "command_status", "name", "configured",
+                        "current", "last_seen_age_ms", "lockout", "rssi", "available_to_pair",
+                        "current_usage_watts", "apparent_power_va", "power_quantity", "voltage", "voltage_source"})
+    CHECK(inCompact(k));
+  CHECK(kCompactSnapshotKeyCount == 19);
+  // Wiring: the LoRa path adds the keys per paired socket, the voltage is read before dataMutex,
+  // /data uses the shared key list, ESP-NOW stays off and the LoRa wire format is unchanged.
+  std::string lora = slurp("../../src/sockets/sockets_lora.cpp"), web = slurp("../../src/web_local.cpp"), cfg = slurp("../../include/config.h");
+  size_t pda = lora.find("bool populateDeviceArray(JsonArray &array) {");
+  CHECK(pda != std::string::npos);
+  size_t vread = lora.find("socketsCollectorVoltage()", pda), mtx = lora.find("xSemaphoreTake(dataMutex", pda);
+  CHECK(vread != std::string::npos && mtx != std::string::npos && vread < mtx);
+  CHECK(lora.find("socketPowerToJson(o, online, d.reading.current, volts)") != std::string::npos);
+  CHECK(web.find("pc::sockpower::kCompactSnapshotKeys") != std::string::npos);
+  CHECK(cfg.find("#define FEATURE_ESPNOW_SOCKETS 0") != std::string::npos);
+  std::string pj = slurp("../../src/sockets/socket_power_json.cpp");
+  CHECK(pj.find("pc::sockpower::voltageFresh(s.has_vout, age)") != std::string::npos && pj.find("STM32_STALE_MS") != std::string::npos);
+  // Warn/trip stay amps-based: the LoRa thresholds are untouched.
+  CHECK(pc::lora::kTripAmps == 10.0f && pc::lora::kWarnAmps == 8.0f);
+  std::string ini = slurp("../../platformio.ini");
+  CHECK(ini.find("FEATURE_ESPNOW_SOCKETS=1") == std::string::npos);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -3513,7 +3596,7 @@ int main() {
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
-  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533();
+  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

@@ -283,6 +283,7 @@ void unregisterDevice(String id) {
 }
 
 bool populateDeviceArray(JsonArray &array) {
+  const SocketVoltage volts = socketsCollectorVoltage();  // 2.5.36: before dataMutex (own locks)
   if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(100)) != pdTRUE) return false;
   unsigned long now = millis();
   for (const auto &e : devices) {
@@ -320,6 +321,8 @@ bool populateDeviceArray(JsonArray &array) {
     else if (d.alertOc) o["alert"] = "overcurrent";
     else if (d.alertWarn) o["alert"] = "current_high";
     else o["alert"] = nullptr;
+    // 2.5.36: apparent power, collector voltage x this socket's current (VA, not real watts).
+    socketPowerToJson(o, online, d.reading.current, volts);
   }
   xSemaphoreGive(dataMutex);
   return true;

@@ -1,5 +1,25 @@
 # Collector firmware changelog
 
+## 2.5.36 (LoRa smart-socket power, V x I, Caleb 18 Nov 2026)
+
+On top of 2.5.35 (ad90eb0), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit.
+
+**BMS back to JK-PB (Caleb 18 Nov 2026 16:51 WAT).** All six envs select JK-PB exactly as 2.5.33: no `${common.bms_jbd}`, DSP envs `DSP_BMS_JKPB=1`, JK-PB 115200 8N1 listen-only on Serial2 ESP RX GPIO17 / TX GPIO16 (STM and DSP). The env build flags are the 2.5.33 flags with only the version changed. The 2.5.35 JBD poller and its fixes are kept intact and compiled out; select it again with `${common.bms_jbd}` (and `DSP_BMS_JKPB=0` on DSP).
+- JK images behave as 2.5.33: `pc::jk::Data` defaults `tempCount` 2, `hasMosTemp` and `hasSoh` true, so `soh`, `mos_temperature`, `bms_mos_temperature`, `temperature`/`temperatures` are published as before (only the JBD path nulls them). JK alarm bits 0..23 map to the same events; bits 24..26 stay unnamed in JK images. Console INFO prints `bms=JK-PB baud=115200 rx=17 tx=16` (2.5.35 also prints it on STM images, 2.5.33 only on DSP). Small 2.5.35 carry-overs that also apply to JK: `cell_min_v`/`cell_max_v` are null instead of 65.535/0 when no cell list has arrived, and SELFTEST adds `alarm_bits`.
+- `test_dsp_bms_select` now requires JK-PB in all six envs (no `${common.bms_jbd}`, no `POWERCELL_BMS_JBD`, DSP `DSP_BMS_JKPB=1`) and checks the JK defaults and alarm names. `jbd_host_tests` and the `check_dsp_bms` compile checks still cover the JBD option.
+
+**LoRa smart-socket power.** Collector side only: the LoRa packet format, the socket firmware and ESP-NOW (`FEATURE_ESPNOW_SOCKETS` stays 0) are unchanged.
+
+- Every paired socket in `populateDeviceArray()` (so WS telemetry `sockets[]`, `/metrics`, `/sockets`, `/data`, console `SOCKETS`) gains `voltage`, `voltage_source` (`"collector_output"`), `apparent_power_va`, `power_quantity` (`"apparent_va"`) and `current_usage_watts` (same number as `apparent_power_va`, the key the app and backend already read).
+- Power = collector AC output voltage x socket current. Voltage: STM, the STM32 status `vout`; DSP, the PZEM-004T v3 AC voltage (`stm32link::status()`). The sample must be fresh: no older than 10 s (`pc::sockpower::kVoltageFreshMs`), and the existing rules still apply (STM32 status under `STM32_STALE_MS` = 6 s, PZEM sample under 2 s). Stale, missing or implausible (outside 0..300 V) voltage: `voltage`, `apparent_power_va` and `current_usage_watts` are null. An offline socket keeps `voltage` but its power is null. 0 V (inverter output off) is a real reading and gives 0 VA.
+- Noise floor 0.1 A: below it the power is 0 VA. `current` is still reported as measured (the CT reads about 0.15 A idle on some units, so expect up to about 35 VA with nothing plugged in; raise the floor if Caleb sees that on a unit).
+- **V x I is apparent power (VA), not real watts.** It matches real watts only for resistive loads (kettle, iron, heater, bulb). For motors, fridges, fans, phone and laptop chargers and other electronics it overstates the real watts (real W = VA x power factor). Labelled as such in the data.
+- Warnings and trips are unchanged and stay current based (amps): socket 10 A trip / 8 A warn, socket config limits, `socket_warn_8a` / `socket_tripped_10a`.
+- The compact `/data` snapshot copy (used when the 4 KB snapshot drops `metrics.sockets`) keeps the five power keys too (`pc::sockpower::kCompactSnapshotKeys`).
+- The offline queue `socket_state` entry carries only the socket id and the requested state, no readings, so it is unchanged.
+- DSP images have no LoRa (stub transport, no paired sockets), so their `sockets[]` stays empty; the stub is unchanged.
+- Host test `test_socket_power_2536`: math, noise floor, stale/implausible voltage, offline socket, JSON keys, compact snapshot keys, voltage read before `dataMutex`, ESP-NOW still off.
+
 ## 2.5.35 (JBD BMS on every image, Caleb 18 Nov 2026)
 
 On top of 2.5.33 (25223cf), branch `cursor/jbd-bms-2535`. 2.5.34 (b3f1e0a, GPIO15 momentary power-key press) is NOT in this build; Caleb set the power-button change aside. 2.5.34 stays reserved for that build. Six product images. Build only, not tested on a unit.
