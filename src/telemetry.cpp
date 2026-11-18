@@ -130,11 +130,13 @@ void batteryBlock(JsonObject b) {
   b["bms_age_ms"] = age;
   b["current"] = d.currentMa / 1000.0f;
   b["power"] = d.powerMw / 1000.0f;
-  b["temperature"] = d.tempC[0];
-  JsonArray t = b["temperatures"].to<JsonArray>(); t.add(d.tempC[0]); t.add(d.tempC[1]);
-  b["mos_temperature"] = d.mosTempC;
+  // 2.5.35: JBD reports only the NTCs it has and no MOS sensor; absent values are null.
+  if (d.tempCount > 0) b["temperature"] = d.tempC[0]; else b["temperature"] = nullptr;
+  JsonArray t = b["temperatures"].to<JsonArray>();
+  for (int i = 0; i < d.tempCount && i < 2; ++i) t.add(d.tempC[i]);
+  if (d.hasMosTemp) b["mos_temperature"] = d.mosTempC; else b["mos_temperature"] = nullptr;
   b["cycles"] = d.cycles;
-  b["soh"] = d.soh;
+  if (d.hasSoh) b["soh"] = d.soh; else b["soh"] = nullptr;
   b["remaining_ah"] = d.remainMah / 1000.0f;
   b["full_ah"] = d.fullMah / 1000.0f;
   static const char *st[] = {"standby", "charging", "discharging"};
@@ -144,8 +146,8 @@ void batteryBlock(JsonObject b) {
   for (int i = 0; i < d.cellCount; ++i) c.add(d.cellMv[i] / 1000.0f);
   uint16_t lo = 0xFFFF, hi = 0;
   for (int i = 0; i < d.cellCount; ++i) if (d.cellMv[i] > 500) { if (d.cellMv[i] < lo) lo = d.cellMv[i]; if (d.cellMv[i] > hi) hi = d.cellMv[i]; }
-  b["cell_min_v"] = lo / 1000.0f;
-  b["cell_max_v"] = hi / 1000.0f;
+  if (hi) { b["cell_min_v"] = lo / 1000.0f; b["cell_max_v"] = hi / 1000.0f; }
+  else { b["cell_min_v"] = nullptr; b["cell_max_v"] = nullptr; }  // no cell list (JBD 0x04 not read yet)
   b["cell_diff_mv"] = d.cellDiffMv;
   b["alarm_bits"] = d.alarms;
   bmsAlarms(b["alarms"].to<JsonArray>(), d.alarms);
@@ -379,7 +381,7 @@ void liveToJson(JsonObject o) {
   num("battery_power_w", in.bmsOn, in.bmsPowerW);
   num("remaining_ah", in.bmsOn, d.remainMah / 1000.0f);
   num("full_capacity_ah", in.bmsOn, d.fullMah / 1000.0f);
-  if (in.bmsOn) { o["cycle_count"] = d.cycles; o["soh"] = d.soh; } else { o["cycle_count"] = nullptr; o["soh"] = nullptr; }
+  if (in.bmsOn) { o["cycle_count"] = d.cycles; if (d.hasSoh) o["soh"] = d.soh; else o["soh"] = nullptr; } else { o["cycle_count"] = nullptr; o["soh"] = nullptr; }
   float tte = 0, ttf = 0; bool hasE = false, hasF = false;
   portENTER_CRITICAL(&rtMux);
   if (in.bmsOn) {
@@ -460,8 +462,8 @@ void buildMetrics(JsonDocument &doc) {
   doc["bms_online"] = bmsOn;
   num("battery_current", bmsOn, d.currentMa / 1000.0f);
   num("battery_power", bmsOn, d.powerMw / 1000.0f);
-  num("battery_temperature", bmsOn, d.tempC[0]);
-  num("bms_mos_temperature", bmsOn, d.mosTempC);
+  num("battery_temperature", bmsOn && d.tempCount > 0, d.tempC[0]);
+  num("bms_mos_temperature", bmsOn && d.hasMosTemp, d.mosTempC);
   if (bmsOn) { doc["battery_cycles"] = d.cycles; doc["bms_alarm_bits"] = d.alarms; }
   else { doc["battery_cycles"] = nullptr; doc["bms_alarm_bits"] = nullptr; }
   doc["device_state"] = gateway::state();  // inverter requested on (PWR_KEY / set_mode)

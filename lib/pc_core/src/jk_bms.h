@@ -25,7 +25,12 @@ constexpr size_t kFrameLen = 300;
 constexpr uint8_t kTypeSetup = 0x01, kTypeDynamic = 0x02;
 constexpr int kMaxCells = 32;
 constexpr int kAlarmBits = 24;
-const char *alarmName(int bit);  // JK alarm bit 0..23, nullptr if unused
+// 2.5.35: JBD-only protections that have no JK bit (see jbd::toJkAlarms).
+// They are named only in JBD images (POWERCELL_BMS_JBD=1); JK images keep
+// bits 24..31 unnamed exactly as before.
+constexpr int kAlarmJbdDischargeUndertemp = 24, kAlarmJbdAfeError = 25, kAlarmJbdMosLock = 26;
+constexpr int kAlarmNamedBits = 27;
+const char *alarmName(int bit);  // JK alarm bit 0..23 (24..26 in JBD images), nullptr if unused
 
 struct Data {
   uint8_t cellCount = 0;
@@ -36,6 +41,8 @@ struct Data {
   int32_t currentMa = 0;                 // + charging, - discharging
   int32_t powerMw = 0;
   float mosTempC = 0, tempC[2] = {};
+  uint8_t tempCount = 2;                 // valid entries in tempC (JK: 2; JBD: NTC count, max 2)
+  bool hasMosTemp = true, hasSoh = true; // JBD reports neither
   uint32_t alarms = 0;                   // raw JK alarm bits
   uint8_t status = 0;                    // 0 standby, 1 charging, 2 discharging (as sent)
   uint8_t soc = 0, soh = 0;

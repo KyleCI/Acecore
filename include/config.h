@@ -77,17 +77,29 @@
 #if POWERCELL_DSP011 && FEATURE_LORA
 #error "hardware v0.1.1 is not fitted with LoRa"
 #endif
-// DSP BMS driver. STM images always use JK-PB and ignore this flag.
-// 1 = JK-PB stream at 115200, RX17/TX16 (both DSP images, as Dubem's working firmware).
-// 0 = optional JBD poller at 9600, RX16/TX17. No product image uses it.
+// BMS driver (2.5.35). One selector for every board:
+//   POWERCELL_BMS_JBD=1 -> JBD / Xiaoxiang UART poller at JBD_BMS_BAUD (9600 8N1), Serial2 RX17/TX16.
+//   POWERCELL_BMS_JBD=0 -> JK-PB 300-byte stream listener at JK_BMS_BAUD (115200 8N1), Serial2 RX17/TX16.
+// DSP_BMS_JKPB is the older DSP-only flag. It now defaults to the opposite of
+// POWERCELL_BMS_JBD and must agree with it when both are given.
+#ifndef POWERCELL_BMS_JBD
+#define POWERCELL_BMS_JBD 0
+#endif
 #ifndef DSP_BMS_JKPB
+#if POWERCELL_DSP011 && !POWERCELL_BMS_JBD
+#define DSP_BMS_JKPB 1
+#else
 #define DSP_BMS_JKPB 0
+#endif
 #endif
 #if DSP_BMS_JKPB && !POWERCELL_DSP011
 #error "DSP_BMS_JKPB is only valid on POWERCELL_DSP011 builds"
 #endif
-// Unified selector: 1 = JK-PB 115200 listener (STM, or DSP 5 kW); 0 = JBD 9600 poll (DSP 3.5 kW).
-#if POWERCELL_DSP011 && !DSP_BMS_JKPB
+#if POWERCELL_DSP011 && (DSP_BMS_JKPB == POWERCELL_BMS_JBD)
+#error "DSP builds: set exactly one of DSP_BMS_JKPB=1 (JK-PB) or POWERCELL_BMS_JBD=1 (JBD)"
+#endif
+// Unified selector used by the code: 1 = JK-PB listener, 0 = JBD poller.
+#if POWERCELL_BMS_JBD
 #define POWERCELL_BMS_JKPB 0
 #else
 #define POWERCELL_BMS_JKPB 1
@@ -115,7 +127,14 @@
 #ifndef JK_BMS_BAUD
 #define JK_BMS_BAUD 115200        // 8N1
 #endif
-#define JK_BMS_STALE_MS 10000     // no valid frame for this long = BMS offline, fields null
+#define JK_BMS_STALE_MS 10000     // no valid frame for this long = BMS offline, fields null (JK and JBD)
+// ---- JBD / Xiaoxiang UART BMS (DD A5 03 00 FF FD 77 request/response) --------
+#ifndef JBD_BMS_BAUD
+#define JBD_BMS_BAUD 9600         // 8N1, the JBD UART/RS485 default
+#endif
+#ifndef JBD_POLL_MS
+#define JBD_POLL_MS 2000          // one 0x03 + 0x04 poll; 5 misses before JK_BMS_STALE_MS
+#endif
 #define PACK_V_CROSSCHECK_TOL 1.5f  // V; BMS vs STM32 pack voltage disagreement flag
 
 // ---- LoRa (must match the smart-socket transmitters) -------------------------

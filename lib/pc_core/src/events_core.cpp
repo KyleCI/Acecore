@@ -97,6 +97,7 @@ BmsMap bmsMap(int bit) {
     case 11: case 12: return {Type::BatteryLow, Sev::Critical};
     case 4: case 5: case 16: case 17: return {Type::BmsFault, Sev::Critical};
     case 18: case 19: return {Type::BmsFault, Sev::Info};
+    case jk::kAlarmJbdAfeError: return {Type::BmsFault, Sev::Critical};  // JBD front-end IC error
     default: return {Type::BmsFault, Sev::Warning};
   }
 }
@@ -204,7 +205,7 @@ void Engine::update(const Inputs &in, uint32_t now, uint32_t ts) {
   }
   // ---- BMS alarms ----------------------------------------------------------------
   if (in.bmsOnline) {
-    for (int b = 0; b < 24; ++b) {
+    for (int b = 0; b < jk::kAlarmNamedBits; ++b) {  // 24..26 are named only in JBD images
       const char *name = jk::alarmName(b);
       if (!name) continue;
       snprintf(id, sizeof id, "bms_%d", b);

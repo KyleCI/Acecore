@@ -59,9 +59,9 @@ void info() {
     Serial.printf("model=%s rated_kva=%.1f usable_kw=%.2f\n", m ? m->code : "unset", m ? m->ratedKva : 0.0f, m ? m->usableKw : 0.0f); }
   // OTA identity. Separate from model= above, which is the NVS PC3K/PC3_5K/PC5K/PC10K/PC1_5K setting.
   Serial.printf("hardware_model=%s\n", POWERCELL_HARDWARE_MODEL);
-#if POWERCELL_DSP011
   Serial.printf("bms=%s baud=%lu rx=%d tx=%d\n", POWERCELL_BMS_JKPB ? "JK-PB" : "JBD",
-                (unsigned long)PIN_BMS_BAUD, PIN_BMS_RX, PIN_BMS_TX);
+                (unsigned long)PIN_BMS_BAUD, PIN_BMS_RX, PIN_BMS_TX);  // 2.5.35: every image
+#if POWERCELL_DSP011
   {
     DspThermalReading t;
     const bool tok = dspThermalRead(&t);
@@ -189,7 +189,10 @@ void selftest() {
   jb["frames"] = bs.frames; jb["ok"] = bs.ok; jb["checksum_errors"] = bs.checksumErrors; jb["bad_frames"] = bs.badFrames; jb["timeouts"] = bs.timeouts;
   if (bok) {
     jb["age_ms"] = age; jb["cells"] = b.cellCount; jb["cell_diff_mv"] = b.cellDiffMv; jb["pack_mv"] = b.packMv; jb["soc"] = b.soc;
-    jb["temp1_c"] = b.tempC[0]; jb["temp2_c"] = b.tempC[1]; jb["mos_c"] = b.mosTempC;
+    if (b.tempCount > 0) jb["temp1_c"] = b.tempC[0]; else jb["temp1_c"] = nullptr;
+    if (b.tempCount > 1) jb["temp2_c"] = b.tempC[1]; else jb["temp2_c"] = nullptr;
+    if (b.hasMosTemp) jb["mos_c"] = b.mosTempC; else jb["mos_c"] = nullptr;
+    jb["alarm_bits"] = b.alarms;
   }
   // STM32
   JsonObject js = d["stm32"].to<JsonObject>();

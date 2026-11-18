@@ -17,7 +17,15 @@ const char *const kAlarms[kAlarmBits] = {
     "discharge_on_failed", "battery_overtemp", "temp_sensor_fault", "parallel_module_fault"};
 }  // namespace
 
-const char *alarmName(int bit) { return bit >= 0 && bit < kAlarmBits ? kAlarms[bit] : nullptr; }
+const char *alarmName(int bit) {
+  if (bit >= 0 && bit < kAlarmBits) return kAlarms[bit];
+#if defined(POWERCELL_BMS_JBD) && POWERCELL_BMS_JBD
+  if (bit == kAlarmJbdDischargeUndertemp) return "discharge_undertemp";
+  if (bit == kAlarmJbdAfeError) return "afe_ic_error";
+  if (bit == kAlarmJbdMosLock) return "mos_software_lock";
+#endif
+  return nullptr;
+}
 
 const char *parseName(Parse p) {
   switch (p) {

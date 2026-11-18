@@ -2,6 +2,8 @@
 #include <Arduino.h>
 #include "jk_bms.h"
 
+// 2.5.35: every image polls a JBD BMS (POWERCELL_BMS_JBD=1) at 9600 on the same
+// Serial2 RX17/TX16 pair; JK-PB stays selectable. History below.
 // STM images: JK-PB BMS on Serial2 (IO17 RX / IO16 TX, 115200 8N1). The BMS
 // streams 300-byte frames. DSP images use the same Serial2 pins: ESP RX
 // GPIO17, TX GPIO16 (Dubem's working firmware 2026-11-10, confirmed by Caleb

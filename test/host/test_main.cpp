@@ -2396,6 +2396,124 @@ static void test_jbd() {
   NEAR(r.cellDiffMv, 100.0, 0.2);
   CHECK(r.cellCount == 2 && r.maxCell == 0 && r.minCell == 1);
   CHECK(!parseCells(data, 3, &r));
+
+  // ---- 2.5.35 JBD as the product BMS ------------------------------------------------
+  // Published JBD 0x03 reply (15S, 58.88 V, 7.20/10.00 Ah, SOC 72, 2 NTCs 20.3 / 21.5 C), checksum FB FF.
+  const uint8_t real[34] = {0xDD, 0x03, 0x00, 0x1B, 0x17, 0x00, 0x00, 0x00, 0x02, 0xD0, 0x03, 0xE8, 0x00, 0x00, 0x20, 0x78, 0x00,
+                            0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x48, 0x03, 0x0F, 0x02, 0x0B, 0x76, 0x0B, 0x82, 0xFB, 0xFF, 0x77};
+  CHECK(classifyFrame(real, sizeof real, kRegBasic, &data, &dlen) == Frame::Ok && dlen == 27);
+  Reading rr;
+  CHECK(parseBasic(data, dlen, &rr) && rr.valid);
+  NEAR(rr.packVoltage, 58.88, 0.01); NEAR(rr.packCurrent, 0.0, 0.001);
+  NEAR(rr.remainAh, 7.2, 0.01); NEAR(rr.fullAh, 10.0, 0.01);
+  CHECK(rr.soc == 72 && rr.cellCount == 15 && rr.ntcCount == 2 && rr.chargeMos && rr.dischargeMos && rr.alarmBits == 0);
+  NEAR(rr.temps[0], 20.3, 0.05); NEAR(rr.temps[1], 21.5, 0.05);
+  CHECK(!rr.hasCells);
+  // Checksum, wrong register, status error and truncation are told apart.
+  uint8_t bad[34]; memcpy(bad, real, 34);
+  bad[31] ^= 0x01;
+  CHECK(classifyFrame(bad, 34, kRegBasic, &data, &dlen) == Frame::ChecksumError);
+  CHECK(classifyFrame(real, 34, kRegCells, &data, &dlen) == Frame::BadFrame);
+  CHECK(classifyFrame(real, 33, kRegBasic, &data, &dlen) == Frame::BadFrame);
+  memcpy(bad, real, 34); bad[33] = 0x00;
+  CHECK(classifyFrame(bad, 34, kRegBasic, &data, &dlen) == Frame::BadFrame);
+  uint8_t refused[8];
+  n = wrapResponse(kRegBasic, 0x80, nullptr, 0, refused, sizeof refused);
+  CHECK(n == 7 && classifyFrame(refused, n, kRegBasic, &data, &dlen) == Frame::StatusError);
+  CHECK(!checkFrame(refused, n, kRegBasic, &data, &dlen));
+  CHECK(!strcmp(frameName(Frame::ChecksumError), "checksum"));
+
+  // Current sign: + charging, - discharging (0xFC18 = -10.00 A), and the status deadband.
+  uint8_t dis[27]; memcpy(dis, real + 4, 27);
+  dis[2] = 0xFC; dis[3] = 0x18;
+  Reading rd;
+  CHECK(parseBasic(dis, 27, &rd) && rd.batStatus == 2);
+  NEAR(rd.packCurrent, -10.0, 0.001);
+  dis[2] = 0x03; dis[3] = 0xE8;
+  CHECK(parseBasic(dis, 27, &rd) && rd.batStatus == 1);
+  dis[2] = 0x00; dis[3] = 0x0A;  // 0.10 A is inside the 0.2 A deadband
+  CHECK(parseBasic(dis, 27, &rd) && rd.batStatus == 0);
+  // NTCs: none, one, and an open sensor (0 K raw) that is never published.
+  uint8_t one[25]; memcpy(one, real + 4, 25); one[22] = 1;
+  CHECK(parseBasic(one, 25, &rd) && rd.ntcCount == 1 && rd.hasTemp1 && !rd.hasTemp2);
+  uint8_t none[23]; memcpy(none, real + 4, 23); none[22] = 0;
+  CHECK(parseBasic(none, 23, &rd) && rd.ntcCount == 0 && !rd.hasTemp1);
+  uint8_t open[27]; memcpy(open, real + 4, 27); open[25] = 0x00; open[26] = 0x00;
+  CHECK(parseBasic(open, 27, &rd) && rd.ntcCount == 1);
+  uint8_t claims[23]; memcpy(claims, real + 4, 23); claims[22] = 4;  // says 4 NTCs, frame holds none
+  CHECK(parseBasic(claims, 23, &rd) && rd.ntcCount == 0);
+  CHECK(!parseBasic(real + 4, 22, &rd));  // shorter than the fixed 23-byte block
+
+  // Protection word -> JK alarm bits (shared event map).
+  CHECK(toJkAlarms(0) == 0);
+  CHECK(toJkAlarms(kProtCellOv) == (1u << 4) && toJkAlarms(kProtCellUv) == (1u << 11));
+  CHECK(toJkAlarms(kProtPackOv) == (1u << 5) && toJkAlarms(kProtPackUv) == (1u << 12));
+  CHECK(toJkAlarms(kProtChgOt) == (1u << 8) && toJkAlarms(kProtDsgOt) == (1u << 15));
+  CHECK(toJkAlarms(kProtChgUt) == (1u << 9) && toJkAlarms(kProtDsgUt) == (1u << pc::jk::kAlarmJbdDischargeUndertemp));
+  CHECK(toJkAlarms(kProtChgOc) == (1u << 6) && toJkAlarms(kProtDsgOc) == (1u << 13) && toJkAlarms(kProtShort) == (1u << 14));
+  CHECK(toJkAlarms(kProtAfe) == (1u << pc::jk::kAlarmJbdAfeError) && toJkAlarms(kProtMosLock) == (1u << pc::jk::kAlarmJbdMosLock));
+  CHECK(toJkAlarms(0xE000) == 0);  // reserved bits dropped
+  CHECK(toJkAlarms(0x1FFF) == ((1u << 4) | (1u << 11) | (1u << 5) | (1u << 12) | (1u << 8) | (1u << 9) | (1u << 15) | (1u << 24) |
+                               (1u << 6) | (1u << 13) | (1u << 14) | (1u << 25) | (1u << 26)));
+  // No JBD bit lands on JK mos_overtemp (1) or battery_overtemp (21).
+  CHECK((toJkAlarms(0xFFFF) & ((1u << 1) | (1u << 21))) == 0);
+  // JK images keep bits 24..26 unnamed (this host build is a JK build).
+  CHECK(pc::jk::alarmName(24) == nullptr && pc::jk::alarmName(26) == nullptr && pc::jk::alarmName(23) != nullptr);
+
+  // Reading -> shared pc::jk::Data.
+  uint8_t prot[27]; memcpy(prot, real + 4, 27);
+  prot[17] = static_cast<uint8_t>(kProtChgOt);  // charge over-temp
+  Reading rp;
+  CHECK(parseBasic(prot, 27, &rp) && rp.alarmBits == kProtChgOt);
+  uint8_t cells15[30];
+  for (int i = 0; i < 15; ++i) { const uint16_t mv = static_cast<uint16_t>(3900 + i); cells15[2 * i] = mv >> 8; cells15[2 * i + 1] = mv & 0xFF; }
+  CHECK(parseCells(cells15, 30, &rp) && rp.hasCells && rp.cellCount == 15);
+  pc::jk::Data jd;
+  toJkData(rp, nullptr, &jd);
+  CHECK(jd.cellCount == 15 && jd.cellMv[0] == 3900 && jd.cellMv[14] == 3914 && jd.cellMax == 15 && jd.cellMin == 1);
+  CHECK(jd.cellDiffMv == 14 && jd.packMv == 58880 && jd.currentMa == 0 && jd.soc == 72);
+  CHECK(jd.remainMah == 7200 && jd.fullMah == 10000 && jd.cycles == 0);
+  CHECK(jd.tempCount == 2 && !jd.hasMosTemp && !jd.hasSoh);
+  NEAR(jd.tempC[0], 20.3, 0.05); NEAR(jd.tempC[1], 21.5, 0.05);
+  CHECK(jd.alarms == (1u << 8) && jd.chargeMos && jd.dischargeMos && jd.status == 0);
+  // Cells read failed: keep the previous same-count list, else publish no cells (never 0 V cells).
+  Reading noCells;
+  CHECK(parseBasic(real + 4, 27, &noCells) && !noCells.hasCells);
+  pc::jk::Data kept2;
+  toJkData(noCells, &jd, &kept2);
+  CHECK(kept2.cellCount == 15 && kept2.cellMv[14] == 3914 && kept2.alarms == 0);
+  toJkData(noCells, nullptr, &kept2);
+  CHECK(kept2.cellCount == 0);
+  pc::jk::Data other = jd; other.cellCount = 16;
+  toJkData(noCells, &other, &kept2);
+  CHECK(kept2.cellCount == 0);
+  // JK defaults are unchanged for the JK path.
+  pc::jk::Data jkDefault;
+  CHECK(jkDefault.tempCount == 2 && jkDefault.hasMosTemp && jkDefault.hasSoh);
+
+  // Events: JBD charge / discharge over-temp raise bms_over_temp (bms_8 / bms_15), never over_temp.
+  {
+    using namespace pc::ev;
+    Engine e; Inputs in; in.bmsOnline = true; in.bmsAlarms = toJkAlarms(kProtChgOt | kProtDsgOt);
+    e.update(in, 0, 1);
+    Event ev[24]; size_t k = e.drain(ev, 24);
+    int ot = 0;
+    for (size_t i = 0; i < k; ++i) {
+      if (!strcmp(ev[i].id, "bms_8") || !strcmp(ev[i].id, "bms_15")) { CHECK(ev[i].type == Type::BmsOverTemp && ev[i].active); ++ot; }
+      CHECK(ev[i].type != Type::OverTemp);
+    }
+    CHECK(ot == 2);
+    // Discharge over-current and short circuit -> overcurrent; pack under-voltage -> battery_low.
+    Engine e2; Inputs i2; i2.bmsOnline = true; i2.bmsAlarms = toJkAlarms(kProtDsgOc | kProtShort | kProtPackUv);
+    e2.update(i2, 0, 1);
+    k = e2.drain(ev, 24);
+    int oc = 0, low = 0;
+    for (size_t i = 0; i < k; ++i) {
+      if (!strcmp(ev[i].id, "bms_13") || !strcmp(ev[i].id, "bms_14")) { CHECK(ev[i].type == Type::Overcurrent); ++oc; }
+      if (!strcmp(ev[i].id, "bms_12")) { CHECK(ev[i].type == Type::BatteryLow); ++low; }
+    }
+    CHECK(oc == 2 && low == 1);
+  }
 }
 
 static bool read_text_file(const char *path, char *buf, size_t cap) {
@@ -2742,11 +2860,13 @@ static void test_false_alerts_2531() {
 }
 
 static void test_dsp_bms_select() {
-  // Host tests compile like an STM image: JK-PB, DSP_BMS_JKPB left at its default 0.
+  // Host tests compile like an STM JK-PB image: no BMS flags, so DSP_BMS_JKPB 0 and JK-PB selected.
   CHECK(POWERCELL_DSP011 == 0);
   CHECK(DSP_BMS_JKPB == 0);
+  CHECK(POWERCELL_BMS_JBD == 0);
   CHECK(POWERCELL_BMS_JKPB == 1);
   CHECK(PIN_BMS_RX == 17 && PIN_BMS_TX == 16 && PIN_BMS_BAUD == 115200);
+  CHECK(JBD_BMS_BAUD == 9600);
   char buf[16384];
   const char *paths[] = {"../../platformio.ini", "../platformio.ini", "platformio.ini"};
   bool got = false;
@@ -2755,12 +2875,17 @@ static void test_dsp_bms_select() {
   }
   CHECK(got);
   if (!got) return;
-  CHECK(flag_in_env(buf, "esp32dev_dsp011_5kw", "DSP_BMS_JKPB=1"));
-  CHECK(flag_in_env(buf, "esp32dev_dsp011_35kw", "DSP_BMS_JKPB=1"));  // Dubem working firmware: JK-PB on both
-  CHECK(!flag_in_env(buf, "esp32dev_stm01_5kw", "DSP_BMS_JKPB"));
-  CHECK(!flag_in_env(buf, "esp32dev_stm01_35kw", "DSP_BMS_JKPB"));
-  CHECK(flag_in_env(buf, "esp32dev_dsp011_15kw", "DSP_BMS_JKPB=1"));  // 2.5.33 Prime 1.5 kVA: same board as 35kw
-  CHECK(!flag_in_env(buf, "esp32dev_stm01_15kw", "DSP_BMS_JKPB"));
+  // 2.5.35 (Caleb 18 Nov): all six images poll a JBD BMS. DSP envs state DSP_BMS_JKPB=0 explicitly.
+  CHECK(strstr(buf, "bms_jbd =\n    -D POWERCELL_BMS_JBD=1") != nullptr);
+  for (const char *env : {"esp32dev_dsp011_5kw", "esp32dev_dsp011_35kw", "esp32dev_dsp011_15kw"}) {
+    CHECK(flag_in_env(buf, env, "DSP_BMS_JKPB=0"));
+    CHECK(!flag_in_env(buf, env, "DSP_BMS_JKPB=1"));
+    CHECK(flag_in_env(buf, env, "${common.bms_jbd}"));
+  }
+  for (const char *env : {"esp32dev_stm01_5kw", "esp32dev_stm01_35kw", "esp32dev_stm01_15kw"}) {
+    CHECK(!flag_in_env(buf, env, "DSP_BMS_JKPB"));
+    CHECK(flag_in_env(buf, env, "${common.bms_jbd}"));
+  }
 }
 
 static void test_live_grid() {  // grid_available as an input to live source/status
@@ -3037,7 +3162,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.33" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.35" && !s35.found());
   }
 }
 
@@ -3353,7 +3478,7 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(ini.find("POWERCELL_FACTORY_VARIANT=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_RATED_ACTIVE_W=1500") != std::string::npos);
   CHECK(count_of(ini, "[env:esp32dev_") == 6);
-  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.33\\\"") == 6);
+  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.35\\\"") == 6);  // 2.5.35 JBD build; 2.5.34 reserved
   CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") == std::string::npos);
   // The STM 15kw image carries no factory rating, like the other STM images.
   char buf[16384]; CHECK(ini.size() < sizeof buf);

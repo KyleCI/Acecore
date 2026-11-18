@@ -12,20 +12,32 @@ CFGFLAGS := -std=c++17 -Wall -Wextra -Werror -I../../include
 all: run
 host_tests: test_main.cpp $(wildcard $(SRC)/*.cpp) $(wildcard $(SRC)/*.h) $(CODEC)
 	$(CXX) $(CXXFLAGS) $(INC) test_main.cpp $(wildcard $(SRC)/*.cpp) $(CODEC) -o $@
-# Compile-only: all three DSP ratings select JK-PB 115200 on RX17/TX16; JBD 9600 RX16/TX17 stays buildable; STM stays JK-PB.
+# JBD-image host tests (2.5.35): same sources built with POWERCELL_BMS_JBD=1, so the
+# JBD-only alarm names (bits 24..26) and the events they raise are tested as shipped.
+jbd_host_tests: test_jbd_image.cpp $(wildcard $(SRC)/*.cpp) $(wildcard $(SRC)/*.h) ../../src/jbd_bms.cpp
+	$(CXX) $(CXXFLAGS) -DPOWERCELL_BMS_JBD=1 $(INC) test_jbd_image.cpp $(wildcard $(SRC)/*.cpp) ../../src/jbd_bms.cpp -o $@
+# Compile-only, every DSP rating and STM board, both drivers. 2.5.35 images: JBD 9600 RX17/TX16.
 check_dsp_bms:
 	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DDSP_BMS_JKPB=1 -DPOWERCELL_FACTORY_RATED_ACTIVE_W=5000 -DEXPECT_DSP_JKPB test_dsp_bms_config.cpp -o check_dsp_bms_5kw
 	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DDSP_BMS_JKPB=1 -DPOWERCELL_FACTORY_RATED_ACTIVE_W=3500 -DEXPECT_DSP_JKPB test_dsp_bms_config.cpp -o check_dsp_bms_35kw
 	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DDSP_BMS_JKPB=1 -DPOWERCELL_FACTORY_RATED_ACTIVE_W=1500 -DEXPECT_DSP_JKPB test_dsp_bms_config.cpp -o check_dsp_bms_15kw
-	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DEXPECT_DSP_JBD test_dsp_bms_config.cpp -o check_dsp_bms_jbd
+	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DDSP_BMS_JKPB=0 -DPOWERCELL_BMS_JBD=1 -DPOWERCELL_FACTORY_RATED_ACTIVE_W=5000 -DEXPECT_DSP_JBD test_dsp_bms_config.cpp -o check_dsp_bms_jbd
+	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DDSP_BMS_JKPB=0 -DPOWERCELL_BMS_JBD=1 -DPOWERCELL_FACTORY_RATED_ACTIVE_W=3500 -DEXPECT_DSP_JBD test_dsp_bms_config.cpp -o check_dsp_bms_jbd35
+	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DDSP_BMS_JKPB=0 -DPOWERCELL_BMS_JBD=1 -DPOWERCELL_FACTORY_RATED_ACTIVE_W=1500 -DEXPECT_DSP_JBD test_dsp_bms_config.cpp -o check_dsp_bms_jbd15
 	$(CXX) $(CFGFLAGS) -DEXPECT_STM_JKPB test_dsp_bms_config.cpp -o check_dsp_bms_stm
+	$(CXX) $(CFGFLAGS) -DPOWERCELL_BMS_JBD=1 -DEXPECT_STM_JBD test_dsp_bms_config.cpp -o check_dsp_bms_stm_jbd
+	! $(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DDSP_BMS_JKPB=1 -DPOWERCELL_BMS_JBD=1 -DEXPECT_DSP_JBD test_dsp_bms_config.cpp -o /dev/null 2>/dev/null
 	./check_dsp_bms_5kw
 	./check_dsp_bms_35kw
 	./check_dsp_bms_15kw
 	./check_dsp_bms_jbd
+	./check_dsp_bms_jbd35
+	./check_dsp_bms_jbd15
 	./check_dsp_bms_stm
-run: host_tests check_dsp_bms
+	./check_dsp_bms_stm_jbd
+run: host_tests jbd_host_tests check_dsp_bms
 	./host_tests
+	./jbd_host_tests
 clean:
-	rm -f host_tests check_dsp_bms_5kw check_dsp_bms_35kw check_dsp_bms_15kw check_dsp_bms_jbd check_dsp_bms_stm
+	rm -f host_tests jbd_host_tests check_dsp_bms_jbd35 check_dsp_bms_jbd15 check_dsp_bms_stm_jbd check_dsp_bms_5kw check_dsp_bms_35kw check_dsp_bms_15kw check_dsp_bms_jbd check_dsp_bms_stm
 .PHONY: all run clean check_dsp_bms
