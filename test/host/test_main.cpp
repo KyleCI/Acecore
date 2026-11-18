@@ -3180,7 +3180,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.36" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.37" && !s35.found());
   }
 }
 
@@ -3496,7 +3496,7 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(ini.find("POWERCELL_FACTORY_VARIANT=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_RATED_ACTIVE_W=1500") != std::string::npos);
   CHECK(count_of(ini, "[env:esp32dev_") == 6);
-  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.36\\\"") == 6);  // 2.5.36 LoRa socket VA; 2.5.34 reserved
+  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.37\\\"") == 6);  // 2.5.37 socket floor 0.2 A (2.5.36 was 0.1 A); 2.5.34 reserved
   CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") == std::string::npos);
   // The STM 15kw image carries no factory rating, like the other STM images.
   char buf[16384]; CHECK(ini.size() < sizeof buf);
@@ -3529,11 +3529,16 @@ static void test_socket_power_2536() {
   NEAR(r.voltage, 230.0f, 1e-4); NEAR(r.apparentVa, 460.0f, 1e-3);
   r = compute(true, 0.437f, true, 228.4f); NEAR(r.apparentVa, 99.8f, 1e-3);
   r = compute(true, 10.0f, true, 240.0f); NEAR(r.apparentVa, 2400.0f, 1e-3);
-  // Noise floor: below 0.1 A is 0 VA (current itself is sent as measured by the caller).
+  // Noise floor (2.5.37, Caleb 18 Nov 17:02 WAT): below 0.2 A is 0 VA (was 0.1 A in 2.5.36).
+  // Current itself is sent as measured by the caller.
+  CHECK(kNoiseFloorA == 0.20f);
   r = compute(true, 0.099f, true, 230.0f); CHECK(r.hasPower); NEAR(r.apparentVa, 0.0f, 1e-6);
-  r = compute(true, 0.15f, true, 230.0f); NEAR(r.apparentVa, 34.5f, 1e-3);
-  r = compute(true, 0.10f, true, 230.0f); NEAR(r.apparentVa, 23.0f, 1e-3);
-  NEAR(effectiveCurrent(0.05f), 0.0f, 1e-6); NEAR(effectiveCurrent(3.5f), 3.5f, 1e-6);
+  r = compute(true, 0.15f, true, 230.0f); CHECK(r.hasPower); NEAR(r.apparentVa, 0.0f, 1e-6);  // idle CT: no phantom VA
+  r = compute(true, 0.199f, true, 230.0f); NEAR(r.apparentVa, 0.0f, 1e-6);
+  r = compute(true, 0.20f, true, 230.0f); NEAR(r.apparentVa, 46.0f, 1e-3);
+  r = compute(true, 0.25f, true, 230.0f); NEAR(r.apparentVa, 57.5f, 1e-3);
+  NEAR(effectiveCurrent(0.05f), 0.0f, 1e-6); NEAR(effectiveCurrent(0.15f), 0.0f, 1e-6);
+  NEAR(effectiveCurrent(0.2f), 0.2f, 1e-6); NEAR(effectiveCurrent(3.5f), 3.5f, 1e-6);
   CHECK(effectiveCurrent(-0.2f) < 0 && effectiveCurrent(NAN) < 0);
   // Stale / missing voltage -> voltage and power null.
   CHECK(voltageFresh(true, 0) && voltageFresh(true, kVoltageFreshMs) && !voltageFresh(true, kVoltageFreshMs + 1));

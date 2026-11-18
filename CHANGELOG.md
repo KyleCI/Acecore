@@ -1,5 +1,13 @@
 # Collector firmware changelog
 
+## 2.5.37 (socket noise floor 0.2 A, Caleb 18 Nov 2026 17:02 WAT)
+
+On top of 2.5.36 (1529379), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit. New version number because 2.5.36 was already built and delivered with the 0.1 A floor, and OTA compares versions.
+
+- Socket power noise floor raised from 0.1 A to 0.2 A (`pc::sockpower::kNoiseFloorA`): below 0.2 A `apparent_power_va` and `current_usage_watts` are 0 VA, so the idle CT reading (about 0.15 A) no longer shows about 35 VA with nothing plugged in. `current` is still reported as measured. The smallest non-zero power is now about 46 VA at 230 V.
+- Everything else as 2.5.36: JK-PB on all six images, voltage window 10 s, warn/trip amps based (10 A / 8 A), LoRa packet format, socket firmware and ESP-NOW (off) unchanged.
+- Host test `test_socket_power_2536` checks the 0.2 A floor (0.15 A and 0.199 A give 0 VA, 0.2 A gives 46 VA at 230 V).
+
 ## 2.5.36 (LoRa smart-socket power, V x I, Caleb 18 Nov 2026)
 
 On top of 2.5.35 (ad90eb0), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit.
@@ -12,7 +20,7 @@ On top of 2.5.35 (ad90eb0), branch `cursor/lora-socket-power-2536`. Six product 
 
 - Every paired socket in `populateDeviceArray()` (so WS telemetry `sockets[]`, `/metrics`, `/sockets`, `/data`, console `SOCKETS`) gains `voltage`, `voltage_source` (`"collector_output"`), `apparent_power_va`, `power_quantity` (`"apparent_va"`) and `current_usage_watts` (same number as `apparent_power_va`, the key the app and backend already read).
 - Power = collector AC output voltage x socket current. Voltage: STM, the STM32 status `vout`; DSP, the PZEM-004T v3 AC voltage (`stm32link::status()`). The sample must be fresh: no older than 10 s (`pc::sockpower::kVoltageFreshMs`), and the existing rules still apply (STM32 status under `STM32_STALE_MS` = 6 s, PZEM sample under 2 s). Stale, missing or implausible (outside 0..300 V) voltage: `voltage`, `apparent_power_va` and `current_usage_watts` are null. An offline socket keeps `voltage` but its power is null. 0 V (inverter output off) is a real reading and gives 0 VA.
-- Noise floor 0.1 A: below it the power is 0 VA. `current` is still reported as measured (the CT reads about 0.15 A idle on some units, so expect up to about 35 VA with nothing plugged in; raise the floor if Caleb sees that on a unit).
+- Noise floor 0.1 A (raised to 0.2 A in 2.5.37): below it the power is 0 VA. `current` is still reported as measured (the CT reads about 0.15 A idle on some units, so expect up to about 35 VA with nothing plugged in; raise the floor if Caleb sees that on a unit).
 - **V x I is apparent power (VA), not real watts.** It matches real watts only for resistive loads (kettle, iron, heater, bulb). For motors, fridges, fans, phone and laptop chargers and other electronics it overstates the real watts (real W = VA x power factor). Labelled as such in the data.
 - Warnings and trips are unchanged and stay current based (amps): socket 10 A trip / 8 A warn, socket config limits, `socket_warn_8a` / `socket_tripped_10a`.
 - The compact `/data` snapshot copy (used when the 4 KB snapshot drops `metrics.sockets`) keeps the five power keys too (`pc::sockpower::kCompactSnapshotKeys`).

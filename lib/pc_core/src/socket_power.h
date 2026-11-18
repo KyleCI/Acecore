@@ -13,7 +13,7 @@
 // Warnings and trips stay current based (amps), never VA: see socket_rules.h / the socket.
 namespace pc {
 namespace sockpower {
-constexpr float kNoiseFloorA = 0.10f;   // CT idle reading. Below it the power is 0 VA; "current" is still sent as measured
+constexpr float kNoiseFloorA = 0.20f;   // 2.5.37 (Caleb 18 Nov 17:02 WAT): was 0.10. CT idle reading. Below it the power is 0 VA; "current" is still sent as measured
 constexpr uint32_t kVoltageFreshMs = 10000;  // collector voltage sample older than this -> voltage and power null
 constexpr float kMinPlausibleV = 0.0f;
 constexpr float kMaxPlausibleV = 300.0f;
