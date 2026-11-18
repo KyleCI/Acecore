@@ -28,8 +28,14 @@ void begin() {
 #if POWERCELL_DSP011
   // SD CS is GPIO5 (also the old unused MPPT CS). Idle high: GPIO5 is a
   // strapping pin and must not be low at reset. GPIO32 is PZEM TX and GPIO35 is PZEM RX, not CS pins.
-  // GPIO4 (LoRa CS) is not driven: that radio is not fitted.
+  // 2.5.38: the LoRa radio is fitted on DSP too. Its CS (IO4) is driven HIGH with the SD CS
+  // before SPI.begin, so neither device sees traffic meant for the other. LoRa begins here under
+  // the SPI mutex; the SD card is mounted later by hwLogStart() under the same mutex.
+#if FEATURE_LORA
+  for (int cs : {PIN_DSP_SD_CS, PIN_LORA_CS}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
+#else
   for (int cs : {PIN_DSP_SD_CS}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
+#endif
 #else
   for (int cs : {PIN_LORA_CS, PIN_SD_CS, PIN_SPI_CS_MPPT}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
 #endif

@@ -1,5 +1,18 @@
 # Collector firmware changelog
 
+## 2.5.38 (LoRa on the DSP images, Caleb 18 Nov 2026 18:08 WAT)
+
+On top of 2.5.37 (5dbba16) plus a merge of `cursor/factory-flash-tool` (0474688, tools only), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit.
+
+- **LoRa on DSP v0.1.1.** Caleb: every board, DSP included, has the SX1278 LoRa module fitted. The three DSP envs now build with `FEATURE_LORA=1` (so `FEATURE_LORA_SOCKETS=1`); the `#error "hardware v0.1.1 is not fitted with LoRa"` in config.h is gone.
+- **Pins (no remap).** Same LoRa header pins as the STM boards: shared SPI SCK 18 / MISO 19 / MOSI 23, LoRa CS IO4, RESET IO26, DIO0 not wired (polled RX). The DSP SD card keeps its own CS IO5 on the same bus. New compile-time checks in pins.h: LoRa CS and RESET are not any DSP pin (BMS 17/16, PZEM 35/32, GPIO15 inverter enable, LEDs 13/12/14, front light 27, NTC 33, fan 25, grid sense 39, I2C 21/22, SPI 18/19/23, SD CS 5). IO4 and IO26 are not used by anything else in the DSP firmware. Not checked against a DSP v0.1.1 schematic: that the DSP board routes the LoRa header to IO4 / IO26 is taken from the collector header map.
+- **Shared SPI bus.** periph::begin() drives SD CS (IO5) and LoRa CS (IO4) HIGH before `SPI.begin(18, 19, 23)`, then brings up LoRa under the SPI mutex. The DSP SD card is mounted later by hwLogStart() under the same mutex, and every LoRa and SD access takes that mutex.
+- **Sockets on DSP.** `sockets[]` in telemetry, `/metrics`, `/sockets`, `/data` and console `SOCKETS` now list paired LoRa sockets. Socket voltage and VA use the PZEM-004T v3 AC output voltage (`stm32link::status()` on DSP), floor 0.2 A as 2.5.37. Cloud socket commands and local `/relay` are no longer rejected with `lora_not_fitted` on DSP.
+- **Serial monitor.** On boot a DSP unit now prints `[LORA] INIT 433 MHz SF9 cs=4 rst=26 (polling)` and `[LORA] SOCKETS_READY 433 MHz sync 0xF1 polled RX`, or `[LORA] INIT SX127x not answering` and `[LORA] SOCKETS_OFF ...` if the radio does not answer.
+- **Not on DSP yet:** the per-socket rules pass (`socketcfg::pass`: SoC shed, schedules, cloud override, low-power radio duty) still runs only in the STM power_guard path. DSP sockets read and switch, and the socket's own 10 A trip / 8 A warn apply.
+- Unchanged: JK-PB on all six images (JBD compiled out), ESP-NOW off, LoRa packet format, socket firmware.
+- Host test `test_dsp_lora_2538`; `check_dsp_bms` compiles with `FEATURE_LORA=1` like the images.
+
 ## 2.5.37 (socket noise floor 0.2 A, Caleb 18 Nov 2026 17:02 WAT)
 
 On top of 2.5.36 (1529379), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit. New version number because 2.5.36 was already built and delivered with the 0.1 A floor, and OTA compares versions.

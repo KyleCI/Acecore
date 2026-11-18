@@ -521,7 +521,7 @@ void begin() {
     json(r, 200, d);
   });
   postRoute("/relay", false, [](AsyncWebServerRequest *r, JsonDocument &doc, Cred) {
-#if POWERCELL_DSP011
+#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS
     fail(r, 409, "lora_not_fitted");  // AcePlug command. GPIO15 is the AC enable and is not written.
     return;
 #endif

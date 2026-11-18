@@ -3180,7 +3180,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.37" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.38" && !s35.found());
   }
 }
 
@@ -3496,7 +3496,7 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(ini.find("POWERCELL_FACTORY_VARIANT=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_RATED_ACTIVE_W=1500") != std::string::npos);
   CHECK(count_of(ini, "[env:esp32dev_") == 6);
-  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.37\\\"") == 6);  // 2.5.37 socket floor 0.2 A (2.5.36 was 0.1 A); 2.5.34 reserved
+  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.38\\\"") == 6);  // 2.5.38 LoRa on DSP (2.5.37 floor 0.2 A); 2.5.34 reserved
   CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") == std::string::npos);
   // The STM 15kw image carries no factory rating, like the other STM images.
   char buf[16384]; CHECK(ini.size() < sizeof buf);
@@ -3589,6 +3589,44 @@ static void test_socket_power_2536() {
   CHECK(ini.find("FEATURE_ESPNOW_SOCKETS=1") == std::string::npos);
 }
 
+// 2.5.38 (Caleb 18 Nov 2026 18:08 WAT): every board has LoRa, DSP included.
+static void test_dsp_lora_2538() {
+  std::string ini = slurp("../../platformio.ini");
+  char buf[16384]; CHECK(ini.size() < sizeof buf);
+  memcpy(buf, ini.c_str(), ini.size() + 1);
+  for (const char *env : {"esp32dev_dsp011_5kw", "esp32dev_dsp011_35kw", "esp32dev_dsp011_15kw"}) {
+    CHECK(flag_in_env(buf, env, "FEATURE_LORA=1"));
+    CHECK(!flag_in_env(buf, env, "FEATURE_LORA=0"));
+    CHECK(flag_in_env(buf, env, "DSP_BMS_JKPB=1"));       // JK-PB stays active
+    CHECK(!flag_in_env(buf, env, "POWERCELL_BMS_JBD=1"));  // JBD stays compiled out
+  }
+  CHECK(ini.find("FEATURE_LORA=0") == std::string::npos);
+  CHECK(ini.find("FEATURE_ESPNOW_SOCKETS=1") == std::string::npos);
+  std::string cfg = slurp("../../include/config.h");
+  CHECK(cfg.find("hardware v0.1.1 is not fitted with LoRa") == std::string::npos);
+  // Shared SPI: periph drives LoRa CS and SD CS high before SPI.begin, LoRa begins under the SPI mutex.
+  std::string per = slurp("../../src/periph.cpp");
+  size_t cs = per.find("{PIN_DSP_SD_CS, PIN_LORA_CS}"), sb = per.find("SPI.begin(PIN_SPI_SCK"), lb = per.find("lora = loraLinkBegin()");
+  size_t mx = per.find("xSemaphoreTake(g_spi", sb);
+  CHECK(cs != std::string::npos && sb != std::string::npos && lb != std::string::npos && cs < sb && sb < mx && mx < lb);
+  // DSP SD mount is under the same mutex.
+  std::string lg = slurp("../../src/dsp011_log.cpp");
+  size_t tk = lg.find("xSemaphoreTake(periph::spiMutex()"), sd = lg.find("SD.begin(kSdCs");
+  CHECK(tk != std::string::npos && sd != std::string::npos && tk < sd);
+  // Socket commands are accepted on DSP when LoRa sockets are built in.
+  std::string web = slurp("../../src/web_local.cpp"), ws = slurp("../../src/backend_ws.cpp");
+  CHECK(web.find("#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS") != std::string::npos);
+  CHECK(ws.find("#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS") != std::string::npos);
+  // DSP socket voltage is the PZEM sample via stm32link::status().
+  std::string stm = slurp("../../src/stm32_link.cpp");
+  size_t st = stm.find("bool status(Stm32Status &out"), hp = stm.find("hwPzemSample(&v, &a, &w, &energy, &age)", st);
+  CHECK(st != std::string::npos && hp != std::string::npos);
+  // Boot log lines Caleb looks for.
+  std::string ll = slurp("../../src/lora_link.cpp"), sl = slurp("../../src/sockets/sockets_lora.cpp");
+  CHECK(ll.find("LOGI(\"LORA\", \"INIT\"") != std::string::npos && ll.find("LOGE(\"LORA\", \"INIT\", \"SX127x not answering\")") != std::string::npos);
+  CHECK(sl.find("\"SOCKETS_READY\"") != std::string::npos && sl.find("\"SOCKETS_OFF\"") != std::string::npos);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -3601,7 +3639,7 @@ int main() {
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
-  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536();
+  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536(); test_dsp_lora_2538();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

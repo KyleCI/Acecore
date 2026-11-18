@@ -198,13 +198,11 @@ A response is a successful Save only when HTTP is 200 and the body has `result` 
 {"ok":true,"state":"off","applied_via":"dsp_gpio15","aceplug":false,"gpio_level":1}
 ```
 
-`/relay` is an AcePlug socket command. On v0.1.1 there is no LoRa radio, so the response is HTTP 409 and GPIO15 is not written:
+`/relay` is an AcePlug socket command. Since 2.5.38 the v0.1.1 (DSP) images have the LoRa radio too (Caleb 18 Nov 2026), so on every image a registered socket is queued as `RELAY_ON` / `RELAY_OFF` and returns HTTP 202. It never drives GPIO15. A build with `FEATURE_LORA_SOCKETS=0` on v0.1.1 still answers HTTP 409:
 
 ```json
 {"ok":false,"error":"lora_not_fitted","aceplug":true,"dsp_gpio15":false}
 ```
-
-On the original profile a registered socket is queued as `RELAY_ON` / `RELAY_OFF` and returns HTTP 202. That path does not drive the v0.1.1 DSP pin.
 
 ## Other app paths
 

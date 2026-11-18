@@ -7,7 +7,7 @@ CODEC := ../../src/ds3231_time.cpp ../../src/lagos_time.cpp ../../src/battery_al
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -Wno-missing-field-initializers
 INC := -I$(SRC) -I../../include
 # Same feature flags as the product images, for compile-time BMS selection checks.
-DSP_FLAGS := -DPOWERCELL_DSP011=1 -DFEATURE_STM32=0 -DFEATURE_LORA=0 -DFEATURE_BAT_SENSE_ADC=0 -DDSP_BMS_UART_SWAP=0
+DSP_FLAGS := -DPOWERCELL_DSP011=1 -DFEATURE_STM32=0 -DFEATURE_LORA=1 -DFEATURE_BAT_SENSE_ADC=0 -DDSP_BMS_UART_SWAP=0
 CFGFLAGS := -std=c++17 -Wall -Wextra -Werror -I../../include
 all: run
 host_tests: test_main.cpp $(wildcard $(SRC)/*.cpp) $(wildcard $(SRC)/*.h) $(CODEC)
