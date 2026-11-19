@@ -49,6 +49,17 @@ class T(unittest.TestCase):
             self.assertTrue(val.strip())
             self.assertGreater(len(("SET %s %s" % (key, val)).split()), 2)
 
+    def test_espnow_keys_2540(self):
+        k = "ab" * 48  # placeholder, not a real key
+        self.assertEqual(f.nvs_sets("factory-key", "", k)[-1], ("espnow_keys", k))
+        self.assertEqual([c for c, _ in f.nvs_sets("factory-key", "", "")], ["api_key"])
+        self.assertEqual([c for c, _ in f.nvs_sets("factory-key", "", None)], ["api_key"])
+        for bad in ("ab" * 47, "zz" * 48, "ab" * 49):
+            with self.assertRaises(ValueError): f.nvs_sets("factory-key", "", bad)
+        self.assertTrue(f.valid_espnow_keys("AB" * 48))
+        ex = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "factory_state", "factory.env.example")).read()
+        self.assertIn("\nESPNOW_KEYS=\n", ex)  # example ships blank
+
     def test_model(self):
         for v in ("PC5K", "pc5k", "5K", "5kva", " PC5KVA "): self.assertEqual(f.normalize_model(v), "PC5K")
         self.assertEqual(f.normalize_model("10k"), "PC10K"); self.assertEqual(f.normalize_model("PC3K"), "PC3K")

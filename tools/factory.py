@@ -63,15 +63,27 @@ def resolve_factory_urls(env):
     return ota, api
 
 
-def nvs_sets(api_key, ota_url):
-    """USB SET commands. An empty value is omitted so the console never sees SET <key> with no value."""
+def valid_espnow_keys(v):
+    """2.5.40: ESPNOW_KEYS is 96 hex = PMK(16) + LMK(16) + AUTH(16) bytes, the same fleet keys the
+    ESP-NOW smart sockets are built with. Never printed."""
+    return isinstance(v, str) and len(v) == 96 and all(c in "0123456789abcdefABCDEF" for c in v)
+
+
+def nvs_sets(api_key, ota_url, espnow_keys=None):
+    """USB SET commands. An empty value is omitted so the console never sees SET <key> with no value.
+    2.5.40: ESPNOW_KEYS (optional) -> SET espnow_keys, before LOCK (the firmware refuses it after LOCK)."""
     cmds = []
     key = _filled(api_key)
     url = _filled(ota_url)
+    keys = _filled(espnow_keys)
     if key:
         cmds.append(("api_key", key))
     if url:
         cmds.append(("ota_url", url))
+    if keys:
+        if not valid_espnow_keys(keys):
+            raise ValueError("ESPNOW_KEYS must be 96 hex characters (PMK + LMK + AUTH)")
+        cmds.append(("espnow_keys", keys))
     return cmds
 
 
@@ -448,7 +460,13 @@ def main(argv=None):
         r = con.cmd("ROTATE_SECRET")
         if not (r.startswith("OK") or r == "DRY"):
             die("could not generate device secret: " + r)
-    for key, val in nvs_sets(api_key, ota):
+    try:
+        sets = nvs_sets(api_key, ota, env.get("ESPNOW_KEYS"))
+    except ValueError as e:
+        die(str(e))
+    if not any(k == "espnow_keys" for k, _ in sets):
+        print("note: ESPNOW_KEYS is empty in factory.env; ESP-NOW smart sockets stay off until SET espnow_keys (before LOCK)")
+    for key, val in sets:
         r = con.cmd(f"SET {key} {val}", show=f"SET {key} ****")
         if not (r.startswith("OK") or r == "DRY"):
             die(f"SET {key}: {r}")

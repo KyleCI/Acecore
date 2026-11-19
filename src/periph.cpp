@@ -31,11 +31,9 @@ void begin() {
   // 2.5.38: the LoRa radio is fitted on DSP too. Its CS (IO4) is driven HIGH with the SD CS
   // before SPI.begin, so neither device sees traffic meant for the other. LoRa begins here under
   // the SPI mutex; the SD card is mounted later by hwLogStart() under the same mutex.
-#if FEATURE_LORA
+  // 2.5.40: the SX1278 stays fitted when FEATURE_LORA=0 (ESP-NOW sockets), so its CS is still held
+  // HIGH: an undriven CS would let the radio answer SD traffic on the shared bus.
   for (int cs : {PIN_DSP_SD_CS, PIN_LORA_CS}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
-#else
-  for (int cs : {PIN_DSP_SD_CS}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
-#endif
 #else
   for (int cs : {PIN_LORA_CS, PIN_SD_CS, PIN_SPI_CS_MPPT}) { digitalWrite(cs, HIGH); pinMode(cs, OUTPUT); digitalWrite(cs, HIGH); }
 #endif

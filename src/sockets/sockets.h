@@ -5,9 +5,9 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
-// Smart-socket transport. 2.2: LoRa (FEATURE_LORA_SOCKETS, sockets_lora.cpp,
-// Dubem protocol). ESP-NOW (sockets_espnow.cpp) is kept but disabled
-// (FEATURE_ESPNOW_SOCKETS=0). API kept from the 1.0.4 collector.
+// Smart-socket transport. 2.5.40: ESP-NOW (FEATURE_ESPNOW_SOCKETS, sockets_espnow.cpp, collector
+// 1.0.4 / socket 1.0.1 wire format) on all six images. LoRa (FEATURE_LORA_SOCKETS, sockets_lora.cpp,
+// Dubem protocol) is kept, compiled out. Same API on both; API kept from the 1.0.4 collector.
 struct SocketReading {
   String deviceId;
   float current = 0;

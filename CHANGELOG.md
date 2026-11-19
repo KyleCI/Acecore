@@ -1,5 +1,19 @@
 # Collector firmware changelog
 
+## 2.5.40 (ESP-NOW smart sockets on, LoRa off, Caleb 19 Nov 2026 14:31 WAT)
+
+On top of 2.5.39 (6ae05ef), branch `cursor/espnow-socket-2540`. Six product images. Build only, not tested on a unit. Reference: Caleb's "Col PL.zip" (collector 1.0.4 + socket 1.0.1 ESP-NOW tree, close-range validated 4 Oct 2026). See `docs/ESPNOW_SOCKETS.md`.
+
+- **Socket transport is ESP-NOW on all six images.** `platformio.ini` `${common.socket_link}` = `FEATURE_LORA=0 FEATURE_ESPNOW_SOCKETS=1` in every env. The LoRa code (`sockets_lora.cpp`, `lora_link.cpp`, `lora_socket_proto`) stays in the tree, compiled out; `${common.socket_link_lora}` switches an env back.
+- **Wire format = collector 1.0.4 / socket 1.0.1**, byte for byte: 44-byte v1 packet, HMAC-SHA256 (16 bytes) with the fleet AUTH key, unicast frames ESP-NOW encrypted (PMK/LMK), broadcast beacon every 1 s, socket discover every 1 s, explicit pair (PairAck) and durable forget (ForgetAck). Now from `pc_core/espnow_wire.h` (the parked 907b9b4 header, host tested with a known-answer HMAC, tamper, field and sequence cases), no mbedtls dependency in the protocol.
+- **Keys from NVS only.** `SET espnow_keys <96 hex>` (PMK + LMK + AUTH) over USB, before LOCK. No key header in the tree (`espnow_pairing.h`, `espnow_keys.h`, `secrets.h` absent, test enforced). Without keys the boot log shows `[ESPNOW][NO_KEYS]` and `[ESPNOW][SOCKETS_OFF]` and sockets stay off. `factory.py` / `factory_flash.py` / `provision.py` accept an optional `ESPNOW_KEYS=` in factory.env (validated, never printed); `factory.env.example` ships it blank.
+- **Same app / cloud behaviour as the LoRa path:** add (pair: socket must be heard in the last 10 s and advertising "available to pair", then confirms), remove (hidden at once, durable release until the socket acknowledges), rename / schedules / shed rules (socket_cfg, unchanged), on/off with `cmd_id`, `desired`, `pending`, supersede by a new tap, confirmed from telemetry when the ack is missed, `timeout` after 6 tries 750 ms apart, change push to SSE, VA = collector V x socket I with the 0.2 A floor. `transport` reads `espnow`; `rssi`, `snr`, `firmware_version` are null (not carried by ESP-NOW v1); reset-lockout and set-limit answer unsupported (socket 1.0.1 has neither).
+- **Wi-Fi coexistence.** ESP-NOW uses the station interface on the collector's current channel (router channel when connected, hotspot channel otherwise; AP and STA always share one channel). The socket scans channels 1..13 for the beacon, so no channel pinning and router channel changes are followed. Wi-Fi power save is off while ESP-NOW runs (`WIFI_PS_NONE`; modem sleep drops frames), modem sleep only in the 10 % battery low-power latch. Paused during a local OTA upload; re-initialised if Wi-Fi stops.
+- **Encrypted-peer budget** (ESP-IDF limit 7): paired and pairing/forgetting sockets are never evicted; the stalest unpaired observation is. Device map bounded at 32.
+- **SX1278 left fitted and idle:** its CS (IO4) is still driven HIGH on DSP, so it cannot answer SD traffic on the shared bus. `lora_ready` reports false.
+- Unchanged: JK-PB active, JBD compiled out, socket rules / schedules / shedding on DSP and STM, GPIO15 behaviour, factory_flash tooling (plus ESPNOW_KEYS), api-dev backend.
+- Host test `test_espnow_2540`; `check_dsp_bms` compiles with the 2.5.40 radio flags.
+
 ## 2.5.39 (socket rules on the DSP images, Caleb 19 Nov 2026 01:12 WAT)
 
 On top of 2.5.38 (81317c1), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit.

@@ -97,7 +97,13 @@ void setLowPower(bool on) {
   g_low = on;
   // Modem sleep is the reserve-mode default. WiFi.setSleep() keeps the type across reconnects
   // and mode changes; the WS stays connected (15 s ping, DTIM wake).
+#if FEATURE_ESPNOW_SOCKETS
+  // 2.5.40: ESP-NOW sockets need the radio awake (modem sleep drops their frames). Power save only
+  // in the battery low-power latch; commands keep retrying there.
+  WiFi.setSleep(on ? WIFI_PS_MAX_MODEM : WIFI_PS_NONE);
+#else
   WiFi.setSleep(on ? WIFI_PS_MAX_MODEM : WIFI_PS_MIN_MODEM);
+#endif
   socketsSetLowPower(on);
   LOGW("PWR", on ? "LOW_POWER_ON" : "LOW_POWER_OFF", "est_esp_draw=%.0f mA @3.3V", on ? kMaLow : kMaNormal);
 }

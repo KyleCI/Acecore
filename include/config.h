@@ -104,7 +104,10 @@
 #else
 #define POWERCELL_BMS_JKPB 1
 #endif
-#ifndef FEATURE_ESPNOW_SOCKETS    // legacy smart-socket path over ESP-NOW; disabled in 2.2 (sockets use LoRa)
+// 2.5.40 (Caleb 19 Nov 2026 14:31 WAT): smart sockets over ESP-NOW, LoRa off, on all six images
+// (platformio.ini ${common.socket_link}: FEATURE_LORA=0 FEATURE_ESPNOW_SOCKETS=1). The LoRa code stays
+// in the tree; to go back, swap ${common.socket_link} for ${common.socket_link_lora}.
+#ifndef FEATURE_ESPNOW_SOCKETS    // smart sockets over ESP-NOW (sockets_espnow.cpp); keys from NVS espnow_keys
 #define FEATURE_ESPNOW_SOCKETS 0
 #endif
 #ifndef FEATURE_SD_PROBE          // optional SD card on CS2 (IO14), detected at boot
