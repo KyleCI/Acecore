@@ -281,6 +281,7 @@ REBOOT
 - **Network:** the static IP from 1.0.x is replaced by DHCP. The setup AP SSID changes to `Powercell-XXXXXX`.
 - **Not migrated:** the old `energy_wh`, and the 2.0.0 ESP energy counter (`pc_energy` NVS) is no longer used; the old offline queue (JSON in `offline_sync/events`).
 - **2.5.40 is an EVENT/DEMO build only, not for customer units:** it carries the existing reference ESP-NOW keys compiled in (`POWERCELL_ESPNOW_EVENT_KEYS=1`, local gitignored `include/espnow_pairing.h`). Rotate the keys and drop the flag before any customer build.
+- **AcePlug ESP-NOW socket 1.1.0-espnow-event** (`aceplug-espnow-firmware/`, EVENT/DEMO ONLY, same keys): the plug image for 2.5.40, 10 A trip / 8 A warning. See its README.
 - **Version:** the six product images report `2.5.40` (2.5.40: smart sockets over ESP-NOW, LoRa compiled out, `docs/ESPNOW_SOCKETS.md`; 2.5.38: LoRa smart sockets on the DSP images too; 2.5.39: socket schedules and shed rules on DSP) (2.5.34 is reserved for the unreleased GPIO15 momentary-press build on PR #5, not in this line). Publish each under kind `collector` and its own model (`docs/OTA_HARDWARE_MODEL.md`).
 - **STM32 link:** the STM32 still sends 9600 text, so the default `legacy_text` works with today's STM32 firmware. Switch both sides to framed together.
 

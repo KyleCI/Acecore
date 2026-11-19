@@ -49,8 +49,25 @@ Do not `SET espnow_keys` on event units unless you mean to replace the built-in 
    `[ESPNOW][NO_KEYS]` / `[ESPNOW][SOCKETS_OFF]` = keys missing.
 5. Pair from the app (Add socket) within 10 s of the socket being heard.
 
+## AcePlug ESP-NOW image (1.1.0-espnow-event, EVENT/DEMO ONLY)
+`aceplug-espnow-firmware/` (Caleb, 19 Nov 2026 16:19 WAT): socket 1.0.1 base, same event keys,
+10 A trip / 8 A warn / lockout from the LoRa AcePlug. Replaces socket 1.0.1 (50 A trip) on
+AcePlugs. See its README for behaviour and pins.
+
+Pairing with 2.5.40:
+1. Flash the collector 2.5.40 image; boot log `[ESPNOW][EVENT_KEYS]` and `[ESPNOW][READY]`.
+2. Flash the plug merged bin at 0x0 (erases old pairing). Boot log shows
+   `EVENT/DEMO BUILD ONLY`, `[ESPNOW][READY] socket=<id>` and `searching for collector`.
+3. Keep the plug within a few metres of the collector. It scans channels 1..13 and locks to the
+   collector channel on the first beacon (about 1 to 15 s).
+4. In the app, Add socket: the plug appears as available to pair (heard in the last 10 s).
+   Pick it; the plug logs `[ESPNOW][PAIRED] collector=<MAC>` and the app shows it online.
+5. Test ON / OFF from the app. Telemetry every 5 s.
+6. To move a plug to another collector: Remove it in the app first (Forget), or reflash the
+   merged bin.
+
 ## Open items
-- Socket 1.0.1 trips at 50 A (`OVERCURRENT_AMPS`); the AcePlug relay is 10 A. An ESP-NOW socket
-  build needs the 10 A trip / 8 A warn of the LoRa AcePlug firmware before use.
+- 2.5.40 does not show the plug's 8 A warning (Status packets ignored) and shows a lockout as
+  overcurrent. Lockout reset is the plug BOOT button only.
 - Not tested on hardware: range through walls, router channel change, OTA coexistence, heap
   against the TLS gate with ESP-NOW running.

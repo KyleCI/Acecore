@@ -1,5 +1,15 @@
 # Collector firmware changelog
 
+## AcePlug ESP-NOW socket 1.1.0-espnow-event (Caleb 19 Nov 2026 16:19 WAT) - EVENT/DEMO BUILD ONLY
+
+**EVENT/DEMO ONLY. Not for customer units. Keys must rotate before customer builds.** New project `aceplug-espnow-firmware/`, the plug image that pairs with collector 2.5.40 using the same existing reference ESP-NOW keys (compiled in from the local, never-committed `include/espnow_pairing.h`). Build only, not tested on a unit.
+
+- Base: reference socket 1.0.1 (Col PL.zip). Wire format, signing and pairing from the shared `pc_core/espnow_wire.h`, the header in 2.5.40.
+- 10 A trip (15 s auto reclose), 8 A warning (clear 7 A), 3 trips in 5 min lockout (NVS, BOOT button 3 s to clear), 0.70 A noise removal and 0.15 A floor, ON refused while tripped / locked / OTA: ported from the LoRa AcePlug 1.0.3 (537d7f0 lineage). Replaces socket 1.0.1's 50 A trip.
+- Trip and lockout reach 2.5.40 as the v1 overcurrent flag; the 8 A warning goes in an optional Status packet 2.5.40 ignores.
+- AcePlug v0.1 CAD pins: relay IO15, LED IO4, CT IO35, BOOT IO0; RFM95 NSS IO5 held high. No conflicts.
+- Host test `test_aceplug_espnow_110`: plug-signed packets verify with the collector decode and back, thresholds 9.99/10.0 A and 8.0/7.0 A hysteresis, noise, lockout, ini and source wiring.
+
 ## 2.5.40 (ESP-NOW smart sockets on, LoRa off, Caleb 19 Nov 2026 14:31 WAT) - EVENT/DEMO BUILD ONLY
 
 **EVENT/DEMO ONLY. Not for customer units.** Caleb (19 Nov 2026 14:43 WAT): this build uses the existing ESP-NOW keys from his reference so units pair with the existing socket firmware. The keys are compiled into the bins (`POWERCELL_ESPNOW_EVENT_KEYS=1`, from the local, never-committed `include/espnow_pairing.h`; NVS `espnow_keys` overrides them). They must be rotated, and the flag dropped, before any customer build.

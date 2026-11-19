@@ -23,6 +23,7 @@
 #include "lora_socket_proto.h"
 #include "socket_power.h"
 #include "../../smart-socket-firmware/src/trip_lockout.h"
+#include "../../aceplug-espnow-firmware/src/plug_logic.h"
 #include "payment_lock.h"
 #include "hw_output.h"
 #include "ac_output_policy.h"
@@ -3778,6 +3779,62 @@ static void test_espnow_2540() {
   if (h2) fclose(h2); if (h3) fclose(h3);
 }
 
+// AcePlug ESP-NOW 1.1.0-espnow-event (Caleb 19 Nov 2026 16:19 WAT): pairs with collector 2.5.40,
+// 10 A trip / 8 A warn, same wire format (espnow_wire.h) and keys file as the collector.
+static void test_aceplug_espnow_110() {
+  namespace E = pc::espnow;
+  uint8_t key[16]; for (int i = 0; i < 16; ++i) key[i] = uint8_t(0xA0 + i);  // test key only
+  E::Packet out;
+  // Plug -> collector: telemetry the plug builds (tripped, after a brown-out restart) verifies with the collector's decode.
+  E::Packet t; t.type = E::Telemetry; t.session = 0xCAFE0001; t.sequence = 12; t.current = 10.4f; t.relay = 0;
+  t.flags = aceplug::telemetryFlags(false, true, false, 15); t.ackSession = 0xBEEF; t.ackSequence = 3;
+  E::sign(t, key); uint8_t w[44]; memcpy(w, &t, 44);
+  CHECK(E::decode(w, 44, out, key) && out.type == E::Telemetry && out.relay == 0 && out.sequence == 12 && out.current == 10.4f);
+  CHECK((out.flags & E::TelemetryOvercurrent) && !(out.flags & E::TelemetryRejected) && E::restartReason(out.flags) == 15);
+  uint8_t other[16]; memcpy(other, key, 16); other[15] ^= 0x80; CHECK(!E::decode(w, 44, out, other));
+  // Lockout is shown to 2.5.40 as overcurrent (v1 has no lockout bit); rejected command bit.
+  CHECK((aceplug::telemetryFlags(false, false, true, 0) & 0x03) == E::TelemetryOvercurrent);
+  CHECK((aceplug::telemetryFlags(true, false, false, 0) & 0x03) == E::TelemetryRejected);
+  CHECK((aceplug::telemetryFlags(false, false, false, 1) & 0x03) == 0);
+  // Discover from the plug.
+  E::Packet d; d.type = E::Discover; d.session = 77; d.flags = E::PairingSupported | E::AlreadyPaired; E::sign(d, key); memcpy(w, &d, 44);
+  CHECK(E::decode(w, 44, out, key) && out.type == E::Discover && (out.flags & E::PairingSupported) && (out.flags & E::AlreadyPaired));
+  // Collector -> plug: Command / Pair / Forget signed by the collector verify on the plug and pass its acceptance rules.
+  E::Packet c; c.type = E::Command; c.session = 0x1234; c.sequence = 5; c.relay = 1; E::sign(c, key); memcpy(w, &c, 44);
+  CHECK(E::decode(w, 44, out, key) && out.type == E::Command && out.relay == 1 && E::newer(out.sequence, 4));
+  E::Packet pr; pr.type = E::Pair; pr.session = 0x1234; pr.sequence = 1; pr.ackSession = 0xCAFE0001; E::sign(pr, key); memcpy(w, &pr, 44);
+  CHECK(E::decode(w, 44, out, key) && E::acceptsPair(false, false, true, out.session, 0, 0x1234, out.ackSession, 0xCAFE0001, 1200));
+  CHECK(!E::acceptsPair(false, false, true, out.session, 0, 0x1234, out.ackSession, 0xCAFE0002, 1200));  // pair for another socket
+  E::Packet f; f.type = E::Forget; f.session = 0x1234; f.sequence = 9; E::sign(f, key); memcpy(w, &f, 44);
+  CHECK(E::decode(w, 44, out, key) && E::acceptsForget(true, true, false, out.session, 0x1234, out.sequence, 5));
+  // Optional Status packet (2.5.40 decodes and ignores it).
+  E::Packet st; st.type = E::Status; st.session = 1; st.flags = aceplug::statusFlags(true, true, false); E::sign(st, key); memcpy(w, &st, 44);
+  CHECK(E::decode(w, 44, out, key) && (out.flags & E::StatusWarn) && (out.flags & E::StatusLockout) && !(out.flags & E::StatusTripped) && (out.flags & E::StatusHasLimit));
+  // 10 A trip, 8 A warn with 7 A clear.
+  CHECK(aceplug::kTripAmps == 10.0f && aceplug::kWarnAmps == 8.0f && aceplug::kWarnClearAmps == 7.0f && aceplug::kRecloseMs == 15000);
+  CHECK(!aceplug::shouldTrip(9.99f) && aceplug::shouldTrip(10.0f) && aceplug::shouldTrip(25.0f) && !aceplug::shouldTrip(0));
+  CHECK(!aceplug::warnState(false, 7.99f) && aceplug::warnState(false, 8.0f) && aceplug::warnState(true, 7.5f));
+  CHECK(aceplug::warnState(true, 7.0f) && !aceplug::warnState(true, 6.99f) && !aceplug::warnState(false, 7.5f));
+  // Noise removal (1.0.3): idle reads 0, real loads keep their value.
+  CHECK(aceplug::denoise(0.68f) == 0 && aceplug::denoise(0.70f) == 0 && aceplug::denoise(0.71f) == 0 && aceplug::denoise(0.72f) > 0.15f && aceplug::denoise(NAN) == 0 && aceplug::denoise(-1) == 0);
+  CHECK(fabsf(aceplug::denoise(10.0245f) - 10.0f) < 0.001f && aceplug::denoise(10.03f) >= aceplug::kTripAmps && fabsf(aceplug::denoise(1.22f) - 1.0f) < 0.01f);
+  // 3 trips in 5 min latch, a 4th trip outside the window does not.
+  { TripLockout lk; CHECK(!lk.onTrip(0, 10.5f) && !lk.onTrip(60000, 11) && lk.onTrip(120000, 12) && lk.latched() && lk.lastTripAmps() == 12);
+    lk.reset(); CHECK(!lk.latched()); }
+  { TripLockout lk; CHECK(!lk.onTrip(0, 10.5f) && !lk.onTrip(200000, 11) && !lk.onTrip(400000, 12) && !lk.latched()); }
+  // Project wiring: shared wire header and keys file, versions, no private protocol copy, event marking.
+  std::string ini = slurp("../../aceplug-espnow-firmware/platformio.ini"), src = slurp("../../aceplug-espnow-firmware/src/main.cpp");
+  CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"1.1.0-espnow-event\\\"") != std::string::npos);
+  CHECK(ini.find("POWERCELL_FIRMWARE_KIND=\\\"socket\\\"") != std::string::npos && ini.find("-D POWERCELL_ESPNOW_EVENT_KEYS=1") != std::string::npos);
+  CHECK(ini.find("lib_extra_dirs = ../lib") != std::string::npos && ini.find("-I ../include") != std::string::npos && ini.find("EVENT/DEMO") != std::string::npos);
+  CHECK(ini.find("/dev/cu.usbserial-0001") != std::string::npos && ini.find("LoRa@") == std::string::npos);
+  CHECK(src.find("#include \"espnow_wire.h\"") != std::string::npos && src.find("#include \"espnow_pairing.h\"") != std::string::npos);
+  CHECK(src.find("espnow_protocol.h") == std::string::npos && src.find("OVERCURRENT_AMPS = 50") == std::string::npos);
+  CHECK(src.find("RELAY_PIN = 15") != std::string::npos && src.find("LED_PIN = 4") != std::string::npos && src.find("CURRENT_PIN = 35") != std::string::npos && src.find("LORA_NSS_PIN = 5") != std::string::npos);
+  CHECK(src.find("ESPNOW_PAIRING_PLACEHOLDER") != std::string::npos && src.find("EVENT/DEMO") != std::string::npos);
+  FILE *k = fopen("../../aceplug-espnow-firmware/include/espnow_pairing.h", "r"); CHECK(!k); if (k) fclose(k);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -3790,7 +3847,7 @@ int main() {
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
-  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536(); test_dsp_lora_2538(); test_dsp_socket_rules_2539(); test_espnow_2540();
+  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536(); test_dsp_lora_2538(); test_dsp_socket_rules_2539(); test_espnow_2540(); test_aceplug_espnow_110();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }
