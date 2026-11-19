@@ -3727,6 +3727,7 @@ static void test_espnow_2540() {
   char buf[16384]; CHECK(ini.size() < sizeof buf);
   memcpy(buf, ini.c_str(), ini.size() + 1);
   CHECK(ini.find("socket_link =\n    -D FEATURE_LORA=0\n    -D FEATURE_ESPNOW_SOCKETS=1\n") != std::string::npos);
+  CHECK(ini.find("-D POWERCELL_ESPNOW_EVENT_KEYS=1") != std::string::npos && ini.find("EVENT/DEMO ONLY") != std::string::npos);
   CHECK(ini.find("socket_link_lora =\n    -D FEATURE_LORA=1\n    -D FEATURE_ESPNOW_SOCKETS=0\n") != std::string::npos);
   for (const char *env : {"esp32dev_dsp011_5kw", "esp32dev_dsp011_35kw", "esp32dev_dsp011_15kw",
                           "esp32dev_stm01_5kw", "esp32dev_stm01_35kw", "esp32dev_stm01_15kw"}) {
@@ -3742,7 +3743,17 @@ static void test_espnow_2540() {
   std::string en = slurp("../../src/sockets/sockets_espnow.cpp"), lo = slurp("../../src/sockets/sockets_lora.cpp");
   CHECK(lo.find("#if FEATURE_LORA_SOCKETS") != std::string::npos);  // LoRa kept in the tree
   CHECK(en.find("#if FEATURE_ESPNOW_SOCKETS") != std::string::npos);
-  CHECK(en.find("espnow_keys.h") == std::string::npos && en.find("espnow_pairing.h") == std::string::npos);  // no key headers
+  CHECK(en.find("espnow_keys.h") == std::string::npos);
+  // Event keys: local header only behind POWERCELL_ESPNOW_EVENT_KEYS, NVS keys win, values never logged.
+  size_t ek = en.find("#if POWERCELL_ESPNOW_EVENT_KEYS"), inc = en.find("#include \"espnow_pairing.h\"");
+  CHECK(ek != std::string::npos && inc != std::string::npos && ek < inc);
+  size_t nv = en.find("settings::espnowKeys(g_pmk, g_lmk, g_auth)"), mc = en.find("memcpy(g_pmk, ESPNOW_PMK, 16)");
+  CHECK(nv != std::string::npos && mc != std::string::npos && nv < mc);
+  CHECK(en.find("#error \"include/espnow_pairing.h is still the placeholder") != std::string::npos);
+  std::string gi = slurp("../../.gitignore");
+  CHECK(gi.find("include/espnow_pairing.h\n") != std::string::npos && gi.find("include/secrets.h\n") != std::string::npos);
+  std::string exh = slurp("../../include/espnow_pairing.h.example");
+  CHECK(exh.find("#define ESPNOW_PAIRING_PLACEHOLDER 1") != std::string::npos);
   CHECK(en.find("settings::espnowKeys(g_pmk, g_lmk, g_auth)") != std::string::npos);
   // Same app API as LoRa: power keys, cmd_id / desired / pending, change push, transport name.
   size_t pda = en.find("bool populateDeviceArray(JsonArray &array) {");
@@ -3762,9 +3773,9 @@ static void test_espnow_2540() {
   // Factory example ships an empty ESPNOW_KEYS and no real key headers live in the tree.
   std::string ex = slurp("../../tools/factory_state/factory.env.example");
   CHECK(ex.find("\nESPNOW_KEYS=\n") != std::string::npos);
-  FILE *h1 = fopen("../../include/espnow_pairing.h", "r"), *h2 = fopen("../../src/sockets/espnow_keys.h", "r"), *h3 = fopen("../../include/secrets.h", "r");
-  CHECK(!h1 && !h2 && !h3);
-  if (h1) fclose(h1); if (h2) fclose(h2); if (h3) fclose(h3);
+  FILE *h2 = fopen("../../src/sockets/espnow_keys.h", "r"), *h3 = fopen("../../include/secrets.h", "r");
+  CHECK(!h2 && !h3);  // include/espnow_pairing.h may exist locally for the event build (gitignored)
+  if (h2) fclose(h2); if (h3) fclose(h3);
 }
 
 int main() {

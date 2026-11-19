@@ -29,6 +29,19 @@
 #include "../offline_queue.h"
 #include "../settings.h"
 #include "espnow_wire.h"
+// 2.5.40 EVENT/DEMO images (Caleb 19 Nov 2026 14:43 WAT): the reference fleet keys are compiled in as
+// the default when NVS espnow_keys is not set, so units pair with the existing socket 1.0.1 builds.
+// The header is local only (gitignored, never zipped). NOT for customer units: rotate the keys first.
+#if POWERCELL_ESPNOW_EVENT_KEYS
+#if !__has_include("espnow_pairing.h")
+#error "POWERCELL_ESPNOW_EVENT_KEYS=1 needs the local include/espnow_pairing.h (see include/espnow_pairing.h.example)"
+#endif
+#include "espnow_pairing.h"
+#ifdef ESPNOW_PAIRING_PLACEHOLDER
+#error "include/espnow_pairing.h is still the placeholder; put the fleet keys in it"
+#endif
+static_assert(sizeof(ESPNOW_PMK) == 16 && sizeof(ESPNOW_LMK) == 16 && sizeof(ESPNOW_AUTH_KEY) == 16, "ESP-NOW keys are 16 bytes");
+#endif
 
 namespace W = pc::espnow;
 
@@ -335,6 +348,13 @@ bool queueCommand(String id, bool turnOn) {
 
 void socketsInit() {
   g_keysLoaded = settings::espnowKeys(g_pmk, g_lmk, g_auth);
+#if POWERCELL_ESPNOW_EVENT_KEYS
+  if (!g_keysLoaded) {  // NVS keys win; otherwise the built-in event/demo keys (values never logged)
+    memcpy(g_pmk, ESPNOW_PMK, 16); memcpy(g_lmk, ESPNOW_LMK, 16); memcpy(g_auth, ESPNOW_AUTH_KEY, 16);
+    g_keysLoaded = true;
+    LOGW("ESPNOW", "EVENT_KEYS", "EVENT/DEMO build: built-in ESP-NOW keys in use (NVS espnow_keys not set); not for customer units");
+  }
+#endif
   if (!g_keysLoaded) LOGW("ESPNOW", "NO_KEYS", "ESP-NOW keys not provisioned (SET espnow_keys <96 hex>); smart sockets off");
   dataMutex = xSemaphoreCreateMutex();
   socketsMutex = xSemaphoreCreateMutex();

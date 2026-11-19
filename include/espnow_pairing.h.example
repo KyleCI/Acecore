@@ -1,0 +1,11 @@
+// Placeholder. Copy to include/espnow_pairing.h (gitignored, never committed, never zipped) and put
+// the fleet ESP-NOW keys in it. Only needed for builds with POWERCELL_ESPNOW_EVENT_KEYS=1
+// (2.5.40 EVENT/DEMO images): the keys become the built-in default when NVS espnow_keys is not set.
+// The AcePlug ESP-NOW firmware must be built with the same three keys.
+#pragma once
+#include <stdint.h>
+inline constexpr uint8_t ESPNOW_COLLECTOR_MAC[6] = {0, 0, 0, 0, 0, 0};  // unused by the collector
+inline constexpr uint8_t ESPNOW_PMK[16] = {0};       // 16 bytes
+inline constexpr uint8_t ESPNOW_LMK[16] = {0};       // 16 bytes
+inline constexpr uint8_t ESPNOW_AUTH_KEY[16] = {0};  // 16 bytes
+#define ESPNOW_PAIRING_PLACEHOLDER 1  // delete this line in the real header
