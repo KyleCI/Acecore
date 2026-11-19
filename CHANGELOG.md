@@ -1,5 +1,60 @@
 # Collector firmware changelog
 
+## 2.5.39 (socket rules on the DSP images, Caleb 19 Nov 2026 01:12 WAT)
+
+On top of 2.5.38 (81317c1), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit.
+
+- **Per-socket rules pass on DSP.** `socketcfg::pass` (safety backup monitor, SoC shed, inverter overload, cloud override, Manual-mode schedules, Day/Night, SET_LIMIT retries, load_shed / mode_fallback events) now runs every 2 s on the three DSP images, the same engine and timing as STM. Socket schedules set from the app (Manual mode) now fire on DSP units.
+- **DSP inputs** (`pc::sock::dspInputs`, host tested): SoC from the JK-PB BMS (fresh sample only, 0..100 %, else invalid and SoC shedding pauses as on STM); grid present from GPIO39 grid sense (unknown = down, as STM); latch = the 10 % battery latch (`outputLatched()`), not the boot hold, so sockets are not switched off at every boot before the first BMS frame; inverter overload = PZEM AC-output warning or AC-limit shutdown.
+- **Low-power radio duty on DSP** as STM: while the 10 % battery latch is set, Wi-Fi max modem sleep and the LoRa listen duty cycle (`[PWR][LOW_POWER_ON]`, `[LORA][SLEEP]/[WAKE]`).
+- **Schedule clock.** `pc::clk::scheduleClockValid`: NTP or phone time always; on DSP also the DS3231 RTC (read once at boot, accepted only when coherent: OSF clear, valid calendar, 2023..2100, and only ever written from NTP/phone time). The NVS last-good restore and no time never run a schedule. Local time uses the saved tz (default WAT +60).
+- **No schedule action on invalid time.** With an invalid clock schedules pause (no on/off), and a running schedule is held: the inverse "window ended" action is not sent until the clock is valid again (`holdForInvalidClock`). Applies to STM too.
+- New log line when a schedule decision changes: `[SOCK][SCHEDULE] socket=<id> want=on|off at HH:MM wday=N clock=ntp|phone|rtc`.
+- DSP `power_guard` JSON adds `low_power`, `soc`, `wifi_ps`, `priority_source`, `inverter_overload`, `grid_down`, `socket_rules_latched`, `shed_sockets`.
+- Unchanged: GPIO15 inverter behaviour (the DSP socket block reads only, never calls gateway), socket trip 10 A / warn 8 A, JK-PB active, JBD compiled out, ESP-NOW off.
+- Host test `test_dsp_socket_rules_2539`.
+
+## 2.5.38 (LoRa on the DSP images, Caleb 18 Nov 2026 18:08 WAT)
+
+On top of 2.5.37 (5dbba16) plus a merge of `cursor/factory-flash-tool` (0474688, tools only), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit.
+
+- **LoRa on DSP v0.1.1.** Caleb: every board, DSP included, has the SX1278 LoRa module fitted. The three DSP envs now build with `FEATURE_LORA=1` (so `FEATURE_LORA_SOCKETS=1`); the `#error "hardware v0.1.1 is not fitted with LoRa"` in config.h is gone.
+- **Pins (no remap).** Same LoRa header pins as the STM boards: shared SPI SCK 18 / MISO 19 / MOSI 23, LoRa CS IO4, RESET IO26, DIO0 not wired (polled RX). The DSP SD card keeps its own CS IO5 on the same bus. New compile-time checks in pins.h: LoRa CS and RESET are not any DSP pin (BMS 17/16, PZEM 35/32, GPIO15 inverter enable, LEDs 13/12/14, front light 27, NTC 33, fan 25, grid sense 39, I2C 21/22, SPI 18/19/23, SD CS 5). IO4 and IO26 are not used by anything else in the DSP firmware. Not checked against a DSP v0.1.1 schematic: that the DSP board routes the LoRa header to IO4 / IO26 is taken from the collector header map.
+- **Shared SPI bus.** periph::begin() drives SD CS (IO5) and LoRa CS (IO4) HIGH before `SPI.begin(18, 19, 23)`, then brings up LoRa under the SPI mutex. The DSP SD card is mounted later by hwLogStart() under the same mutex, and every LoRa and SD access takes that mutex.
+- **Sockets on DSP.** `sockets[]` in telemetry, `/metrics`, `/sockets`, `/data` and console `SOCKETS` now list paired LoRa sockets. Socket voltage and VA use the PZEM-004T v3 AC output voltage (`stm32link::status()` on DSP), floor 0.2 A as 2.5.37. Cloud socket commands and local `/relay` are no longer rejected with `lora_not_fitted` on DSP.
+- **Serial monitor.** On boot a DSP unit now prints `[LORA] INIT 433 MHz SF9 cs=4 rst=26 (polling)` and `[LORA] SOCKETS_READY 433 MHz sync 0xF1 polled RX`, or `[LORA] INIT SX127x not answering` and `[LORA] SOCKETS_OFF ...` if the radio does not answer.
+- **Not on DSP yet:** the per-socket rules pass (`socketcfg::pass`: SoC shed, schedules, cloud override, low-power radio duty) still runs only in the STM power_guard path. DSP sockets read and switch, and the socket's own 10 A trip / 8 A warn apply.
+- Unchanged: JK-PB on all six images (JBD compiled out), ESP-NOW off, LoRa packet format, socket firmware.
+- Host test `test_dsp_lora_2538`; `check_dsp_bms` compiles with `FEATURE_LORA=1` like the images.
+
+## 2.5.37 (socket noise floor 0.2 A, Caleb 18 Nov 2026 17:02 WAT)
+
+On top of 2.5.36 (1529379), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit. New version number because 2.5.36 was already built and delivered with the 0.1 A floor, and OTA compares versions.
+
+- Socket power noise floor raised from 0.1 A to 0.2 A (`pc::sockpower::kNoiseFloorA`): below 0.2 A `apparent_power_va` and `current_usage_watts` are 0 VA, so the idle CT reading (about 0.15 A) no longer shows about 35 VA with nothing plugged in. `current` is still reported as measured. The smallest non-zero power is now about 46 VA at 230 V.
+- Everything else as 2.5.36: JK-PB on all six images, voltage window 10 s, warn/trip amps based (10 A / 8 A), LoRa packet format, socket firmware and ESP-NOW (off) unchanged.
+- Host test `test_socket_power_2536` checks the 0.2 A floor (0.15 A and 0.199 A give 0 VA, 0.2 A gives 46 VA at 230 V).
+
+## 2.5.36 (LoRa smart-socket power, V x I, Caleb 18 Nov 2026)
+
+On top of 2.5.35 (ad90eb0), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit.
+
+**BMS back to JK-PB (Caleb 18 Nov 2026 16:51 WAT).** All six envs select JK-PB exactly as 2.5.33: no `${common.bms_jbd}`, DSP envs `DSP_BMS_JKPB=1`, JK-PB 115200 8N1 listen-only on Serial2 ESP RX GPIO17 / TX GPIO16 (STM and DSP). The env build flags are the 2.5.33 flags with only the version changed. The 2.5.35 JBD poller and its fixes are kept intact and compiled out; select it again with `${common.bms_jbd}` (and `DSP_BMS_JKPB=0` on DSP).
+- JK images behave as 2.5.33: `pc::jk::Data` defaults `tempCount` 2, `hasMosTemp` and `hasSoh` true, so `soh`, `mos_temperature`, `bms_mos_temperature`, `temperature`/`temperatures` are published as before (only the JBD path nulls them). JK alarm bits 0..23 map to the same events; bits 24..26 stay unnamed in JK images. Console INFO prints `bms=JK-PB baud=115200 rx=17 tx=16` (2.5.35 also prints it on STM images, 2.5.33 only on DSP). Small 2.5.35 carry-overs that also apply to JK: `cell_min_v`/`cell_max_v` are null instead of 65.535/0 when no cell list has arrived, and SELFTEST adds `alarm_bits`.
+- `test_dsp_bms_select` now requires JK-PB in all six envs (no `${common.bms_jbd}`, no `POWERCELL_BMS_JBD`, DSP `DSP_BMS_JKPB=1`) and checks the JK defaults and alarm names. `jbd_host_tests` and the `check_dsp_bms` compile checks still cover the JBD option.
+
+**LoRa smart-socket power.** Collector side only: the LoRa packet format, the socket firmware and ESP-NOW (`FEATURE_ESPNOW_SOCKETS` stays 0) are unchanged.
+
+- Every paired socket in `populateDeviceArray()` (so WS telemetry `sockets[]`, `/metrics`, `/sockets`, `/data`, console `SOCKETS`) gains `voltage`, `voltage_source` (`"collector_output"`), `apparent_power_va`, `power_quantity` (`"apparent_va"`) and `current_usage_watts` (same number as `apparent_power_va`, the key the app and backend already read).
+- Power = collector AC output voltage x socket current. Voltage: STM, the STM32 status `vout`; DSP, the PZEM-004T v3 AC voltage (`stm32link::status()`). The sample must be fresh: no older than 10 s (`pc::sockpower::kVoltageFreshMs`), and the existing rules still apply (STM32 status under `STM32_STALE_MS` = 6 s, PZEM sample under 2 s). Stale, missing or implausible (outside 0..300 V) voltage: `voltage`, `apparent_power_va` and `current_usage_watts` are null. An offline socket keeps `voltage` but its power is null. 0 V (inverter output off) is a real reading and gives 0 VA.
+- Noise floor 0.1 A (raised to 0.2 A in 2.5.37): below it the power is 0 VA. `current` is still reported as measured (the CT reads about 0.15 A idle on some units, so expect up to about 35 VA with nothing plugged in; raise the floor if Caleb sees that on a unit).
+- **V x I is apparent power (VA), not real watts.** It matches real watts only for resistive loads (kettle, iron, heater, bulb). For motors, fridges, fans, phone and laptop chargers and other electronics it overstates the real watts (real W = VA x power factor). Labelled as such in the data.
+- Warnings and trips are unchanged and stay current based (amps): socket 10 A trip / 8 A warn, socket config limits, `socket_warn_8a` / `socket_tripped_10a`.
+- The compact `/data` snapshot copy (used when the 4 KB snapshot drops `metrics.sockets`) keeps the five power keys too (`pc::sockpower::kCompactSnapshotKeys`).
+- The offline queue `socket_state` entry carries only the socket id and the requested state, no readings, so it is unchanged.
+- DSP images have no LoRa (stub transport, no paired sockets), so their `sockets[]` stays empty; the stub is unchanged.
+- Host test `test_socket_power_2536`: math, noise floor, stale/implausible voltage, offline socket, JSON keys, compact snapshot keys, voltage read before `dataMutex`, ESP-NOW still off.
+
 ## 2.5.35 (JBD BMS on every image, Caleb 18 Nov 2026)
 
 On top of 2.5.33 (25223cf), branch `cursor/jbd-bms-2535`. 2.5.34 (b3f1e0a, GPIO15 momentary power-key press) is NOT in this build; Caleb set the power-button change aside. 2.5.34 stays reserved for that build. Six product images. Build only, not tested on a unit.

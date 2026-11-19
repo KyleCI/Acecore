@@ -74,9 +74,9 @@
 #if POWERCELL_DSP011 && FEATURE_STM32
 #error "hardware v0.1.1 is not connected to an STM32"
 #endif
-#if POWERCELL_DSP011 && FEATURE_LORA
-#error "hardware v0.1.1 is not fitted with LoRa"
-#endif
+// 2.5.38 (Caleb 18 Nov 2026 18:08 WAT): every board, DSP v0.1.1 included, has the SX1278 LoRa
+// module fitted. DSP images build with FEATURE_LORA=1: same header pins as the STM boards
+// (shared SPI 18/19/23, LoRa CS IO4, RESET IO26, DIO0 not used), SD keeps its own CS IO5.
 // BMS driver (2.5.35). One selector for every board:
 //   POWERCELL_BMS_JBD=1 -> JBD / Xiaoxiang UART poller at JBD_BMS_BAUD (9600 8N1), Serial2 RX17/TX16.
 //   POWERCELL_BMS_JBD=0 -> JK-PB 300-byte stream listener at JK_BMS_BAUD (115200 8N1), Serial2 RX17/TX16.

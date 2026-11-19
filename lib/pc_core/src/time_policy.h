@@ -21,6 +21,14 @@ inline Verdict judge(int64_t epoch, int64_t now, Source src, bool ntpFresh) {
   int64_t d = epoch - now; if (d < 0) d = -d;
   return d > kMaxSkewS ? Verdict::Accept : Verdict::InSync;
 }
+// 2.5.39: clock good enough to run socket schedules. NTP and phone time always; the DS3231 RTC
+// only where it is fitted and trusted (DSP v0.1.1): it is read once at boot, only accepted when
+// coherent (OSF clear, valid calendar) and is only ever written from NTP or phone time. The NVS
+// last-good restore is stale by the downtime and never runs a schedule. Epoch must be 2023..2100.
+inline bool scheduleClockValid(Source s, int64_t epoch, bool rtcTrusted) {
+  if (epoch < kMinEpoch || epoch > kMaxEpoch) return false;
+  return s == Source::Ntp || s == Source::Phone || (rtcTrusted && s == Source::Rtc);
+}
 inline const char *verdictName(Verdict v) {
   switch (v) { case Verdict::Accept: return "applied"; case Verdict::InSync: return "clock_in_sync";
     case Verdict::NtpAuthoritative: return "ntp_authoritative"; default: return "invalid_epoch"; }

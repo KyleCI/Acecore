@@ -49,3 +49,10 @@ bool takeSocketsChanged();
 bool socketCommandInfo(String deviceId, bool &desired, bool &pending, String &cmdId);
 bool populateDeviceArray(JsonArray &arr);
 void populateDiscoveredSockets(JsonArray &array);
+
+// 2.5.36: socket power = collector AC output voltage x socket current (APPARENT power, VA).
+// See pc_core/socket_power.h. Read the voltage once, outside dataMutex, then add the power keys
+// (voltage, voltage_source, apparent_power_va, power_quantity, current_usage_watts) per socket.
+struct SocketVoltage { bool fresh = false; float volts = 0; };
+SocketVoltage socketsCollectorVoltage();
+void socketPowerToJson(JsonObject o, bool socketFresh, float socketAmps, const SocketVoltage &v);

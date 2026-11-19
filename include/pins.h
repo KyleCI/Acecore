@@ -149,4 +149,19 @@ static_assert(PIN_FAN != PIN_PWR_KEY && PIN_FAN != PIN_FRONT_LIGHT && PIN_FAN !=
               PIN_FAN != PIN_DSP_SD_CS && PIN_FAN != PIN_I2C_SDA && PIN_FAN != PIN_I2C_SCL && PIN_FAN != PIN_SPI_SCK &&
               PIN_FAN != PIN_SPI_MISO && PIN_FAN != PIN_SPI_MOSI, "fan pin is not shared");
 static_assert(PIN_I2C_SDA == 21 && PIN_I2C_SCL == 22, "DS3231 stays on I2C 21/22");
+// 2.5.38: LoRa on DSP. Shared SPI bus with the SD card, separate chip selects.
+#if FEATURE_LORA
+static_assert(PIN_LORA_CS == 4 && PIN_LORA_RST == 26 && PIN_LORA_DIO0 == -1, "DSP LoRa: CS IO4, RST IO26, polled (no DIO0)");
+static_assert(PIN_LORA_CS != PIN_DSP_SD_CS, "LoRa and SD need separate chip selects");
+static_assert(PIN_LORA_CS != PIN_BMS_RX && PIN_LORA_CS != PIN_BMS_TX && PIN_LORA_CS != PIN_PZEM_RX && PIN_LORA_CS != PIN_PZEM_TX &&
+              PIN_LORA_CS != PIN_PWR_KEY && PIN_LORA_CS != PIN_LED_RED && PIN_LORA_CS != PIN_LED_ORANGE && PIN_LORA_CS != PIN_LED_GREEN &&
+              PIN_LORA_CS != PIN_FRONT_LIGHT && PIN_LORA_CS != PIN_NTC && PIN_LORA_CS != PIN_FAN && PIN_LORA_CS != PIN_GRID_SENSE &&
+              PIN_LORA_CS != PIN_I2C_SDA && PIN_LORA_CS != PIN_I2C_SCL && PIN_LORA_CS != PIN_SPI_SCK && PIN_LORA_CS != PIN_SPI_MISO &&
+              PIN_LORA_CS != PIN_SPI_MOSI, "DSP LoRa CS IO4 is not shared");
+static_assert(PIN_LORA_RST != PIN_BMS_RX && PIN_LORA_RST != PIN_BMS_TX && PIN_LORA_RST != PIN_PZEM_RX && PIN_LORA_RST != PIN_PZEM_TX &&
+              PIN_LORA_RST != PIN_PWR_KEY && PIN_LORA_RST != PIN_LED_RED && PIN_LORA_RST != PIN_LED_ORANGE && PIN_LORA_RST != PIN_LED_GREEN &&
+              PIN_LORA_RST != PIN_FRONT_LIGHT && PIN_LORA_RST != PIN_NTC && PIN_LORA_RST != PIN_FAN && PIN_LORA_RST != PIN_GRID_SENSE &&
+              PIN_LORA_RST != PIN_I2C_SDA && PIN_LORA_RST != PIN_I2C_SCL && PIN_LORA_RST != PIN_SPI_SCK && PIN_LORA_RST != PIN_SPI_MISO &&
+              PIN_LORA_RST != PIN_SPI_MOSI && PIN_LORA_RST != PIN_DSP_SD_CS, "DSP LoRa RESET IO26 is not shared");
+#endif
 #endif

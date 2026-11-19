@@ -21,6 +21,7 @@
 #include "events_json.h"
 #include "offline_policy.h"
 #include "lora_socket_proto.h"
+#include "socket_power.h"
 #include "../../smart-socket-firmware/src/trip_lockout.h"
 #include "payment_lock.h"
 #include "hw_output.h"
@@ -2875,17 +2876,34 @@ static void test_dsp_bms_select() {
   }
   CHECK(got);
   if (!got) return;
-  // 2.5.35 (Caleb 18 Nov): all six images poll a JBD BMS. DSP envs state DSP_BMS_JKPB=0 explicitly.
+  // 2.5.36 (Caleb 18 Nov 16:51 WAT): all six images are back on JK-PB, exactly as 2.5.33.
+  // The JBD poller stays selectable through ${common.bms_jbd} but no env uses it.
   CHECK(strstr(buf, "bms_jbd =\n    -D POWERCELL_BMS_JBD=1") != nullptr);
   for (const char *env : {"esp32dev_dsp011_5kw", "esp32dev_dsp011_35kw", "esp32dev_dsp011_15kw"}) {
-    CHECK(flag_in_env(buf, env, "DSP_BMS_JKPB=0"));
-    CHECK(!flag_in_env(buf, env, "DSP_BMS_JKPB=1"));
-    CHECK(flag_in_env(buf, env, "${common.bms_jbd}"));
+    CHECK(flag_in_env(buf, env, "DSP_BMS_JKPB=1"));
+    CHECK(!flag_in_env(buf, env, "DSP_BMS_JKPB=0"));
+    CHECK(!flag_in_env(buf, env, "${common.bms_jbd}"));
+    CHECK(!flag_in_env(buf, env, "POWERCELL_BMS_JBD"));
   }
   for (const char *env : {"esp32dev_stm01_5kw", "esp32dev_stm01_35kw", "esp32dev_stm01_15kw"}) {
     CHECK(!flag_in_env(buf, env, "DSP_BMS_JKPB"));
-    CHECK(flag_in_env(buf, env, "${common.bms_jbd}"));
+    CHECK(!flag_in_env(buf, env, "${common.bms_jbd}"));
+    CHECK(!flag_in_env(buf, env, "POWERCELL_BMS_JBD"));
   }
+  // JK-PB images (this test binary is built like them, without POWERCELL_BMS_JBD): JK behaviour
+  // as 2.5.33. Fields default present (2 NTCs, MOS temperature, SOH), bits 24..26 unnamed,
+  // and the alarm map of the JK bits is unchanged.
+  CHECK(POWERCELL_BMS_JKPB == 1 && JK_BMS_BAUD == 115200);
+  {
+    pc::jk::Data jd;
+    CHECK(jd.tempCount == 2 && jd.hasMosTemp && jd.hasSoh);
+    CHECK(pc::jk::alarmName(24) == nullptr && pc::jk::alarmName(25) == nullptr && pc::jk::alarmName(26) == nullptr);
+    CHECK(!strcmp(pc::jk::alarmName(1), "mos_overtemp") && !strcmp(pc::jk::alarmName(8), "charge_overtemp"));
+    CHECK(!strcmp(pc::jk::alarmName(15), "discharge_overtemp") && !strcmp(pc::jk::alarmName(21), "battery_overtemp"));
+  }
+  std::string con = slurp("../../src/console.cpp"), tel = slurp("../../src/telemetry.cpp");
+  CHECK(con.find("POWERCELL_BMS_JKPB ? \"JK-PB\" : \"JBD\"") != std::string::npos);  // INFO: bms=JK-PB baud=115200 rx=17 tx=16
+  CHECK(tel.find("if (d.hasSoh) b[\"soh\"] = d.soh;") != std::string::npos && tel.find("if (d.hasMosTemp) b[\"mos_temperature\"] = d.mosTempC;") != std::string::npos);
 }
 
 static void test_live_grid() {  // grid_available as an input to live source/status
@@ -3162,7 +3180,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.35" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.39" && !s35.found());
   }
 }
 
@@ -3478,7 +3496,7 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(ini.find("POWERCELL_FACTORY_VARIANT=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_RATED_ACTIVE_W=1500") != std::string::npos);
   CHECK(count_of(ini, "[env:esp32dev_") == 6);
-  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.35\\\"") == 6);  // 2.5.35 JBD build; 2.5.34 reserved
+  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.39\\\"") == 6);  // 2.5.39 DSP socket rules, 2.5.38 LoRa on DSP (2.5.37 floor 0.2 A); 2.5.34 reserved
   CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") == std::string::npos);
   // The STM 15kw image carries no factory rating, like the other STM images.
   char buf[16384]; CHECK(ini.size() < sizeof buf);
@@ -3501,6 +3519,169 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(up.find("\"pc-dsp011-15kw\"") != std::string::npos && up.find("\"pc-stm01-15kw\"") != std::string::npos);
 }
 
+
+// 2.5.36 (Caleb 18 Nov 2026): LoRa socket power = collector output voltage x socket current (VA).
+static void test_socket_power_2536() {
+  using namespace pc::sockpower;
+  // Math: 230 V x 2 A = 460 VA, 0.1 VA resolution.
+  Result r = compute(true, 2.0f, true, 230.0f);
+  CHECK(r.hasVoltage && r.hasPower);
+  NEAR(r.voltage, 230.0f, 1e-4); NEAR(r.apparentVa, 460.0f, 1e-3);
+  r = compute(true, 0.437f, true, 228.4f); NEAR(r.apparentVa, 99.8f, 1e-3);
+  r = compute(true, 10.0f, true, 240.0f); NEAR(r.apparentVa, 2400.0f, 1e-3);
+  // Noise floor (2.5.37, Caleb 18 Nov 17:02 WAT): below 0.2 A is 0 VA (was 0.1 A in 2.5.36).
+  // Current itself is sent as measured by the caller.
+  CHECK(kNoiseFloorA == 0.20f);
+  r = compute(true, 0.099f, true, 230.0f); CHECK(r.hasPower); NEAR(r.apparentVa, 0.0f, 1e-6);
+  r = compute(true, 0.15f, true, 230.0f); CHECK(r.hasPower); NEAR(r.apparentVa, 0.0f, 1e-6);  // idle CT: no phantom VA
+  r = compute(true, 0.199f, true, 230.0f); NEAR(r.apparentVa, 0.0f, 1e-6);
+  r = compute(true, 0.20f, true, 230.0f); NEAR(r.apparentVa, 46.0f, 1e-3);
+  r = compute(true, 0.25f, true, 230.0f); NEAR(r.apparentVa, 57.5f, 1e-3);
+  NEAR(effectiveCurrent(0.05f), 0.0f, 1e-6); NEAR(effectiveCurrent(0.15f), 0.0f, 1e-6);
+  NEAR(effectiveCurrent(0.2f), 0.2f, 1e-6); NEAR(effectiveCurrent(3.5f), 3.5f, 1e-6);
+  CHECK(effectiveCurrent(-0.2f) < 0 && effectiveCurrent(NAN) < 0);
+  // Stale / missing voltage -> voltage and power null.
+  CHECK(voltageFresh(true, 0) && voltageFresh(true, kVoltageFreshMs) && !voltageFresh(true, kVoltageFreshMs + 1));
+  CHECK(!voltageFresh(false, 0) && kVoltageFreshMs == 10000);
+  r = compute(true, 2.0f, false, 230.0f); CHECK(!r.hasVoltage && !r.hasPower);
+  r = compute(true, 2.0f, voltageFresh(true, 12000), 230.0f); CHECK(!r.hasVoltage && !r.hasPower);
+  // Implausible voltage -> null. 0 V (inverter output off) is a real reading: 0 VA.
+  CHECK(!compute(true, 2.0f, true, NAN).hasVoltage && !compute(true, 2.0f, true, 400.0f).hasVoltage);
+  CHECK(!compute(true, 2.0f, true, -1.0f).hasPower);
+  r = compute(true, 2.0f, true, 0.0f); CHECK(r.hasVoltage && r.hasPower); NEAR(r.apparentVa, 0.0f, 1e-6);
+  // Offline socket or bad current: voltage still shown, power null.
+  r = compute(false, 2.0f, true, 230.0f); CHECK(r.hasVoltage && !r.hasPower);
+  r = compute(true, -1.0f, true, 230.0f); CHECK(r.hasVoltage && !r.hasPower);
+  // JSON keys (sockets[] in WS telemetry, /metrics, /data, /sockets all come from populateDeviceArray).
+  {
+    std::vector<std::pair<std::string, std::string>> kv; kv.reserve(16); FakeJson j{&kv};
+    powerFieldsTo(j, compute(true, 2.0f, true, 230.0f));
+    CHECK(j.get("voltage") == "f:230.0" && j.get("voltage_source") == "s:collector_output");
+    CHECK(j.get("apparent_power_va") == "f:460.0" && j.get("current_usage_watts") == "f:460.0");
+    CHECK(j.get("power_quantity") == "s:apparent_va" && kv.size() == 5);
+    std::vector<std::pair<std::string, std::string>> kv2; kv2.reserve(16); FakeJson j2{&kv2};
+    powerFieldsTo(j2, compute(true, 2.0f, false, 0.0f));
+    CHECK(j2.get("voltage") == "null" && j2.get("apparent_power_va") == "null" && j2.get("current_usage_watts") == "null");
+    CHECK(j2.get("voltage_source") == "s:collector_output" && j2.get("power_quantity") == "s:apparent_va");
+  }
+  // Compact /data snapshot keeps the power keys next to the old ones.
+  auto inCompact = [](const char *k) { for (size_t i = 0; i < kCompactSnapshotKeyCount; ++i) if (!strcmp(kCompactSnapshotKeys[i], k)) return true; return false; };
+  for (const char *k : {"deviceId", "online", "relayState", "desired", "pending", "cmd_id", "command_status", "name", "configured",
+                        "current", "last_seen_age_ms", "lockout", "rssi", "available_to_pair",
+                        "current_usage_watts", "apparent_power_va", "power_quantity", "voltage", "voltage_source"})
+    CHECK(inCompact(k));
+  CHECK(kCompactSnapshotKeyCount == 19);
+  // Wiring: the LoRa path adds the keys per paired socket, the voltage is read before dataMutex,
+  // /data uses the shared key list, ESP-NOW stays off and the LoRa wire format is unchanged.
+  std::string lora = slurp("../../src/sockets/sockets_lora.cpp"), web = slurp("../../src/web_local.cpp"), cfg = slurp("../../include/config.h");
+  size_t pda = lora.find("bool populateDeviceArray(JsonArray &array) {");
+  CHECK(pda != std::string::npos);
+  size_t vread = lora.find("socketsCollectorVoltage()", pda), mtx = lora.find("xSemaphoreTake(dataMutex", pda);
+  CHECK(vread != std::string::npos && mtx != std::string::npos && vread < mtx);
+  CHECK(lora.find("socketPowerToJson(o, online, d.reading.current, volts)") != std::string::npos);
+  CHECK(web.find("pc::sockpower::kCompactSnapshotKeys") != std::string::npos);
+  CHECK(cfg.find("#define FEATURE_ESPNOW_SOCKETS 0") != std::string::npos);
+  std::string pj = slurp("../../src/sockets/socket_power_json.cpp");
+  CHECK(pj.find("pc::sockpower::voltageFresh(s.has_vout, age)") != std::string::npos && pj.find("STM32_STALE_MS") != std::string::npos);
+  // Warn/trip stay amps-based: the LoRa thresholds are untouched.
+  CHECK(pc::lora::kTripAmps == 10.0f && pc::lora::kWarnAmps == 8.0f);
+  std::string ini = slurp("../../platformio.ini");
+  CHECK(ini.find("FEATURE_ESPNOW_SOCKETS=1") == std::string::npos);
+}
+
+// 2.5.38 (Caleb 18 Nov 2026 18:08 WAT): every board has LoRa, DSP included.
+static void test_dsp_lora_2538() {
+  std::string ini = slurp("../../platformio.ini");
+  char buf[16384]; CHECK(ini.size() < sizeof buf);
+  memcpy(buf, ini.c_str(), ini.size() + 1);
+  for (const char *env : {"esp32dev_dsp011_5kw", "esp32dev_dsp011_35kw", "esp32dev_dsp011_15kw"}) {
+    CHECK(flag_in_env(buf, env, "FEATURE_LORA=1"));
+    CHECK(!flag_in_env(buf, env, "FEATURE_LORA=0"));
+    CHECK(flag_in_env(buf, env, "DSP_BMS_JKPB=1"));       // JK-PB stays active
+    CHECK(!flag_in_env(buf, env, "POWERCELL_BMS_JBD=1"));  // JBD stays compiled out
+  }
+  CHECK(ini.find("FEATURE_LORA=0") == std::string::npos);
+  CHECK(ini.find("FEATURE_ESPNOW_SOCKETS=1") == std::string::npos);
+  std::string cfg = slurp("../../include/config.h");
+  CHECK(cfg.find("hardware v0.1.1 is not fitted with LoRa") == std::string::npos);
+  // Shared SPI: periph drives LoRa CS and SD CS high before SPI.begin, LoRa begins under the SPI mutex.
+  std::string per = slurp("../../src/periph.cpp");
+  size_t cs = per.find("{PIN_DSP_SD_CS, PIN_LORA_CS}"), sb = per.find("SPI.begin(PIN_SPI_SCK"), lb = per.find("lora = loraLinkBegin()");
+  size_t mx = per.find("xSemaphoreTake(g_spi", sb);
+  CHECK(cs != std::string::npos && sb != std::string::npos && lb != std::string::npos && cs < sb && sb < mx && mx < lb);
+  // DSP SD mount is under the same mutex.
+  std::string lg = slurp("../../src/dsp011_log.cpp");
+  size_t tk = lg.find("xSemaphoreTake(periph::spiMutex()"), sd = lg.find("SD.begin(kSdCs");
+  CHECK(tk != std::string::npos && sd != std::string::npos && tk < sd);
+  // Socket commands are accepted on DSP when LoRa sockets are built in.
+  std::string web = slurp("../../src/web_local.cpp"), ws = slurp("../../src/backend_ws.cpp");
+  CHECK(web.find("#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS") != std::string::npos);
+  CHECK(ws.find("#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS") != std::string::npos);
+  // DSP socket voltage is the PZEM sample via stm32link::status().
+  std::string stm = slurp("../../src/stm32_link.cpp");
+  size_t st = stm.find("bool status(Stm32Status &out"), hp = stm.find("hwPzemSample(&v, &a, &w, &energy, &age)", st);
+  CHECK(st != std::string::npos && hp != std::string::npos);
+  // Boot log lines Caleb looks for.
+  std::string ll = slurp("../../src/lora_link.cpp"), sl = slurp("../../src/sockets/sockets_lora.cpp");
+  CHECK(ll.find("LOGI(\"LORA\", \"INIT\"") != std::string::npos && ll.find("LOGE(\"LORA\", \"INIT\", \"SX127x not answering\")") != std::string::npos);
+  CHECK(sl.find("\"SOCKETS_READY\"") != std::string::npos && sl.find("\"SOCKETS_OFF\"") != std::string::npos);
+}
+
+// 2.5.39 (Caleb 19 Nov 2026 01:12 WAT): socket rules pass on DSP.
+static void test_dsp_socket_rules_2539() {
+  using namespace pc::sock;
+  using pc::clk::Source; using pc::clk::scheduleClockValid;
+  const int64_t ok = 1795000000;  // Nov 2026
+  // Schedule clock: NTP/phone always; RTC only when trusted (DSP); NVS restore and None never; epoch range.
+  CHECK(scheduleClockValid(Source::Ntp, ok, false) && scheduleClockValid(Source::Phone, ok, false));
+  CHECK(scheduleClockValid(Source::Rtc, ok, true) && !scheduleClockValid(Source::Rtc, ok, false));
+  CHECK(!scheduleClockValid(Source::Nvs, ok, true) && !scheduleClockValid(Source::None, ok, true));
+  CHECK(!scheduleClockValid(Source::Rtc, 946684800, true) && !scheduleClockValid(Source::Ntp, 0, false));
+  CHECK(!scheduleClockValid(Source::Ntp, pc::clk::kMaxEpoch + 1, false));
+  // DSP inputs.
+  DspRaw r; DspIn i = dspInputs(r);
+  CHECK(!i.socValid && i.gridDown && !i.latched && !i.overload);
+  r.bmsFresh = true; r.bmsSoc = 35; r.gridValid = true; r.gridPresent = true;
+  i = dspInputs(r); CHECK(i.socValid && i.soc == 35 && !i.gridDown);
+  r.bmsSoc = 120; CHECK(!dspInputs(r).socValid);
+  r.bmsSoc = 35; r.gridPresent = false; CHECK(dspInputs(r).gridDown);
+  r.acWarning = true; CHECK(dspInputs(r).overload); r.acWarning = false; r.acShutdown = true; CHECK(dspInputs(r).overload);
+  r.acShutdown = false; r.batteryLatched = true; CHECK(dspInputs(r).latched);
+  // Schedule fires with a valid DSP (RTC) clock, Manual mode.
+  Config c; c.mode = c.lastUserMode = Mode::Manual; c.nSched = 1;
+  c.sched[0].mask = 0x7F; c.sched[0].action = 1; c.sched[0].start = 18 * 60; c.sched[0].end = 23 * 60;
+  State st; In in; in.socValid = true; in.soc = 80; in.gridDown = true; in.cloudUp = true;
+  in.clockSynced = scheduleClockValid(Source::Rtc, ok, true); in.minutes = 18 * 60 + 5; in.wday = 3;
+  Decision d = decide(c, st, in);
+  CHECK(d.want == 1 && d.reason == Reason::Schedule);
+  // Invalid time: no schedule decision, and the running schedule is held (no inverse action).
+  In bad = in; bad.clockSynced = scheduleClockValid(Source::Nvs, ok, true);
+  Decision dn = decide(c, st, bad);
+  CHECK(dn.want == -1 && holdForInvalidClock(d, dn, bad.clockSynced));
+  CHECK(!holdForInvalidClock(d, dn, true));  // valid clock, window ended: inverse action allowed
+  // SoC shed beats the schedule (heavy off at 40 %), from the JK-PB SoC.
+  DspRaw low; low.bmsFresh = true; low.bmsSoc = 30; DspIn li = dspInputs(low);
+  In shed = in; shed.socValid = li.socValid; shed.soc = li.soc; shed.gridDown = li.gridDown;
+  State st2; Decision ds = decide(c, st2, shed);
+  CHECK(ds.want == 0 && ds.reason == Reason::SocHeavy);
+  // Overload from the PZEM warning sheds heavy sockets.
+  In ov = in; ov.overload = dspInputs(DspRaw{true, 80, true, true, false, true, false}).overload;
+  State st3; CHECK(decide(c, st3, ov).reason == Reason::InverterOverload);
+  // Wiring: power_guard runs the pass on DSP with the battery latch and never writes GPIO15 there.
+  std::string pg = slurp("../../src/power_guard.cpp");
+  size_t blk = pg.find("2.5.39: per-socket rules"), end = pg.find("return;", blk);
+  CHECK(blk != std::string::npos && end != std::string::npos);
+  std::string b = pg.substr(blk, end - blk);
+  CHECK(b.find("shedPass(si.latched)") != std::string::npos && b.find("setLowPower(si.latched)") != std::string::npos);
+  CHECK(b.find("g_cutoff.outputLatched()") != std::string::npos && b.find("raw.bmsFresh = reading.valid") != std::string::npos);
+  CHECK(b.find("gateway::") == std::string::npos && b.find("PIN_PWR_KEY") == std::string::npos);
+  std::string sc = slurp("../../src/socket_cfg.cpp");
+  CHECK(sc.find("scheduleClockValid(clock_::source(), (int64_t)time(nullptr), POWERCELL_DSP011 != 0)") != std::string::npos);
+  CHECK(sc.find("holdForInvalidClock(s.last, d, in.clockSynced)") != std::string::npos);
+  CHECK(sc.find("\"SCHEDULE\"") != std::string::npos);
+  CHECK(kTripAmps == 10 && pc::lora::kTripAmps == 10.0f && pc::lora::kWarnAmps == 8.0f);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -3513,7 +3694,7 @@ int main() {
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
-  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533();
+  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536(); test_dsp_lora_2538(); test_dsp_socket_rules_2539();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

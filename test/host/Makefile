@@ -7,7 +7,7 @@ CODEC := ../../src/ds3231_time.cpp ../../src/lagos_time.cpp ../../src/battery_al
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -Wno-missing-field-initializers
 INC := -I$(SRC) -I../../include
 # Same feature flags as the product images, for compile-time BMS selection checks.
-DSP_FLAGS := -DPOWERCELL_DSP011=1 -DFEATURE_STM32=0 -DFEATURE_LORA=0 -DFEATURE_BAT_SENSE_ADC=0 -DDSP_BMS_UART_SWAP=0
+DSP_FLAGS := -DPOWERCELL_DSP011=1 -DFEATURE_STM32=0 -DFEATURE_LORA=1 -DFEATURE_BAT_SENSE_ADC=0 -DDSP_BMS_UART_SWAP=0
 CFGFLAGS := -std=c++17 -Wall -Wextra -Werror -I../../include
 all: run
 host_tests: test_main.cpp $(wildcard $(SRC)/*.cpp) $(wildcard $(SRC)/*.h) $(CODEC)
@@ -16,7 +16,7 @@ host_tests: test_main.cpp $(wildcard $(SRC)/*.cpp) $(wildcard $(SRC)/*.h) $(CODE
 # JBD-only alarm names (bits 24..26) and the events they raise are tested as shipped.
 jbd_host_tests: test_jbd_image.cpp $(wildcard $(SRC)/*.cpp) $(wildcard $(SRC)/*.h) ../../src/jbd_bms.cpp
 	$(CXX) $(CXXFLAGS) -DPOWERCELL_BMS_JBD=1 $(INC) test_jbd_image.cpp $(wildcard $(SRC)/*.cpp) ../../src/jbd_bms.cpp -o $@
-# Compile-only, every DSP rating and STM board, both drivers. 2.5.35 images: JBD 9600 RX17/TX16.
+# Compile-only, every DSP rating and STM board, both drivers. 2.5.36 images: JK-PB 115200 RX17/TX16 (JBD 9600 still checked as selectable).
 check_dsp_bms:
 	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DDSP_BMS_JKPB=1 -DPOWERCELL_FACTORY_RATED_ACTIVE_W=5000 -DEXPECT_DSP_JKPB test_dsp_bms_config.cpp -o check_dsp_bms_5kw
 	$(CXX) $(CFGFLAGS) $(DSP_FLAGS) -DDSP_BMS_JKPB=1 -DPOWERCELL_FACTORY_RATED_ACTIVE_W=3500 -DEXPECT_DSP_JKPB test_dsp_bms_config.cpp -o check_dsp_bms_35kw

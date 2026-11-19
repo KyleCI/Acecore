@@ -9,6 +9,7 @@
 #include "backend_ws.h"
 #include "battery.h"
 #include "config.h"
+#include "socket_power.h"
 #include "gateway.h"
 #include "factory_id.h"
 #include "local_auth.h"
@@ -399,8 +400,7 @@ void sample(bool force) {
     JsonDocument cs; JsonArray ca = cs.to<JsonArray>();
     for (JsonObject o : full) {
       JsonObject x = ca.add<JsonObject>();
-      for (const char *k : {"deviceId", "online", "relayState", "desired", "pending", "cmd_id", "command_status",
-                            "name", "configured", "current", "last_seen_age_ms", "lockout", "rssi", "available_to_pair"})
+      for (const char *k : pc::sockpower::kCompactSnapshotKeys)  // 2.5.36: + power keys
         if (!o[k].isNull()) x[k] = o[k];
     }
     d["metrics"].remove("sockets");
@@ -521,7 +521,7 @@ void begin() {
     json(r, 200, d);
   });
   postRoute("/relay", false, [](AsyncWebServerRequest *r, JsonDocument &doc, Cred) {
-#if POWERCELL_DSP011
+#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS
     fail(r, 409, "lora_not_fitted");  // AcePlug command. GPIO15 is the AC enable and is not written.
     return;
 #endif
