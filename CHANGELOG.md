@@ -1,5 +1,19 @@
 # Collector firmware changelog
 
+## 2.5.39 (socket rules on the DSP images, Caleb 19 Nov 2026 01:12 WAT)
+
+On top of 2.5.38 (81317c1), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit.
+
+- **Per-socket rules pass on DSP.** `socketcfg::pass` (safety backup monitor, SoC shed, inverter overload, cloud override, Manual-mode schedules, Day/Night, SET_LIMIT retries, load_shed / mode_fallback events) now runs every 2 s on the three DSP images, the same engine and timing as STM. Socket schedules set from the app (Manual mode) now fire on DSP units.
+- **DSP inputs** (`pc::sock::dspInputs`, host tested): SoC from the JK-PB BMS (fresh sample only, 0..100 %, else invalid and SoC shedding pauses as on STM); grid present from GPIO39 grid sense (unknown = down, as STM); latch = the 10 % battery latch (`outputLatched()`), not the boot hold, so sockets are not switched off at every boot before the first BMS frame; inverter overload = PZEM AC-output warning or AC-limit shutdown.
+- **Low-power radio duty on DSP** as STM: while the 10 % battery latch is set, Wi-Fi max modem sleep and the LoRa listen duty cycle (`[PWR][LOW_POWER_ON]`, `[LORA][SLEEP]/[WAKE]`).
+- **Schedule clock.** `pc::clk::scheduleClockValid`: NTP or phone time always; on DSP also the DS3231 RTC (read once at boot, accepted only when coherent: OSF clear, valid calendar, 2023..2100, and only ever written from NTP/phone time). The NVS last-good restore and no time never run a schedule. Local time uses the saved tz (default WAT +60).
+- **No schedule action on invalid time.** With an invalid clock schedules pause (no on/off), and a running schedule is held: the inverse "window ended" action is not sent until the clock is valid again (`holdForInvalidClock`). Applies to STM too.
+- New log line when a schedule decision changes: `[SOCK][SCHEDULE] socket=<id> want=on|off at HH:MM wday=N clock=ntp|phone|rtc`.
+- DSP `power_guard` JSON adds `low_power`, `soc`, `wifi_ps`, `priority_source`, `inverter_overload`, `grid_down`, `socket_rules_latched`, `shed_sockets`.
+- Unchanged: GPIO15 inverter behaviour (the DSP socket block reads only, never calls gateway), socket trip 10 A / warn 8 A, JK-PB active, JBD compiled out, ESP-NOW off.
+- Host test `test_dsp_socket_rules_2539`.
+
 ## 2.5.38 (LoRa on the DSP images, Caleb 18 Nov 2026 18:08 WAT)
 
 On top of 2.5.37 (5dbba16) plus a merge of `cursor/factory-flash-tool` (0474688, tools only), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit.

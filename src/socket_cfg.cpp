@@ -1,3 +1,4 @@
+#include "config.h"
 #include "prefs_safe.h"
 #include "socket_cfg.h"
 #include <Preferences.h>
@@ -57,7 +58,8 @@ bool save(const String &id, Sock &s) {
   if (ok) s.stored = true;
   return ok;
 }
-bool clockSynced() { pc::clk::Source c = clock_::source(); return (c == pc::clk::Source::Ntp || c == pc::clk::Source::Phone) && time(nullptr) > 1700000000; }
+// 2.5.39: DSP also trusts its DS3231 RTC (pc::clk::scheduleClockValid). No schedule runs on invalid time.
+bool clockSynced() { return pc::clk::scheduleClockValid(clock_::source(), (int64_t)time(nullptr), POWERCELL_DSP011 != 0); }
 uint32_t unixNow() { time_t t = time(nullptr); return t > 1700000000 ? (uint32_t)t : 0; }
 
 void emit(pc::ev::Type t, bool active, const char *code, const String &id, bool hasV = false, float v = 0) {
@@ -135,7 +137,11 @@ void pass(bool socValid, float soc, bool gridDown, bool latched, bool overload) 
     }
     // Commands only on decision changes (a user may switch the socket by hand in between),
     // continuously off while the battery is latched.
+    if (holdForInvalidClock(s.last, d, in.clockSynced)) continue;  // 2.5.39: no schedule action on invalid time
     bool changed = d.want != s.last.want || d.reason != s.last.reason;
+    if (changed && d.reason == Reason::Schedule)
+      LOGI("SOCK", "SCHEDULE", "socket=%s want=%s at %02u:%02u wday=%u clock=%s", id.c_str(), d.want ? "on" : "off",
+           (unsigned)(in.minutes / 60), (unsigned)(in.minutes % 60), (unsigned)in.wday, pc::clk::sourceName(clock_::source()));
     if (d.want == 0 && relayOn && (changed || latched)) {
       if (!sendRelayCommand(id, false)) continue;  // retry next pass
       if (!s.byUs) s.restoreOn = true;

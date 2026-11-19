@@ -3180,7 +3180,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.38" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.39" && !s35.found());
   }
 }
 
@@ -3496,7 +3496,7 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(ini.find("POWERCELL_FACTORY_VARIANT=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_RATED_ACTIVE_W=1500") != std::string::npos);
   CHECK(count_of(ini, "[env:esp32dev_") == 6);
-  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.38\\\"") == 6);  // 2.5.38 LoRa on DSP (2.5.37 floor 0.2 A); 2.5.34 reserved
+  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.39\\\"") == 6);  // 2.5.39 DSP socket rules, 2.5.38 LoRa on DSP (2.5.37 floor 0.2 A); 2.5.34 reserved
   CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") == std::string::npos);
   // The STM 15kw image carries no factory rating, like the other STM images.
   char buf[16384]; CHECK(ini.size() < sizeof buf);
@@ -3627,6 +3627,61 @@ static void test_dsp_lora_2538() {
   CHECK(sl.find("\"SOCKETS_READY\"") != std::string::npos && sl.find("\"SOCKETS_OFF\"") != std::string::npos);
 }
 
+// 2.5.39 (Caleb 19 Nov 2026 01:12 WAT): socket rules pass on DSP.
+static void test_dsp_socket_rules_2539() {
+  using namespace pc::sock;
+  using pc::clk::Source; using pc::clk::scheduleClockValid;
+  const int64_t ok = 1795000000;  // Nov 2026
+  // Schedule clock: NTP/phone always; RTC only when trusted (DSP); NVS restore and None never; epoch range.
+  CHECK(scheduleClockValid(Source::Ntp, ok, false) && scheduleClockValid(Source::Phone, ok, false));
+  CHECK(scheduleClockValid(Source::Rtc, ok, true) && !scheduleClockValid(Source::Rtc, ok, false));
+  CHECK(!scheduleClockValid(Source::Nvs, ok, true) && !scheduleClockValid(Source::None, ok, true));
+  CHECK(!scheduleClockValid(Source::Rtc, 946684800, true) && !scheduleClockValid(Source::Ntp, 0, false));
+  CHECK(!scheduleClockValid(Source::Ntp, pc::clk::kMaxEpoch + 1, false));
+  // DSP inputs.
+  DspRaw r; DspIn i = dspInputs(r);
+  CHECK(!i.socValid && i.gridDown && !i.latched && !i.overload);
+  r.bmsFresh = true; r.bmsSoc = 35; r.gridValid = true; r.gridPresent = true;
+  i = dspInputs(r); CHECK(i.socValid && i.soc == 35 && !i.gridDown);
+  r.bmsSoc = 120; CHECK(!dspInputs(r).socValid);
+  r.bmsSoc = 35; r.gridPresent = false; CHECK(dspInputs(r).gridDown);
+  r.acWarning = true; CHECK(dspInputs(r).overload); r.acWarning = false; r.acShutdown = true; CHECK(dspInputs(r).overload);
+  r.acShutdown = false; r.batteryLatched = true; CHECK(dspInputs(r).latched);
+  // Schedule fires with a valid DSP (RTC) clock, Manual mode.
+  Config c; c.mode = c.lastUserMode = Mode::Manual; c.nSched = 1;
+  c.sched[0].mask = 0x7F; c.sched[0].action = 1; c.sched[0].start = 18 * 60; c.sched[0].end = 23 * 60;
+  State st; In in; in.socValid = true; in.soc = 80; in.gridDown = true; in.cloudUp = true;
+  in.clockSynced = scheduleClockValid(Source::Rtc, ok, true); in.minutes = 18 * 60 + 5; in.wday = 3;
+  Decision d = decide(c, st, in);
+  CHECK(d.want == 1 && d.reason == Reason::Schedule);
+  // Invalid time: no schedule decision, and the running schedule is held (no inverse action).
+  In bad = in; bad.clockSynced = scheduleClockValid(Source::Nvs, ok, true);
+  Decision dn = decide(c, st, bad);
+  CHECK(dn.want == -1 && holdForInvalidClock(d, dn, bad.clockSynced));
+  CHECK(!holdForInvalidClock(d, dn, true));  // valid clock, window ended: inverse action allowed
+  // SoC shed beats the schedule (heavy off at 40 %), from the JK-PB SoC.
+  DspRaw low; low.bmsFresh = true; low.bmsSoc = 30; DspIn li = dspInputs(low);
+  In shed = in; shed.socValid = li.socValid; shed.soc = li.soc; shed.gridDown = li.gridDown;
+  State st2; Decision ds = decide(c, st2, shed);
+  CHECK(ds.want == 0 && ds.reason == Reason::SocHeavy);
+  // Overload from the PZEM warning sheds heavy sockets.
+  In ov = in; ov.overload = dspInputs(DspRaw{true, 80, true, true, false, true, false}).overload;
+  State st3; CHECK(decide(c, st3, ov).reason == Reason::InverterOverload);
+  // Wiring: power_guard runs the pass on DSP with the battery latch and never writes GPIO15 there.
+  std::string pg = slurp("../../src/power_guard.cpp");
+  size_t blk = pg.find("2.5.39: per-socket rules"), end = pg.find("return;", blk);
+  CHECK(blk != std::string::npos && end != std::string::npos);
+  std::string b = pg.substr(blk, end - blk);
+  CHECK(b.find("shedPass(si.latched)") != std::string::npos && b.find("setLowPower(si.latched)") != std::string::npos);
+  CHECK(b.find("g_cutoff.outputLatched()") != std::string::npos && b.find("raw.bmsFresh = reading.valid") != std::string::npos);
+  CHECK(b.find("gateway::") == std::string::npos && b.find("PIN_PWR_KEY") == std::string::npos);
+  std::string sc = slurp("../../src/socket_cfg.cpp");
+  CHECK(sc.find("scheduleClockValid(clock_::source(), (int64_t)time(nullptr), POWERCELL_DSP011 != 0)") != std::string::npos);
+  CHECK(sc.find("holdForInvalidClock(s.last, d, in.clockSynced)") != std::string::npos);
+  CHECK(sc.find("\"SCHEDULE\"") != std::string::npos);
+  CHECK(kTripAmps == 10 && pc::lora::kTripAmps == 10.0f && pc::lora::kWarnAmps == 8.0f);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -3639,7 +3694,7 @@ int main() {
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
-  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536(); test_dsp_lora_2538();
+  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536(); test_dsp_lora_2538(); test_dsp_socket_rules_2539();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

@@ -74,6 +74,30 @@ struct Decision { int8_t want = -1; Reason reason = Reason::None; };  // want: -
 Mode effectiveMode(const Config &c, const State &s);
 // Updates the shed hysteresis, override expiry and fallback in s.
 Decision decide(const Config &c, State &s, const In &in);
+// 2.5.39: a schedule-driven decision must not be ended (inverse action) by the clock going
+// invalid. True: keep the last decision and send nothing this pass.
+inline bool holdForInvalidClock(const Decision &last, const Decision &now, bool clockSynced) {
+  return !clockSynced && now.want < 0 && (last.reason == Reason::Schedule || last.reason == Reason::DayNight);
+}
+// DSP v0.1.1 inputs for decide() (2.5.39). JK-PB SoC (fresh sample only), GPIO39 grid presence,
+// the 10 % battery latch (not the boot hold: that would switch every socket off on each boot until
+// the first BMS frame), and the PZEM AC-output warning/shutdown as the inverter overload.
+struct DspRaw {
+  bool bmsFresh = false; float bmsSoc = 0;
+  bool gridValid = false, gridPresent = false;
+  bool batteryLatched = false;
+  bool acWarning = false, acShutdown = false;
+};
+struct DspIn { bool socValid = false; float soc = 0; bool gridDown = true; bool latched = false; bool overload = false; };
+inline DspIn dspInputs(const DspRaw &r) {
+  DspIn o;
+  o.socValid = r.bmsFresh && r.bmsSoc >= 0 && r.bmsSoc <= 100;
+  o.soc = o.socValid ? r.bmsSoc : 0;
+  o.gridDown = !(r.gridValid && r.gridPresent);  // unknown grid = down, as STM
+  o.latched = r.batteryLatched;
+  o.overload = r.acWarning || r.acShutdown;
+  return o;
+}
 // Schedule window match: [start, end), end <= start wraps past midnight (day of the start).
 bool inWindow(const Sched &w, uint16_t minutes, uint8_t wday);
 }  // namespace sock

@@ -20,6 +20,9 @@
 #include "sockets/sockets.h"
 #include "stm32_link.h"
 #include "dsp_thermal.h"
+#include "grid_sense.h"
+#include "socket_rules.h"
+#include "time_policy.h"
 
 namespace powerguard {
 namespace {
@@ -100,7 +103,11 @@ void setLowPower(bool on) {
 }
 
 // Per-socket rules (safety, SoC shed, overload, cloud override, schedules) live in socket_cfg.
-void shedPass() { socketcfg::pass(g_socValid, g_soc, g_gridDown, latched(), g_overload); }
+// 2.5.39: DSP too. On DSP the latch passed in is the 10 % battery latch (g_sockLatched), not the boot hold.
+#if POWERCELL_DSP011
+bool g_sockLatched = false;
+#endif
+void shedPass(bool latchedNow) { socketcfg::pass(g_socValid, g_soc, g_gridDown, latchedNow, g_overload); }
 }  // namespace
 
 bool espLatched() {
@@ -332,6 +339,22 @@ void service() {
                    powercell::acOutputPolicy().systemOverloadLatched() ? "usable rating exceeded 8 s" : "Manual ceiling exceeded 8 s");
     if (gateway::state() || edge) gateway::set(false, "ac_overload");
   }
+  {  // 2.5.39: per-socket rules (schedules, SoC shed, overload, cloud override, low-power radio), as STM.
+     // Reads only; GPIO15 is not touched here.
+    pc::sock::DspRaw raw;
+    raw.bmsFresh = reading.valid; raw.bmsSoc = reading.percent;
+    DspGridReading gr;
+    if (dspGridRead(&gr)) { raw.gridValid = gr.valid; raw.gridPresent = gr.present; }
+    raw.batteryLatched = g_cutoff.outputLatched();
+    raw.acWarning = powercell::acOutputPolicy().warning();
+    raw.acShutdown = powercell::acOutputPolicy().shutdownLatched();
+    const pc::sock::DspIn si = pc::sock::dspInputs(raw);
+    if (si.gridDown != g_gridDown) LOGI("PWR", "GRID", "%s (socket rules)", si.gridDown ? "down" : "present");
+    if (si.overload != g_overload) LOGW("PWR", "OVERLOAD", "%s (PZEM AC output, socket rules)", si.overload ? "active" : "cleared");
+    g_socValid = si.socValid; g_soc = si.soc; g_gridDown = si.gridDown; g_overload = si.overload; g_sockLatched = si.latched;
+    setLowPower(si.latched);
+    if (now - g_lastShed >= 2000) { g_lastShed = now; shedPass(si.latched); }
+  }
   return;
 #else
   uint32_t now = millis();
@@ -385,7 +408,7 @@ void service() {
     if (!g_offDone) LOGW("PWR", "OFF_RETRY", "%s stm32_online=%d", gateway::resultName(r), (int)stm32link::online());
   }
   setLowPower(latched());
-  if (now - g_lastShed >= 2000) { g_lastShed = now; shedPass(); }
+  if (now - g_lastShed >= 2000) { g_lastShed = now; shedPass(latched()); }
 #endif
 }
 
@@ -401,6 +424,15 @@ void toJson(JsonObject o) {
   o["over_temp_blocks_on"] = overTempBlocksOn();
   o["over_temp_cutoff_c"] = powercell::thermal::kCutoffC;
   o["over_temp_on_below_c"] = powercell::thermal::kOnAllowedBelowC;
+  // 2.5.39 socket rules inputs, as STM
+  o["low_power"] = g_low;
+  if (g_socValid) o["soc"] = g_soc; else o["soc"] = nullptr;
+  o["wifi_ps"] = g_low ? "max_modem" : "min_modem";
+  o["priority_source"] = "socket_config";
+  o["inverter_overload"] = g_overload;
+  o["grid_down"] = g_gridDown;
+  o["socket_rules_latched"] = g_sockLatched;
+  socketcfg::shedList(o["shed_sockets"].to<JsonArray>());
   return;
 #else
   o["critical_latched"] = g_guard.latched();
