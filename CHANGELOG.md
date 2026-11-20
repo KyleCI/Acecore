@@ -1,5 +1,14 @@
 # Collector firmware changelog
 
+## 2.5.40-jbd (JBD BMS variant of 2.5.40, Caleb 20 Nov 2026 17:14 WAT) - EVENT/DEMO BUILD ONLY
+
+**EVENT/DEMO ONLY. Not for customer units. Keys must rotate before customer builds.** Caleb: "give me latest platform io file with the espnow for the other BMS, not JK". Per-build override for this request only; JK-PB stays the default and the six JK envs are unchanged (2.5.40). Build only, not tested on a unit.
+
+- Six new envs alongside the JK ones: `esp32dev_dsp011_15kw_jbd`, `esp32dev_dsp011_35kw_jbd`, `esp32dev_dsp011_5kw_jbd`, `esp32dev_stm01_15kw_jbd`, `esp32dev_stm01_35kw_jbd`, `esp32dev_stm01_5kw_jbd`. Version `2.5.40-jbd`, same OTA models as the JK images.
+- Same as 2.5.40: ESP-NOW sockets on, LoRa compiled out, built-in reference event keys.
+- BMS: the 2.5.35 (ad90eb0) JBD / Xiaoxiang poller, `${common.bms_jbd}` (POWERCELL_BMS_JBD=1), DSP envs `DSP_BMS_JKPB=0`. 9600 8N1, Serial2 ESP RX GPIO17 / TX GPIO16 (same connector as JK-PB), DD A5 03/04 request every 2 s. The JBD is polled, so ESP TX16 must reach the BMS RX (JK-PB was listen-only). JK-PB listener compiled out.
+- Host test `test_jbd_envs_2540` (JBD flags, versions, models, JK envs unchanged).
+
 ## AcePlug ESP-NOW socket 1.1.0-espnow-event (Caleb 19 Nov 2026 16:19 WAT) - EVENT/DEMO BUILD ONLY
 
 **EVENT/DEMO ONLY. Not for customer units. Keys must rotate before customer builds.** New project `aceplug-espnow-firmware/`, the plug image that pairs with collector 2.5.40 using the same existing reference ESP-NOW keys (compiled in from the local, never-committed `include/espnow_pairing.h`). Build only, not tested on a unit.

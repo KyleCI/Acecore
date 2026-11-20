@@ -3496,7 +3496,7 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(ini.find("POWERCELL_HARDWARE_MODEL=\\\"pc-stm01-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_VARIANT=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_RATED_ACTIVE_W=1500") != std::string::npos);
-  CHECK(count_of(ini, "[env:esp32dev_") == 6);
+  CHECK(count_of(ini, "[env:esp32dev_") == 12 && count_of(ini, "_jbd]") == 6);  // 6 JK-PB + 6 JBD (2.5.40-jbd)
   CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.40\\\"") == 6);  // 2.5.40 ESP-NOW sockets, 2.5.39 DSP socket rules, 2.5.38 LoRa on DSP (2.5.37 floor 0.2 A); 2.5.34 reserved
   CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") == std::string::npos);
   // The STM 15kw image carries no factory rating, like the other STM images.
@@ -3835,6 +3835,32 @@ static void test_aceplug_espnow_110() {
   FILE *k = fopen("../../aceplug-espnow-firmware/include/espnow_pairing.h", "r"); CHECK(!k); if (k) fclose(k);
 }
 
+// 2.5.40-jbd (Caleb 20 Nov 2026 17:14 WAT): six extra JBD envs; the six JK-PB envs are unchanged.
+static void test_jbd_envs_2540() {
+  std::string ini = slurp("../../platformio.ini");
+  const char *b = ini.c_str();
+  const char *models[6] = {"dsp011_5kw", "dsp011_35kw", "dsp011_15kw", "stm01_5kw", "stm01_35kw", "stm01_15kw"};
+  for (int i = 0; i < 6; ++i) {
+    char jk[64], jbd[64], model[40];
+    snprintf(jk, sizeof jk, "esp32dev_%s", models[i]); snprintf(jbd, sizeof jbd, "esp32dev_%s_jbd", models[i]);
+    snprintf(model, sizeof model, "pc-%s\\\"", models[i]);
+    for (char *c = model; *c; ++c) if (*c == '_') *c = '-';
+    const bool dsp = i < 3;
+    // JBD env: ESP-NOW + event keys, JBD poller, same OTA model, 2.5.40-jbd.
+    CHECK(flag_in_env(b, jbd, "${common.socket_link}") && flag_in_env(b, jbd, "${common.bms_jbd}"));
+    CHECK(flag_in_env(b, jbd, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.40-jbd\\\"") && flag_in_env(b, jbd, model));
+    CHECK(!flag_in_env(b, jbd, "socket_link_lora") && !flag_in_env(b, jbd, "FEATURE_LORA=1") && !flag_in_env(b, jbd, "DSP_BMS_JKPB=1"));
+    if (dsp) CHECK(flag_in_env(b, jbd, "DSP_BMS_JKPB=0") && flag_in_env(b, jbd, "DSP_BMS_UART_SWAP=0") && flag_in_env(b, jbd, "--wrap=uart_write_bytes"));
+    // JK env untouched: JK-PB, 2.5.40.
+    CHECK(flag_in_env(b, jk, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.40\\\"") && flag_in_env(b, jk, "${common.socket_link}"));
+    CHECK(!flag_in_env(b, jk, "${common.bms_jbd}") && !flag_in_env(b, jk, "POWERCELL_BMS_JBD") && !flag_in_env(b, jk, "2.5.40-jbd\\\""));
+    if (dsp) CHECK(flag_in_env(b, jk, "DSP_BMS_JKPB=1"));
+  }
+  CHECK(ini.find("default_envs = esp32dev_stm01_5kw\n") != std::string::npos);
+  // JBD wiring as 2.5.35 (ad90eb0): 9600 8N1 on RX17/TX16 (pins.h / config.h asserts, check_dsp_bms_jbd*).
+  CHECK(JBD_BMS_BAUD == 9600);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -3847,7 +3873,7 @@ int main() {
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
-  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536(); test_dsp_lora_2538(); test_dsp_socket_rules_2539(); test_espnow_2540(); test_aceplug_espnow_110();
+  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536(); test_dsp_lora_2538(); test_dsp_socket_rules_2539(); test_espnow_2540(); test_aceplug_espnow_110(); test_jbd_envs_2540();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }
