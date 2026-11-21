@@ -278,7 +278,7 @@ void handleSetState(JsonDocument &doc) {
     return;
   }
 
-#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS  // 2.5.38: DSP images have LoRa sockets
+#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS && !FEATURE_ESPNOW_SOCKETS  // 2.5.38 LoRa / 2.5.40 ESP-NOW sockets
   if (kind == "socket") { reject(id, kind, target, desired, "lora_not_fitted"); return; }
 #endif
   if (kind == "gateway") {

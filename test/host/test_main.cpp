@@ -23,6 +23,7 @@
 #include "lora_socket_proto.h"
 #include "socket_power.h"
 #include "../../smart-socket-firmware/src/trip_lockout.h"
+#include "../../aceplug-espnow-firmware/src/plug_logic.h"
 #include "payment_lock.h"
 #include "hw_output.h"
 #include "ac_output_policy.h"
@@ -2578,24 +2579,28 @@ static void test_dsp_thermal() {
   CHECK(!mvToCelsius(ntc_mv_for(155.f, false), &c, false));
   CHECK(!mvToCelsius(ntc_mv_for(-5.f, true), &c, true));
 
-  // Fan: ON >= 70, OFF <= 60 (Caleb 2026-11-11), hold between, fault forces ON (Dubem fail-safe).
-  CHECK(kFanOnC == 70.0f && kFanOffC == 60.0f);
+  // Fan: ON >= 60, OFF <= 52 (2.5.41, Caleb 21 Nov 2026 "fan to turn on at 60"; was 70/60),
+  // hold between, fault forces ON (Dubem fail-safe).
+  CHECK(kFanOnC == 60.0f && kFanOffC == 52.0f);
+  CHECK(kFanOnC < kOnAllowedBelowC && kFanOnC + 10.0f <= kCutoffC);  // ON stays well below the 80 C cutoff
   CHECK(!fanWanted(false, false, 25.f));
-  CHECK(!fanWanted(false, false, 69.9f));
-  CHECK(fanWanted(false, false, 70.f));
-  CHECK(fanWanted(true, false, 67.f));
-  CHECK(!fanWanted(false, false, 67.f));
-  CHECK(fanWanted(true, false, 65.f));   // was the old OFF point: now still ON
-  CHECK(fanWanted(true, false, 60.1f));
-  CHECK(!fanWanted(true, false, 60.f));
+  CHECK(!fanWanted(false, false, 59.9f));
+  CHECK(fanWanted(false, false, 60.f));
+  CHECK(fanWanted(false, false, 65.f));  // 2.5.40 would have stayed off here (ON was 70)
+  CHECK(fanWanted(true, false, 56.f));
+  CHECK(!fanWanted(false, false, 56.f));
+  CHECK(fanWanted(true, false, 52.1f));
+  CHECK(!fanWanted(true, false, 52.f));
+  CHECK(!fanWanted(true, false, 40.f));
   CHECK(fanWanted(false, true, 25.f));
   CHECK(fanWanted(false, true, NAN));
   CHECK(fanWanted(false, false, NAN));
   CHECK(fanWanted(true, false, 85.f));   // fan stays on through a cutoff
-  // Sweep up then down: one ON edge at 70, one OFF edge at 60.
+  CHECK(fanWanted(false, false, 80.f));  // and is on at the cutoff even from off
+  // Sweep: exactly one ON edge at 60 C going up and one OFF edge at 52 C going down.
   bool fan = false; int on_edges = 0, off_edges = 0;
-  for (float t = 50.f; t <= 90.f; t += 0.5f) { bool w = fanWanted(fan, false, t); if (w && !fan) { ++on_edges; NEAR(t, 70.0, 0.01); } fan = w; }
-  for (float t = 90.f; t >= 50.f; t -= 0.5f) { bool w = fanWanted(fan, false, t); if (!w && fan) { ++off_edges; NEAR(t, 60.0, 0.01); } fan = w; }
+  for (float t = 40.f; t <= 90.f; t += 0.5f) { bool w = fanWanted(fan, false, t); if (w && !fan) { ++on_edges; NEAR(t, 60.0, 0.01); } fan = w; }
+  for (float t = 90.f; t >= 40.f; t -= 0.5f) { bool w = fanWanted(fan, false, t); if (!w && fan) { ++off_edges; NEAR(t, 52.0, 0.01); } fan = w; }
   CHECK(on_edges == 1 && off_edges == 1);
 
   // Sensor health: no fault before the first sample; fault or stale after.
@@ -3180,7 +3185,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.39" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.41" && !s35.found());
   }
 }
 
@@ -3495,8 +3500,8 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(ini.find("POWERCELL_HARDWARE_MODEL=\\\"pc-stm01-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_VARIANT=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_RATED_ACTIVE_W=1500") != std::string::npos);
-  CHECK(count_of(ini, "[env:esp32dev_") == 6);
-  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.39\\\"") == 6);  // 2.5.39 DSP socket rules, 2.5.38 LoRa on DSP (2.5.37 floor 0.2 A); 2.5.34 reserved
+  CHECK(count_of(ini, "[env:esp32dev_") == 12 && count_of(ini, "_jbd]") == 6);  // 6 JK-PB + 6 JBD (2.5.40-jbd)
+  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.41\\\"") == 6);  // 2.5.41 fan ON 60 C, 2.5.40 ESP-NOW sockets, 2.5.39 DSP socket rules, 2.5.38 LoRa on DSP (2.5.37 floor 0.2 A); 2.5.34 reserved
   CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") == std::string::npos);
   // The STM 15kw image carries no factory rating, like the other STM images.
   char buf[16384]; CHECK(ini.size() < sizeof buf);
@@ -3580,13 +3585,12 @@ static void test_socket_power_2536() {
   CHECK(vread != std::string::npos && mtx != std::string::npos && vread < mtx);
   CHECK(lora.find("socketPowerToJson(o, online, d.reading.current, volts)") != std::string::npos);
   CHECK(web.find("pc::sockpower::kCompactSnapshotKeys") != std::string::npos);
-  CHECK(cfg.find("#define FEATURE_ESPNOW_SOCKETS 0") != std::string::npos);
+  CHECK(cfg.find("#define FEATURE_ESPNOW_SOCKETS 0") != std::string::npos);  // default; 2.5.40 images set 1
   std::string pj = slurp("../../src/sockets/socket_power_json.cpp");
   CHECK(pj.find("pc::sockpower::voltageFresh(s.has_vout, age)") != std::string::npos && pj.find("STM32_STALE_MS") != std::string::npos);
   // Warn/trip stay amps-based: the LoRa thresholds are untouched.
   CHECK(pc::lora::kTripAmps == 10.0f && pc::lora::kWarnAmps == 8.0f);
-  std::string ini = slurp("../../platformio.ini");
-  CHECK(ini.find("FEATURE_ESPNOW_SOCKETS=1") == std::string::npos);
+  // 2.5.40: the ESP-NOW path adds the same power keys (checked in test_espnow_2540).
 }
 
 // 2.5.38 (Caleb 18 Nov 2026 18:08 WAT): every board has LoRa, DSP included.
@@ -3594,14 +3598,12 @@ static void test_dsp_lora_2538() {
   std::string ini = slurp("../../platformio.ini");
   char buf[16384]; CHECK(ini.size() < sizeof buf);
   memcpy(buf, ini.c_str(), ini.size() + 1);
+  // 2.5.40: the radio choice moved to ${common.socket_link} (ESP-NOW on, LoRa off); see test_espnow_2540.
   for (const char *env : {"esp32dev_dsp011_5kw", "esp32dev_dsp011_35kw", "esp32dev_dsp011_15kw"}) {
-    CHECK(flag_in_env(buf, env, "FEATURE_LORA=1"));
-    CHECK(!flag_in_env(buf, env, "FEATURE_LORA=0"));
+    CHECK(flag_in_env(buf, env, "${common.socket_link}"));
     CHECK(flag_in_env(buf, env, "DSP_BMS_JKPB=1"));       // JK-PB stays active
     CHECK(!flag_in_env(buf, env, "POWERCELL_BMS_JBD=1"));  // JBD stays compiled out
   }
-  CHECK(ini.find("FEATURE_LORA=0") == std::string::npos);
-  CHECK(ini.find("FEATURE_ESPNOW_SOCKETS=1") == std::string::npos);
   std::string cfg = slurp("../../include/config.h");
   CHECK(cfg.find("hardware v0.1.1 is not fitted with LoRa") == std::string::npos);
   // Shared SPI: periph drives LoRa CS and SD CS high before SPI.begin, LoRa begins under the SPI mutex.
@@ -3615,8 +3617,8 @@ static void test_dsp_lora_2538() {
   CHECK(tk != std::string::npos && sd != std::string::npos && tk < sd);
   // Socket commands are accepted on DSP when LoRa sockets are built in.
   std::string web = slurp("../../src/web_local.cpp"), ws = slurp("../../src/backend_ws.cpp");
-  CHECK(web.find("#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS") != std::string::npos);
-  CHECK(ws.find("#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS") != std::string::npos);
+  CHECK(web.find("#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS && !FEATURE_ESPNOW_SOCKETS") != std::string::npos);
+  CHECK(ws.find("#if POWERCELL_DSP011 && !FEATURE_LORA_SOCKETS && !FEATURE_ESPNOW_SOCKETS") != std::string::npos);
   // DSP socket voltage is the PZEM sample via stm32link::status().
   std::string stm = slurp("../../src/stm32_link.cpp");
   size_t st = stm.find("bool status(Stm32Status &out"), hp = stm.find("hwPzemSample(&v, &a, &w, &energy, &age)", st);
@@ -3682,6 +3684,188 @@ static void test_dsp_socket_rules_2539() {
   CHECK(kTripAmps == 10 && pc::lora::kTripAmps == 10.0f && pc::lora::kWarnAmps == 8.0f);
 }
 
+// 2.5.40 (Caleb 19 Nov 2026 14:31 WAT): ESP-NOW sockets on, LoRa off, all six images.
+#include "espnow_wire.h"
+static void test_espnow_2540() {
+  namespace E = pc::espnow;
+  // Placeholder test key (bytes 0..15), never a fleet key.
+  uint8_t key[16]; for (int i = 0; i < 16; ++i) key[i] = uint8_t(i);
+  E::Packet p; p.type = E::Telemetry; p.relay = 1; p.flags = 0x06; p.session = 0x11223344; p.sequence = 7;
+  p.current = 1.5f; p.ackSession = 0x55667788; p.ackSequence = 9;
+  CHECK(sizeof(E::Packet) == 44 && offsetof(E::Packet, signature) == 28);
+  E::sign(p, key);
+  // Known answer: Python hmac.new(bytes(range(16)), <28 header bytes>, sha256).hexdigest()[:32]
+  // (same check the reference test/run_espnow_protocol_tests.py does with OpenSSL).
+  const uint8_t kat[16] = {0x15,0x78,0x5d,0x14,0x2e,0xce,0xa3,0x4d,0xd0,0xb7,0xb7,0x3a,0x9d,0x57,0xbe,0xb1};
+  CHECK(!memcmp(p.signature, kat, 16));
+  uint8_t wire[44]; memcpy(wire, &p, 44);
+  E::Packet out;
+  CHECK(E::decode(wire, 44, out, key) && out.type == E::Telemetry && out.sequence == 7 && out.current == 1.5f);
+  // Tampering, wrong key, truncation, bad fields are rejected (reference parser rules).
+  for (int i = 0; i < 44; ++i) { uint8_t t[44]; memcpy(t, wire, 44); t[i] ^= 0x01; CHECK(!E::decode(t, 44, out, key)); }
+  uint8_t other[16]; memcpy(other, key, 16); other[0] ^= 1;
+  CHECK(!E::decode(wire, 44, out, other) && !E::decode(wire, 43, out, key) && !E::decode(nullptr, 44, out, key));
+  auto bad = [&](void (*mut)(E::Packet &)) { E::Packet q = p; mut(q); E::sign(q, key); uint8_t w[44]; memcpy(w, &q, 44); return !E::decode(w, 44, out, key); };
+  CHECK(bad([](E::Packet &q) { q.version = 2; }) && bad([](E::Packet &q) { q.type = 0; }) && bad([](E::Packet &q) { q.type = 11; }));
+  CHECK(bad([](E::Packet &q) { q.session = 0; }) && bad([](E::Packet &q) { q.relay = 2; }) && bad([](E::Packet &q) { q.current = -1; }));
+  CHECK(bad([](E::Packet &q) { q.current = NAN; }) && bad([](E::Packet &q) { q.magic = 0; }));
+  // Sequences wrap, flags, pairing / forget acceptance, MAC ids.
+  CHECK(E::newer(1, 0xFFFFFFFFu) && !E::newer(5, 5) && !E::newer(4, 5));
+  CHECK(E::restartReason(E::restartFlags(3)) == 3 && E::restartReason(0) == -1);
+  CHECK(E::acceptsPair(false, false, true, 9, 0, 9, 42, 42, 4000) && !E::acceptsPair(false, false, true, 9, 0, 9, 42, 42, 6000));
+  CHECK(!E::acceptsPair(false, false, true, 9, 0, 9, 41, 42, 100) && E::acceptsPair(true, true, false, 5, 5, 0, 42, 42, 99999));
+  CHECK(E::acceptsForget(true, true, false, 5, 5, 8, 7) && !E::acceptsForget(true, true, false, 5, 5, 7, 7) && E::acceptsForget(false, false, true, 1, 2, 0, 0));
+  uint8_t mac[6]; char id[13];
+  CHECK(E::macFromId("246F28AE9C1A", mac) && mac[0] == 0x24 && mac[5] == 0x1A);
+  E::idFromMac(mac, id); CHECK(!strcmp(id, "246F28AE9C1A"));
+  CHECK(!E::macFromId("FFFFFFFFFFFF", mac) && !E::macFromId("246F28AE9C1", mac) && !E::macFromId("246F28AE9C1G", mac));
+  // Encrypted-peer budget: room, evict stalest unpaired, never evict paired / pairing.
+  E::PeerEntry pe[7];
+  CHECK(E::pickPeerEviction(pe, 7, 1000) == -1);
+  for (int i = 0; i < 7; ++i) { pe[i].present = true; pe[i].registered = true; pe[i].lastContact = 100 * i; }
+  CHECK(E::pickPeerEviction(pe, 7, 1000) == -2);
+  pe[2].registered = false; pe[4].registered = false; pe[4].lifecycle = true;
+  CHECK(E::pickPeerEviction(pe, 7, 1000) == 2);
+  pe[5].registered = false; pe[5].lastContact = 0; CHECK(E::pickPeerEviction(pe, 7, 1000) == 5);
+  // Build wiring: all six images ESP-NOW on, LoRa off; LoRa code kept; JK-PB on, JBD off; version.
+  std::string ini = slurp("../../platformio.ini");
+  char buf[16384]; CHECK(ini.size() < sizeof buf);
+  memcpy(buf, ini.c_str(), ini.size() + 1);
+  CHECK(ini.find("socket_link =\n    -D FEATURE_LORA=0\n    -D FEATURE_ESPNOW_SOCKETS=1\n") != std::string::npos);
+  CHECK(ini.find("-D POWERCELL_ESPNOW_EVENT_KEYS=1") != std::string::npos && ini.find("EVENT/DEMO ONLY") != std::string::npos);
+  CHECK(ini.find("socket_link_lora =\n    -D FEATURE_LORA=1\n    -D FEATURE_ESPNOW_SOCKETS=0\n") != std::string::npos);
+  for (const char *env : {"esp32dev_dsp011_5kw", "esp32dev_dsp011_35kw", "esp32dev_dsp011_15kw",
+                          "esp32dev_stm01_5kw", "esp32dev_stm01_35kw", "esp32dev_stm01_15kw"}) {
+    CHECK(flag_in_env(buf, env, "${common.socket_link}"));
+    CHECK(!flag_in_env(buf, env, "${common.socket_link_lora}"));
+    CHECK(!flag_in_env(buf, env, "FEATURE_LORA=1"));
+    CHECK(!flag_in_env(buf, env, "POWERCELL_BMS_JBD=1") && !flag_in_env(buf, env, "${common.bms_jbd}"));
+    CHECK(flag_in_env(buf, env, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.41\\\""));
+  }
+  CHECK(ini.find("2.5.39\\\"") == std::string::npos);
+  std::string cfg = slurp("../../include/config.h");
+  CHECK(cfg.find("#define FEATURE_LORA_SOCKETS (FEATURE_LORA && !FEATURE_ESPNOW_SOCKETS)") != std::string::npos);
+  std::string en = slurp("../../src/sockets/sockets_espnow.cpp"), lo = slurp("../../src/sockets/sockets_lora.cpp");
+  CHECK(lo.find("#if FEATURE_LORA_SOCKETS") != std::string::npos);  // LoRa kept in the tree
+  CHECK(en.find("#if FEATURE_ESPNOW_SOCKETS") != std::string::npos);
+  CHECK(en.find("espnow_keys.h") == std::string::npos);
+  // Event keys: local header only behind POWERCELL_ESPNOW_EVENT_KEYS, NVS keys win, values never logged.
+  size_t ek = en.find("#if POWERCELL_ESPNOW_EVENT_KEYS"), inc = en.find("#include \"espnow_pairing.h\"");
+  CHECK(ek != std::string::npos && inc != std::string::npos && ek < inc);
+  size_t nv = en.find("settings::espnowKeys(g_pmk, g_lmk, g_auth)"), mc = en.find("memcpy(g_pmk, ESPNOW_PMK, 16)");
+  CHECK(nv != std::string::npos && mc != std::string::npos && nv < mc);
+  CHECK(en.find("#error \"include/espnow_pairing.h is still the placeholder") != std::string::npos);
+  std::string gi = slurp("../../.gitignore");
+  CHECK(gi.find("include/espnow_pairing.h\n") != std::string::npos && gi.find("include/secrets.h\n") != std::string::npos);
+  std::string exh = slurp("../../include/espnow_pairing.h.example");
+  CHECK(exh.find("#define ESPNOW_PAIRING_PLACEHOLDER 1") != std::string::npos);
+  CHECK(en.find("settings::espnowKeys(g_pmk, g_lmk, g_auth)") != std::string::npos);
+  // Same app API as LoRa: power keys, cmd_id / desired / pending, change push, transport name.
+  size_t pda = en.find("bool populateDeviceArray(JsonArray &array) {");
+  size_t vread = en.find("socketsCollectorVoltage()", pda), mtx = en.find("xSemaphoreTake(dataMutex", pda);
+  CHECK(pda != std::string::npos && vread < mtx);
+  CHECK(en.find("socketPowerToJson(o, online, d.reading.current, volts)") != std::string::npos);
+  for (const char *k : {"\"desired\"", "\"pending\"", "\"cmd_id\"", "\"command_status\"", "\"lockout\"", "\"command_type\"", "\"alert\"", "\"firmware_version\""})
+    CHECK(en.find(std::string("o[") + k + "]") != std::string::npos);
+  CHECK(en.find("bool takeSocketsChanged() { bool c = g_socketsChanged;") != std::string::npos);
+  CHECK(en.find("const char *socketTransport() { return \"espnow\"; }") != std::string::npos);
+  CHECK(en.find("info.channel = 0;") != std::string::npos && en.find("WIFI_IF_STA") != std::string::npos);
+  CHECK(en.find("W::pickPeerEviction(") != std::string::npos);
+  // Power save off for ESP-NOW (modem sleep only in the battery latch); LoRa CS still held high.
+  std::string pg = slurp("../../src/power_guard.cpp"), per = slurp("../../src/periph.cpp");
+  CHECK(pg.find("WiFi.setSleep(on ? WIFI_PS_MAX_MODEM : WIFI_PS_NONE)") != std::string::npos);
+  CHECK(per.find("for (int cs : {PIN_DSP_SD_CS, PIN_LORA_CS})") != std::string::npos && per.find("for (int cs : {PIN_DSP_SD_CS}) {") == std::string::npos);
+  // Factory example ships an empty ESPNOW_KEYS and no real key headers live in the tree.
+  std::string ex = slurp("../../tools/factory_state/factory.env.example");
+  CHECK(ex.find("\nESPNOW_KEYS=\n") != std::string::npos);
+  FILE *h2 = fopen("../../src/sockets/espnow_keys.h", "r"), *h3 = fopen("../../include/secrets.h", "r");
+  CHECK(!h2 && !h3);  // include/espnow_pairing.h may exist locally for the event build (gitignored)
+  if (h2) fclose(h2);
+  if (h3) fclose(h3);
+}
+
+// AcePlug ESP-NOW 1.1.0-espnow-event (Caleb 19 Nov 2026 16:19 WAT): pairs with collector 2.5.40,
+// 10 A trip / 8 A warn, same wire format (espnow_wire.h) and keys file as the collector.
+static void test_aceplug_espnow_110() {
+  namespace E = pc::espnow;
+  uint8_t key[16]; for (int i = 0; i < 16; ++i) key[i] = uint8_t(0xA0 + i);  // test key only
+  E::Packet out;
+  // Plug -> collector: telemetry the plug builds (tripped, after a brown-out restart) verifies with the collector's decode.
+  E::Packet t; t.type = E::Telemetry; t.session = 0xCAFE0001; t.sequence = 12; t.current = 10.4f; t.relay = 0;
+  t.flags = aceplug::telemetryFlags(false, true, false, 15); t.ackSession = 0xBEEF; t.ackSequence = 3;
+  E::sign(t, key); uint8_t w[44]; memcpy(w, &t, 44);
+  CHECK(E::decode(w, 44, out, key) && out.type == E::Telemetry && out.relay == 0 && out.sequence == 12 && out.current == 10.4f);
+  CHECK((out.flags & E::TelemetryOvercurrent) && !(out.flags & E::TelemetryRejected) && E::restartReason(out.flags) == 15);
+  uint8_t other[16]; memcpy(other, key, 16); other[15] ^= 0x80; CHECK(!E::decode(w, 44, out, other));
+  // Lockout is shown to 2.5.40 as overcurrent (v1 has no lockout bit); rejected command bit.
+  CHECK((aceplug::telemetryFlags(false, false, true, 0) & 0x03) == E::TelemetryOvercurrent);
+  CHECK((aceplug::telemetryFlags(true, false, false, 0) & 0x03) == E::TelemetryRejected);
+  CHECK((aceplug::telemetryFlags(false, false, false, 1) & 0x03) == 0);
+  // Discover from the plug.
+  E::Packet d; d.type = E::Discover; d.session = 77; d.flags = E::PairingSupported | E::AlreadyPaired; E::sign(d, key); memcpy(w, &d, 44);
+  CHECK(E::decode(w, 44, out, key) && out.type == E::Discover && (out.flags & E::PairingSupported) && (out.flags & E::AlreadyPaired));
+  // Collector -> plug: Command / Pair / Forget signed by the collector verify on the plug and pass its acceptance rules.
+  E::Packet c; c.type = E::Command; c.session = 0x1234; c.sequence = 5; c.relay = 1; E::sign(c, key); memcpy(w, &c, 44);
+  CHECK(E::decode(w, 44, out, key) && out.type == E::Command && out.relay == 1 && E::newer(out.sequence, 4));
+  E::Packet pr; pr.type = E::Pair; pr.session = 0x1234; pr.sequence = 1; pr.ackSession = 0xCAFE0001; E::sign(pr, key); memcpy(w, &pr, 44);
+  CHECK(E::decode(w, 44, out, key) && E::acceptsPair(false, false, true, out.session, 0, 0x1234, out.ackSession, 0xCAFE0001, 1200));
+  CHECK(!E::acceptsPair(false, false, true, out.session, 0, 0x1234, out.ackSession, 0xCAFE0002, 1200));  // pair for another socket
+  E::Packet f; f.type = E::Forget; f.session = 0x1234; f.sequence = 9; E::sign(f, key); memcpy(w, &f, 44);
+  CHECK(E::decode(w, 44, out, key) && E::acceptsForget(true, true, false, out.session, 0x1234, out.sequence, 5));
+  // Optional Status packet (2.5.40 decodes and ignores it).
+  E::Packet st; st.type = E::Status; st.session = 1; st.flags = aceplug::statusFlags(true, true, false); E::sign(st, key); memcpy(w, &st, 44);
+  CHECK(E::decode(w, 44, out, key) && (out.flags & E::StatusWarn) && (out.flags & E::StatusLockout) && !(out.flags & E::StatusTripped) && (out.flags & E::StatusHasLimit));
+  // 10 A trip, 8 A warn with 7 A clear.
+  CHECK(aceplug::kTripAmps == 10.0f && aceplug::kWarnAmps == 8.0f && aceplug::kWarnClearAmps == 7.0f && aceplug::kRecloseMs == 15000);
+  CHECK(!aceplug::shouldTrip(9.99f) && aceplug::shouldTrip(10.0f) && aceplug::shouldTrip(25.0f) && !aceplug::shouldTrip(0));
+  CHECK(!aceplug::warnState(false, 7.99f) && aceplug::warnState(false, 8.0f) && aceplug::warnState(true, 7.5f));
+  CHECK(aceplug::warnState(true, 7.0f) && !aceplug::warnState(true, 6.99f) && !aceplug::warnState(false, 7.5f));
+  // Noise removal (1.0.3): idle reads 0, real loads keep their value.
+  CHECK(aceplug::denoise(0.68f) == 0 && aceplug::denoise(0.70f) == 0 && aceplug::denoise(0.71f) == 0 && aceplug::denoise(0.72f) > 0.15f && aceplug::denoise(NAN) == 0 && aceplug::denoise(-1) == 0);
+  CHECK(fabsf(aceplug::denoise(10.0245f) - 10.0f) < 0.001f && aceplug::denoise(10.03f) >= aceplug::kTripAmps && fabsf(aceplug::denoise(1.22f) - 1.0f) < 0.01f);
+  // 3 trips in 5 min latch, a 4th trip outside the window does not.
+  { TripLockout lk; CHECK(!lk.onTrip(0, 10.5f) && !lk.onTrip(60000, 11) && lk.onTrip(120000, 12) && lk.latched() && lk.lastTripAmps() == 12);
+    lk.reset(); CHECK(!lk.latched()); }
+  { TripLockout lk; CHECK(!lk.onTrip(0, 10.5f) && !lk.onTrip(200000, 11) && !lk.onTrip(400000, 12) && !lk.latched()); }
+  // Project wiring: shared wire header and keys file, versions, no private protocol copy, event marking.
+  std::string ini = slurp("../../aceplug-espnow-firmware/platformio.ini"), src = slurp("../../aceplug-espnow-firmware/src/main.cpp");
+  CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"1.1.0-espnow-event\\\"") != std::string::npos);
+  CHECK(ini.find("POWERCELL_FIRMWARE_KIND=\\\"socket\\\"") != std::string::npos && ini.find("-D POWERCELL_ESPNOW_EVENT_KEYS=1") != std::string::npos);
+  CHECK(ini.find("lib_extra_dirs = ../lib") != std::string::npos && ini.find("-I ../include") != std::string::npos && ini.find("EVENT/DEMO") != std::string::npos);
+  CHECK(ini.find("/dev/cu.usbserial-0001") != std::string::npos && ini.find("LoRa@") == std::string::npos);
+  CHECK(src.find("#include \"espnow_wire.h\"") != std::string::npos && src.find("#include \"espnow_pairing.h\"") != std::string::npos);
+  CHECK(src.find("espnow_protocol.h") == std::string::npos && src.find("OVERCURRENT_AMPS = 50") == std::string::npos);
+  CHECK(src.find("RELAY_PIN = 15") != std::string::npos && src.find("LED_PIN = 4") != std::string::npos && src.find("CURRENT_PIN = 35") != std::string::npos && src.find("LORA_NSS_PIN = 5") != std::string::npos);
+  CHECK(src.find("ESPNOW_PAIRING_PLACEHOLDER") != std::string::npos && src.find("EVENT/DEMO") != std::string::npos);
+  FILE *k = fopen("../../aceplug-espnow-firmware/include/espnow_pairing.h", "r"); CHECK(!k); if (k) fclose(k);
+}
+
+// 2.5.40-jbd (Caleb 20 Nov 2026 17:14 WAT): six extra JBD envs; the six JK-PB envs are unchanged.
+static void test_jbd_envs_2540() {
+  std::string ini = slurp("../../platformio.ini");
+  const char *b = ini.c_str();
+  const char *models[6] = {"dsp011_5kw", "dsp011_35kw", "dsp011_15kw", "stm01_5kw", "stm01_35kw", "stm01_15kw"};
+  for (int i = 0; i < 6; ++i) {
+    char jk[64], jbd[64], model[40];
+    snprintf(jk, sizeof jk, "esp32dev_%s", models[i]); snprintf(jbd, sizeof jbd, "esp32dev_%s_jbd", models[i]);
+    snprintf(model, sizeof model, "pc-%s\\\"", models[i]);
+    for (char *c = model; *c; ++c) if (*c == '_') *c = '-';
+    const bool dsp = i < 3;
+    // JBD env: ESP-NOW + event keys, JBD poller, same OTA model, 2.5.40-jbd.
+    CHECK(flag_in_env(b, jbd, "${common.socket_link}") && flag_in_env(b, jbd, "${common.bms_jbd}"));
+    CHECK(flag_in_env(b, jbd, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.41-jbd\\\"") && flag_in_env(b, jbd, model));
+    CHECK(!flag_in_env(b, jbd, "socket_link_lora") && !flag_in_env(b, jbd, "FEATURE_LORA=1") && !flag_in_env(b, jbd, "DSP_BMS_JKPB=1"));
+    if (dsp) CHECK(flag_in_env(b, jbd, "DSP_BMS_JKPB=0") && flag_in_env(b, jbd, "DSP_BMS_UART_SWAP=0") && flag_in_env(b, jbd, "--wrap=uart_write_bytes"));
+    // JK env untouched: JK-PB, 2.5.40.
+    CHECK(flag_in_env(b, jk, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.41\\\"") && flag_in_env(b, jk, "${common.socket_link}"));
+    CHECK(!flag_in_env(b, jk, "${common.bms_jbd}") && !flag_in_env(b, jk, "POWERCELL_BMS_JBD") && !flag_in_env(b, jk, "2.5.40-jbd\\\""));
+    if (dsp) CHECK(flag_in_env(b, jk, "DSP_BMS_JKPB=1"));
+  }
+  CHECK(ini.find("default_envs = esp32dev_stm01_5kw\n") != std::string::npos);
+  // JBD wiring as 2.5.35 (ad90eb0): 9600 8N1 on RX17/TX16 (pins.h / config.h asserts, check_dsp_bms_jbd*).
+  CHECK(JBD_BMS_BAUD == 9600);
+}
+
 int main() {
   test_live(); test_live_grid(); test_xfer4(); test_solar_view(); test_solar_energy(); test_app_power_kw();
   test_legacy_replies();
@@ -3694,7 +3878,7 @@ int main() {
   test_sha256(); test_passcode(); test_limiter(); test_pairs_sessions(); test_wifi_ap_policy(); test_wifi_scan_ctl(); test_sd_mount_dram(); test_heap_headroom_2530(); test_factory_reset_scope(); test_ws_rules();
   test_legacy_event_lines(); test_events_engine(); test_lora_proto(); test_socket_rules();
   test_payment_lock(); test_ac_limit_events(); test_lan_ota(); test_stm_save_interval(); test_ota_errors(); test_ota_boot(); test_ota_task_stage(); test_ota_stale_job();
-  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536(); test_dsp_lora_2538(); test_dsp_socket_rules_2539();
+  test_false_alerts_2531(); test_product_names_2532(); test_prime_15_2533(); test_socket_power_2536(); test_dsp_lora_2538(); test_dsp_socket_rules_2539(); test_espnow_2540(); test_aceplug_espnow_110(); test_jbd_envs_2540();
   printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

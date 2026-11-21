@@ -11,6 +11,8 @@ Keys read from the file (others are ignored, so the backend .env can be used too
   OTA_URL       -> SET ota_url      (optional; the dev build defaults to https://api-dev.acecore.tech)
   GW_NAME       -> SET gw_name      (optional, e.g. ACE9678)
   DEVICE_SECRET -> SET device_secret (64 hex; factory identity / WS + fingerprint HMAC; same as console SECRET)
+  ESPNOW_KEYS   -> SET espnow_keys  (2.5.40, 96 hex: PMK + LMK + AUTH, the ESP-NOW smart-socket fleet keys;
+                   must be set before LOCK)
 
 v17: DEV_SECRET is no longer accepted (merged into DEVICE_SECRET / factory identity). If present in the
 file it is ignored with a clear message — use DEVICE_SECRET or the console SECRET command.
@@ -32,7 +34,7 @@ except ImportError:
 ORDER = [("API_KEY", "api_key", True), ("WIFI_SSID", "wifi_ssid", False), ("WIFI_PASS", "wifi_pass", False),
          ("OTA_URL", "ota_url", False), ("GW_NAME", "gw_name", False),
          ("DEVICE_SECRET", "device_secret", False),
-         ("LOCAL_TOKEN", "local_tok", False)]
+         ("LOCAL_TOKEN", "local_tok", False), ("ESPNOW_KEYS", "espnow_keys", False)]
 SAFE_INFO = ("device_id=", "ap_ssid=", "local_token=", "api_key=")
 
 
@@ -78,6 +80,9 @@ def main():
     ds = vals.get("DEVICE_SECRET", "")
     if ds and (len(ds) != 64 or any(c not in "0123456789abcdefABCDEF" for c in ds)):
         sys.exit(f"DEVICE_SECRET must be 64 hex chars (got length {len(ds)})")
+    ek = vals.get("ESPNOW_KEYS", "")
+    if ek and (len(ek) != 96 or any(c not in "0123456789abcdefABCDEF" for c in ek)):
+        sys.exit(f"ESPNOW_KEYS must be 96 hex chars (got length {len(ek)})")
     with serial.Serial(a.port, 115200, timeout=0.2) as port:
         print("waiting for the board to boot (opening the port resets it)...")
         time.sleep(4)

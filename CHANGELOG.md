@@ -1,5 +1,50 @@
 # Collector firmware changelog
 
+## 2.5.41 / 2.5.41-jbd (DSP fan ON at 60 C, Caleb 21 Nov 2026 22:27 WAT) - EVENT/DEMO BUILD ONLY
+
+**EVENT/DEMO ONLY. Not for customer units. Keys must rotate before customer builds.** Caleb: "Let's make a firmware update, I want the fan to turn on at 60". On top of 2.5.40-jbd (e8223ed), branch `cursor/espnow-socket-2540`. Build only, not tested on a unit.
+
+- DSP cooling fan (GPIO25, system NTC on GPIO33): ON at >= 60.0 C (was 70.0), OFF at <= 52.0 C (was 60.0). 8 C hysteresis so the fan does not chatter around the ON point. Sensor fault still forces the fan ON. `include/dsp_thermal.h` `kFanOnC` / `kFanOffC`; boot log, `thermal` telemetry (`fan_on_c`, `fan_off_c`) and console follow the constants.
+- Unchanged: over-temperature cutoff latches at >= 80.0 C (GPIO15 off, `over_temp` alert), user ON accepted again only below 70.0 C. Compile-time checks keep fan ON at least 10 C below the cutoff and below the 70 C release.
+- STM32 images: the ESP has no fan output on STM boards (GPIO25 is PWR_LIGHT there); the STM32 temperature is only reported (`TEMP`). The STM fan, if any, is run by the STM32 firmware and is not changed here. STM images get the version bump only.
+- Version 2.5.41 on the six JK-PB envs, 2.5.41-jbd on the six JBD envs. ESP-NOW sockets on, LoRa off, event keys flag, JK-PB default and the separate JBD envs all as 2.5.40 / 2.5.40-jbd.
+- Host test `test_dsp_thermal`: 60 / 52 thresholds, hold band, single ON edge at 60 and OFF edge at 52 in a sweep, margin to the cutoff.
+
+## 2.5.40-jbd (JBD BMS variant of 2.5.40, Caleb 20 Nov 2026 17:14 WAT) - EVENT/DEMO BUILD ONLY
+
+**EVENT/DEMO ONLY. Not for customer units. Keys must rotate before customer builds.** Caleb: "give me latest platform io file with the espnow for the other BMS, not JK". Per-build override for this request only; JK-PB stays the default and the six JK envs are unchanged (2.5.40). Build only, not tested on a unit.
+
+- Six new envs alongside the JK ones: `esp32dev_dsp011_15kw_jbd`, `esp32dev_dsp011_35kw_jbd`, `esp32dev_dsp011_5kw_jbd`, `esp32dev_stm01_15kw_jbd`, `esp32dev_stm01_35kw_jbd`, `esp32dev_stm01_5kw_jbd`. Version `2.5.40-jbd`, same OTA models as the JK images.
+- Same as 2.5.40: ESP-NOW sockets on, LoRa compiled out, built-in reference event keys.
+- BMS: the 2.5.35 (ad90eb0) JBD / Xiaoxiang poller, `${common.bms_jbd}` (POWERCELL_BMS_JBD=1), DSP envs `DSP_BMS_JKPB=0`. 9600 8N1, Serial2 ESP RX GPIO17 / TX GPIO16 (same connector as JK-PB), DD A5 03/04 request every 2 s. The JBD is polled, so ESP TX16 must reach the BMS RX (JK-PB was listen-only). JK-PB listener compiled out.
+- Host test `test_jbd_envs_2540` (JBD flags, versions, models, JK envs unchanged).
+
+## AcePlug ESP-NOW socket 1.1.0-espnow-event (Caleb 19 Nov 2026 16:19 WAT) - EVENT/DEMO BUILD ONLY
+
+**EVENT/DEMO ONLY. Not for customer units. Keys must rotate before customer builds.** New project `aceplug-espnow-firmware/`, the plug image that pairs with collector 2.5.40 using the same existing reference ESP-NOW keys (compiled in from the local, never-committed `include/espnow_pairing.h`). Build only, not tested on a unit.
+
+- Base: reference socket 1.0.1 (Col PL.zip). Wire format, signing and pairing from the shared `pc_core/espnow_wire.h`, the header in 2.5.40.
+- 10 A trip (15 s auto reclose), 8 A warning (clear 7 A), 3 trips in 5 min lockout (NVS, BOOT button 3 s to clear), 0.70 A noise removal and 0.15 A floor, ON refused while tripped / locked / OTA: ported from the LoRa AcePlug 1.0.3 (537d7f0 lineage). Replaces socket 1.0.1's 50 A trip.
+- Trip and lockout reach 2.5.40 as the v1 overcurrent flag; the 8 A warning goes in an optional Status packet 2.5.40 ignores.
+- AcePlug v0.1 CAD pins: relay IO15, LED IO4, CT IO35, BOOT IO0; RFM95 NSS IO5 held high. No conflicts.
+- Host test `test_aceplug_espnow_110`: plug-signed packets verify with the collector decode and back, thresholds 9.99/10.0 A and 8.0/7.0 A hysteresis, noise, lockout, ini and source wiring.
+
+## 2.5.40 (ESP-NOW smart sockets on, LoRa off, Caleb 19 Nov 2026 14:31 WAT) - EVENT/DEMO BUILD ONLY
+
+**EVENT/DEMO ONLY. Not for customer units.** Caleb (19 Nov 2026 14:43 WAT): this build uses the existing ESP-NOW keys from his reference so units pair with the existing socket firmware. The keys are compiled into the bins (`POWERCELL_ESPNOW_EVENT_KEYS=1`, from the local, never-committed `include/espnow_pairing.h`; NVS `espnow_keys` overrides them). They must be rotated, and the flag dropped, before any customer build.
+
+On top of 2.5.39 (6ae05ef), branch `cursor/espnow-socket-2540`. Six product images. Build only, not tested on a unit. Reference: Caleb's "Col PL.zip" (collector 1.0.4 + socket 1.0.1 ESP-NOW tree, close-range validated 4 Oct 2026). See `docs/ESPNOW_SOCKETS.md`.
+
+- **Socket transport is ESP-NOW on all six images.** `platformio.ini` `${common.socket_link}` = `FEATURE_LORA=0 FEATURE_ESPNOW_SOCKETS=1` in every env. The LoRa code (`sockets_lora.cpp`, `lora_link.cpp`, `lora_socket_proto`) stays in the tree, compiled out; `${common.socket_link_lora}` switches an env back.
+- **Wire format = collector 1.0.4 / socket 1.0.1**, byte for byte: 44-byte v1 packet, HMAC-SHA256 (16 bytes) with the fleet AUTH key, unicast frames ESP-NOW encrypted (PMK/LMK), broadcast beacon every 1 s, socket discover every 1 s, explicit pair (PairAck) and durable forget (ForgetAck). Now from `pc_core/espnow_wire.h` (the parked 907b9b4 header, host tested with a known-answer HMAC, tamper, field and sequence cases), no mbedtls dependency in the protocol.
+- **Keys.** NVS `espnow_keys` (`SET espnow_keys <96 hex>`, PMK + LMK + AUTH, over USB before LOCK) wins. Event/demo images fall back to the built-in reference keys (`[ESPNOW][EVENT_KEYS]` in the boot log, values never logged). No key header is committed or zipped (`include/espnow_pairing.h` gitignored; `include/espnow_pairing.h.example` is a placeholder that fails the build if used as is). Without any keys the boot log shows `[ESPNOW][NO_KEYS]` and `[ESPNOW][SOCKETS_OFF]` and sockets stay off. `factory.py` / `factory_flash.py` / `provision.py` accept an optional `ESPNOW_KEYS=` in factory.env (validated, never printed); `factory.env.example` ships it blank.
+- **Same app / cloud behaviour as the LoRa path:** add (pair: socket must be heard in the last 10 s and advertising "available to pair", then confirms), remove (hidden at once, durable release until the socket acknowledges), rename / schedules / shed rules (socket_cfg, unchanged), on/off with `cmd_id`, `desired`, `pending`, supersede by a new tap, confirmed from telemetry when the ack is missed, `timeout` after 6 tries 750 ms apart, change push to SSE, VA = collector V x socket I with the 0.2 A floor. `transport` reads `espnow`; `rssi`, `snr`, `firmware_version` are null (not carried by ESP-NOW v1); reset-lockout and set-limit answer unsupported (socket 1.0.1 has neither).
+- **Wi-Fi coexistence.** ESP-NOW uses the station interface on the collector's current channel (router channel when connected, hotspot channel otherwise; AP and STA always share one channel). The socket scans channels 1..13 for the beacon, so no channel pinning and router channel changes are followed. Wi-Fi power save is off while ESP-NOW runs (`WIFI_PS_NONE`; modem sleep drops frames), modem sleep only in the 10 % battery low-power latch. Paused during a local OTA upload; re-initialised if Wi-Fi stops.
+- **Encrypted-peer budget** (ESP-IDF limit 7): paired and pairing/forgetting sockets are never evicted; the stalest unpaired observation is. Device map bounded at 32.
+- **SX1278 left fitted and idle:** its CS (IO4) is still driven HIGH on DSP, so it cannot answer SD traffic on the shared bus. `lora_ready` reports false.
+- Unchanged: JK-PB active, JBD compiled out, socket rules / schedules / shedding on DSP and STM, GPIO15 behaviour, factory_flash tooling (plus ESPNOW_KEYS), api-dev backend.
+- Host test `test_espnow_2540`; `check_dsp_bms` compiles with the 2.5.40 radio flags.
+
 ## 2.5.39 (socket rules on the DSP images, Caleb 19 Nov 2026 01:12 WAT)
 
 On top of 2.5.38 (81317c1), branch `cursor/lora-socket-power-2536`. Six product images. Build only, not tested on a unit.

@@ -5,8 +5,9 @@
 // DSP v0.1.1 system temperature (10k NTC) and cooling fan.
 // Ported from Dubem's "dspic collector_2" (2026-11-11): include/thermal.h,
 // src/thermal.cpp, include/pinDefines.h (FAN_PIN 25, NTC_PIN 36).
-// Caleb 2026-11-11 18:30 WAT: the NTC moved to GPIO33, fan OFF at 60 C,
-// over-temperature cutoff and alert at 80 C.
+// Caleb 2026-11-11 18:30 WAT: the NTC moved to GPIO33, over-temperature cutoff
+// and alert at 80 C. 2.5.41 (Caleb 21 Nov 2026 22:27 WAT): "I want the fan to turn
+// on at 60" -> fan ON at 60 C, OFF at 52 C (was ON 70 / OFF 60).
 //
 // Divider from 3V3, centre tap to GPIO33 (ADC1_CH5):
 //   NTC_ON_LOW_SIDE 0 (Dubem default): 3V3 --[NTC]--+--[2k7]-- GND, pin volts rise when hot
@@ -14,7 +15,8 @@
 // Dubem recommends 100 nF from GPIO36 to GND.
 //
 // Fan on GPIO25, NPN/MOSFET low-side driver, HIGH = ON. Hysteresis:
-// ON at >= 70.0 C, OFF at <= 60.0 C. Fail-safe: a sensor fault (open, short or
+// ON at >= 60.0 C, OFF at <= 52.0 C (8 C band, 20 C below the 80 C cutoff).
+// Fail-safe: a sensor fault (open, short or
 // out of 0..150 C) forces the fan ON.
 //
 // Over-temperature cutoff (not in Dubem's code; Caleb's decision): a valid
@@ -30,10 +32,12 @@ namespace thermal {
 #define NTC_ON_LOW_SIDE 0
 #endif
 
-constexpr float kFanOnC = 70.0f;
-constexpr float kFanOffC = 60.0f;
+constexpr float kFanOnC = 60.0f;   // 2.5.41 (Caleb 21 Nov 2026): was 70
+constexpr float kFanOffC = 52.0f;  // 2.5.41: was 60. 8 C hysteresis so the fan does not chatter
+static_assert(kFanOffC < kFanOnC, "fan hysteresis");
 constexpr float kCutoffC = 80.0f;      // latch the over-temperature cutoff at or above this
 constexpr float kOnAllowedBelowC = 70.0f;  // a latched unit accepts a user ON only below this
+static_assert(kFanOnC + 10.0f <= kCutoffC && kFanOnC < kOnAllowedBelowC, "fan ON well below the cutoff");
 constexpr uint32_t kPeriodMs = 2000;
 constexpr uint32_t kStaleMs = 10000;
 constexpr int kSamples = 16;
