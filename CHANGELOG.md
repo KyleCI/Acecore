@@ -1,5 +1,15 @@
 # Collector firmware changelog
 
+## 2.5.41 / 2.5.41-jbd (DSP fan ON at 60 C, Caleb 21 Nov 2026 22:27 WAT) - EVENT/DEMO BUILD ONLY
+
+**EVENT/DEMO ONLY. Not for customer units. Keys must rotate before customer builds.** Caleb: "Let's make a firmware update, I want the fan to turn on at 60". On top of 2.5.40-jbd (e8223ed), branch `cursor/espnow-socket-2540`. Build only, not tested on a unit.
+
+- DSP cooling fan (GPIO25, system NTC on GPIO33): ON at >= 60.0 C (was 70.0), OFF at <= 52.0 C (was 60.0). 8 C hysteresis so the fan does not chatter around the ON point. Sensor fault still forces the fan ON. `include/dsp_thermal.h` `kFanOnC` / `kFanOffC`; boot log, `thermal` telemetry (`fan_on_c`, `fan_off_c`) and console follow the constants.
+- Unchanged: over-temperature cutoff latches at >= 80.0 C (GPIO15 off, `over_temp` alert), user ON accepted again only below 70.0 C. Compile-time checks keep fan ON at least 10 C below the cutoff and below the 70 C release.
+- STM32 images: the ESP has no fan output on STM boards (GPIO25 is PWR_LIGHT there); the STM32 temperature is only reported (`TEMP`). The STM fan, if any, is run by the STM32 firmware and is not changed here. STM images get the version bump only.
+- Version 2.5.41 on the six JK-PB envs, 2.5.41-jbd on the six JBD envs. ESP-NOW sockets on, LoRa off, event keys flag, JK-PB default and the separate JBD envs all as 2.5.40 / 2.5.40-jbd.
+- Host test `test_dsp_thermal`: 60 / 52 thresholds, hold band, single ON edge at 60 and OFF edge at 52 in a sweep, margin to the cutoff.
+
 ## 2.5.40-jbd (JBD BMS variant of 2.5.40, Caleb 20 Nov 2026 17:14 WAT) - EVENT/DEMO BUILD ONLY
 
 **EVENT/DEMO ONLY. Not for customer units. Keys must rotate before customer builds.** Caleb: "give me latest platform io file with the espnow for the other BMS, not JK". Per-build override for this request only; JK-PB stays the default and the six JK envs are unchanged (2.5.40). Build only, not tested on a unit.

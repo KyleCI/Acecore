@@ -2579,24 +2579,28 @@ static void test_dsp_thermal() {
   CHECK(!mvToCelsius(ntc_mv_for(155.f, false), &c, false));
   CHECK(!mvToCelsius(ntc_mv_for(-5.f, true), &c, true));
 
-  // Fan: ON >= 70, OFF <= 60 (Caleb 2026-11-11), hold between, fault forces ON (Dubem fail-safe).
-  CHECK(kFanOnC == 70.0f && kFanOffC == 60.0f);
+  // Fan: ON >= 60, OFF <= 52 (2.5.41, Caleb 21 Nov 2026 "fan to turn on at 60"; was 70/60),
+  // hold between, fault forces ON (Dubem fail-safe).
+  CHECK(kFanOnC == 60.0f && kFanOffC == 52.0f);
+  CHECK(kFanOnC < kOnAllowedBelowC && kFanOnC + 10.0f <= kCutoffC);  // ON stays well below the 80 C cutoff
   CHECK(!fanWanted(false, false, 25.f));
-  CHECK(!fanWanted(false, false, 69.9f));
-  CHECK(fanWanted(false, false, 70.f));
-  CHECK(fanWanted(true, false, 67.f));
-  CHECK(!fanWanted(false, false, 67.f));
-  CHECK(fanWanted(true, false, 65.f));   // was the old OFF point: now still ON
-  CHECK(fanWanted(true, false, 60.1f));
-  CHECK(!fanWanted(true, false, 60.f));
+  CHECK(!fanWanted(false, false, 59.9f));
+  CHECK(fanWanted(false, false, 60.f));
+  CHECK(fanWanted(false, false, 65.f));  // 2.5.40 would have stayed off here (ON was 70)
+  CHECK(fanWanted(true, false, 56.f));
+  CHECK(!fanWanted(false, false, 56.f));
+  CHECK(fanWanted(true, false, 52.1f));
+  CHECK(!fanWanted(true, false, 52.f));
+  CHECK(!fanWanted(true, false, 40.f));
   CHECK(fanWanted(false, true, 25.f));
   CHECK(fanWanted(false, true, NAN));
   CHECK(fanWanted(false, false, NAN));
   CHECK(fanWanted(true, false, 85.f));   // fan stays on through a cutoff
-  // Sweep up then down: one ON edge at 70, one OFF edge at 60.
+  CHECK(fanWanted(false, false, 80.f));  // and is on at the cutoff even from off
+  // Sweep: exactly one ON edge at 60 C going up and one OFF edge at 52 C going down.
   bool fan = false; int on_edges = 0, off_edges = 0;
-  for (float t = 50.f; t <= 90.f; t += 0.5f) { bool w = fanWanted(fan, false, t); if (w && !fan) { ++on_edges; NEAR(t, 70.0, 0.01); } fan = w; }
-  for (float t = 90.f; t >= 50.f; t -= 0.5f) { bool w = fanWanted(fan, false, t); if (!w && fan) { ++off_edges; NEAR(t, 60.0, 0.01); } fan = w; }
+  for (float t = 40.f; t <= 90.f; t += 0.5f) { bool w = fanWanted(fan, false, t); if (w && !fan) { ++on_edges; NEAR(t, 60.0, 0.01); } fan = w; }
+  for (float t = 90.f; t >= 40.f; t -= 0.5f) { bool w = fanWanted(fan, false, t); if (!w && fan) { ++off_edges; NEAR(t, 52.0, 0.01); } fan = w; }
   CHECK(on_edges == 1 && off_edges == 1);
 
   // Sensor health: no fault before the first sample; fault or stale after.
@@ -3181,7 +3185,7 @@ static void test_lan_ota() {  // local hotspot OTA (POST /ota), ported from coll
     TagScanner sr(pre), s35("POWERCELL_FW|collector|pc-dsp011-35kw|"); uint8_t b[1500]; size_t k;
     while ((k = fread(b, 1, sizeof b, f)) > 0) { sr.feed(b, k); s35.feed(b, k); }
     fclose(f);
-    CHECK(sr.found() && sr.version() == "2.5.40" && !s35.found());
+    CHECK(sr.found() && sr.version() == "2.5.41" && !s35.found());
   }
 }
 
@@ -3497,7 +3501,7 @@ static void test_prime_15_2533() {  // 2.5.33: Powercell Prime 1.5 kVA, PROVISIO
   CHECK(ini.find("POWERCELL_FACTORY_VARIANT=\\\"pc-dsp011-15kw\\\"") != std::string::npos);
   CHECK(ini.find("POWERCELL_FACTORY_RATED_ACTIVE_W=1500") != std::string::npos);
   CHECK(count_of(ini, "[env:esp32dev_") == 12 && count_of(ini, "_jbd]") == 6);  // 6 JK-PB + 6 JBD (2.5.40-jbd)
-  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.40\\\"") == 6);  // 2.5.40 ESP-NOW sockets, 2.5.39 DSP socket rules, 2.5.38 LoRa on DSP (2.5.37 floor 0.2 A); 2.5.34 reserved
+  CHECK(count_of(ini, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.41\\\"") == 6);  // 2.5.41 fan ON 60 C, 2.5.40 ESP-NOW sockets, 2.5.39 DSP socket rules, 2.5.38 LoRa on DSP (2.5.37 floor 0.2 A); 2.5.34 reserved
   CHECK(ini.find("POWERCELL_FIRMWARE_VERSION=\\\"2.5.32\\\"") == std::string::npos);
   // The STM 15kw image carries no factory rating, like the other STM images.
   char buf[16384]; CHECK(ini.size() < sizeof buf);
@@ -3736,7 +3740,7 @@ static void test_espnow_2540() {
     CHECK(!flag_in_env(buf, env, "${common.socket_link_lora}"));
     CHECK(!flag_in_env(buf, env, "FEATURE_LORA=1"));
     CHECK(!flag_in_env(buf, env, "POWERCELL_BMS_JBD=1") && !flag_in_env(buf, env, "${common.bms_jbd}"));
-    CHECK(flag_in_env(buf, env, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.40\\\""));
+    CHECK(flag_in_env(buf, env, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.41\\\""));
   }
   CHECK(ini.find("2.5.39\\\"") == std::string::npos);
   std::string cfg = slurp("../../include/config.h");
@@ -3776,7 +3780,8 @@ static void test_espnow_2540() {
   CHECK(ex.find("\nESPNOW_KEYS=\n") != std::string::npos);
   FILE *h2 = fopen("../../src/sockets/espnow_keys.h", "r"), *h3 = fopen("../../include/secrets.h", "r");
   CHECK(!h2 && !h3);  // include/espnow_pairing.h may exist locally for the event build (gitignored)
-  if (h2) fclose(h2); if (h3) fclose(h3);
+  if (h2) fclose(h2);
+  if (h3) fclose(h3);
 }
 
 // AcePlug ESP-NOW 1.1.0-espnow-event (Caleb 19 Nov 2026 16:19 WAT): pairs with collector 2.5.40,
@@ -3848,11 +3853,11 @@ static void test_jbd_envs_2540() {
     const bool dsp = i < 3;
     // JBD env: ESP-NOW + event keys, JBD poller, same OTA model, 2.5.40-jbd.
     CHECK(flag_in_env(b, jbd, "${common.socket_link}") && flag_in_env(b, jbd, "${common.bms_jbd}"));
-    CHECK(flag_in_env(b, jbd, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.40-jbd\\\"") && flag_in_env(b, jbd, model));
+    CHECK(flag_in_env(b, jbd, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.41-jbd\\\"") && flag_in_env(b, jbd, model));
     CHECK(!flag_in_env(b, jbd, "socket_link_lora") && !flag_in_env(b, jbd, "FEATURE_LORA=1") && !flag_in_env(b, jbd, "DSP_BMS_JKPB=1"));
     if (dsp) CHECK(flag_in_env(b, jbd, "DSP_BMS_JKPB=0") && flag_in_env(b, jbd, "DSP_BMS_UART_SWAP=0") && flag_in_env(b, jbd, "--wrap=uart_write_bytes"));
     // JK env untouched: JK-PB, 2.5.40.
-    CHECK(flag_in_env(b, jk, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.40\\\"") && flag_in_env(b, jk, "${common.socket_link}"));
+    CHECK(flag_in_env(b, jk, "POWERCELL_FIRMWARE_VERSION=\\\"2.5.41\\\"") && flag_in_env(b, jk, "${common.socket_link}"));
     CHECK(!flag_in_env(b, jk, "${common.bms_jbd}") && !flag_in_env(b, jk, "POWERCELL_BMS_JBD") && !flag_in_env(b, jk, "2.5.40-jbd\\\""));
     if (dsp) CHECK(flag_in_env(b, jk, "DSP_BMS_JKPB=1"));
   }
